@@ -1,0 +1,96 @@
+# DormOS
+
+DormOS 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite 数据库中，运行时无需联网。
+
+## 从源码运行 Linux 版
+
+在 x86_64 Debian 13 或兼容的 Linux 环境使用 Linux Flutter Stable。项目在 WSL2 Debian 13 上以 Flutter 3.50.0 和 Dart 3.14.0 为基线。开发时需要 Clang、CMake、Ninja、pkg-config 和 GTK 3 开发头文件。SDK 和其自带的 Dart 可以放在 `~/.local/opt/flutter`。以下操作在 Linux 原生文件系统中的仓库目录执行。
+
+```bash
+export PATH="$HOME/.local/opt/flutter/bin:$PATH"
+flutter doctor -v
+flutter pub get --enforce-lockfile
+flutter run -d linux
+```
+
+## 使用方式
+
+| 模块 | 操作 |
+| --- | --- |
+| 公共账本 | 打开「寝室成员」添加成员，再新建账单。填写金额和付款人，按需取消参与者。账单详情可登记一笔或多笔实际转账，成员汇总显示累计应收、应付及未结清余额。 |
+| 卫生排班 | 在「任务设置」添加每日或每周任务，选择开始日期。点击日历查看某日或整月，过去的月份可查看历史。待完成班次可改派或与同任务的其他待完成班次交换。 |
+| 公共物资 | 录入名称、分类、数量、位置、备注和采购状态，按关键词、分类或状态查找。点击「记录采购」将支出记入总账，点击「采购账单」回看关联开销。 |
+
+宽屏显示侧边导航和账单表格，窄屏显示底部导航和卡片。主题默认跟随系统，也可通过顶部按钮切换。
+
+## 测试和构建
+
+```bash
+dart format --output=none --set-exit-if-changed lib test
+flutter analyze
+flutter test --reporter expanded
+flutter build linux --release --target-platform linux-x64
+./build/linux/x64/release/bundle/dormos
+```
+
+Linux 分发需要整个 `build/linux/x64/release/bundle`。解包后从图形会话运行 `dormos`。WSL2 中需要能显示 Linux 窗口的 WSLg。可用 `ldd build/linux/x64/release/bundle/dormos` 排查目标机器缺失的共享库。应用更新时保留用户数据目录。
+
+### Windows x86_64 构建
+
+从同一个 Git 提交克隆到独立的 Windows 原生工作目录，使用对应版本的 Windows Flutter。Visual Studio 需要「使用 C++ 的桌面开发」工作负载及 MSVC x64、Windows SDK 和 CMake 工具。用 Windows 端的 `flutter doctor -v` 检查 Visual Studio。可以从 WSL 启动 `powershell.exe -NoProfile`。在 Windows PowerShell 中，将 `$bundle` 指向交付的 `DormOS-source.bundle`，并指定新的 Windows 工作目录和 SDK 路径。
+
+```powershell
+git clone --branch main $bundle $windowsWorktree
+Set-Location -LiteralPath $windowsWorktree
+git rev-parse HEAD
+& $windowsFlutter doctor -v
+& $windowsFlutter pub get --enforce-lockfile
+& $windowsFlutter build windows --release
+& '.\build\windows\x64\runner\Release\dormos.exe'
+```
+
+在 x86_64 Windows 主机使用 x64 Flutter。Flutter 3.50 按 Windows 宿主架构选择构建目标。归档整个 `build\windows\x64\runner\Release`，其中包含程序、Flutter 引擎、插件 DLL 和数据文件。
+
+### Android ARM64 构建
+
+在 Debian 的同一 Git 提交使用 Linux Flutter、OpenJDK 21 和 Linux 版 [Android SDK Command-line Tools](https://developer.android.com/studio#command-tools)。JDK 负责运行 Gradle 与编译 Java，Android SDK 提供 API 36 的编译库及 APK 工具。可以请设备维护人运行 `sudo apt install openjdk-21-jdk-headless`，再将命令行工具解压至 `~/.local/opt/android-sdk/cmdline-tools/latest`。`bin/sdkmanager` 应直接位于该目录下。以下环境变量只用于当前终端。
+
+```bash
+export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+export ANDROID_HOME="$HOME/.local/opt/android-sdk"
+export GRADLE_USER_HOME="$HOME/.cache/dormos-gradle"
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+  "platform-tools" "platforms;android-35" "platforms;android-36" \
+  "build-tools;36.0.0" "ndk;28.2.13676358"
+```
+
+Flutter 3.50 的 Android runner 使用 Gradle 9.5.0 和 API 36，最低设备版本为 API 24。锁定的 Android 路径插件通过 `jni` 依赖使用 API 35 和 CMake 编译 JNI，因此需要该版本的 NDK。Debian 13 的现有 CMake 和 Ninja 用于本机构建，若 Gradle 另有诊断，按诊断补齐对应组件。
+
+```bash
+flutter doctor -v
+flutter pub get --enforce-lockfile
+flutter build apk --release --target-platform android-arm64
+unzip -Z1 build/app/outputs/flutter-apk/app-release.apk | grep '^lib/'
+```
+
+所有 `lib/` 下的 ABI 应为 `arm64-v8a`。Debug 构建面向调试，Release 构建采用发布优化，正式发布还需要专用签名或由 Google Play 管理应用签名。用开发签名签出的 Release APK 可用于内部安装验证。签名配置和密钥须保存在仓库外。构建及 ABI 检查与真机安装、启动和交互测试分别记录。
+
+## 项目结构与数据
+
+| 路径 | 内容 |
+| --- | --- |
+| `lib/domain/` | 跨平台业务模型、整数分金额、轮换规则及仓储接口 |
+| `lib/data/` | SQLite schema、事务、状态更新及查询 |
+| `lib/ui/` | Material 3 布局、页面和表单 |
+| `test/` | 数据、业务规则和 Widget 测试 |
+| `docs/development.md` | 开发与 AI 辅助记录 |
+
+SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Linux 应用支持目录默认使用 `$XDG_DATA_HOME`（未设置时为 `~/.local/share`）。关闭应用后可以复制该数据库文件做备份。业务数据在同一台设备上重启后保留。
+
+DormOS 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 作为中文回退字体。字体按 SIL Open Font License 1.1 发布，许可文本保存在 `assets/fonts/OFL-NotoSansSC.txt`。
+
+- 金额以整数分持久化。余分依成员 ID 升序分配。付款者若在参与名单中，其本人份额计入消费，免于给自己转账。累计应收和应付均按成员间实际债权统计。
+- 每项卫生任务独立按成员 ID 轮换。已生成班次保留原负责人，成员变动自下一未生成班次起生效。已停用成员的旧班次会标记状态，可手动改派。打卡记录保存完成时间。
+- 创建采购账单时，待采购物资更新为采购中。到货后可手动调整库存和状态。删除物资会从清单隐藏该物资，关联账单及采购名称快照仍可追溯。
+- 仓储接口与独立转账记录为接入 Supabase/PostgreSQL、撤销与审计预留扩展点。当前版本支持本机离线协作记录，账本暂未提供债务抵消及修改历史账单的功能。

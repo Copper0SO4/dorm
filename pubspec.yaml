@@ -1,0 +1,26 @@
+name: dormos
+description: Offline dorm collaboration for Linux, Windows and Android.
+publish_to: none
+version: 0.1.0+1
+environment:
+  sdk: '>=3.14.0 <4.0.0'
+  flutter: '>=3.50.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  material_ui: ^1.1.0
+  path_provider: 2.1.6
+  sqlite3: 3.9.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/fonts/OFL-NotoSansSC.txt
+  fonts:
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC.ttf
