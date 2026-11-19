@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'chores_page.dart';
+import 'cloud_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
 import 'supplies_page.dart';
@@ -113,7 +114,12 @@ class _DormAppState extends State<DormApp> {
         return Scaffold(
           appBar: AppBar(
             title: desktop ? const Text('寝室工作台') : const _Brand(),
-            actions: [toggle, const SizedBox(width: 12)],
+            actions: [
+              if (widget.controller.cloud case final cloud?)
+                CloudAction(cloud: cloud),
+              toggle,
+              const SizedBox(width: 12),
+            ],
           ),
           body: SafeArea(
             top: false,

@@ -1,0 +1,254 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:dormos/data/cloud_sync.dart';
+import 'package:dormos/data/github_transport.dart';
+import 'package:dormos/data/schema.dart';
+import 'package:dormos/data/sqlite_repository.dart';
+import 'package:dormos/data/ssh_vault.dart';
+import 'package:dormos/domain/cloud.dart';
+import 'package:dormos/domain/ledger.dart';
+import 'package:dormos/ui/app.dart';
+import 'package:dormos/ui/common.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:git2dart/git2dart.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:sqlite3/sqlite3.dart';
+
+void main() {
+  testWidgets('the cloud settings preview converts an HTTPS URL to SSH', (
+    tester,
+  ) async {
+    final root = Directory.systemTemp.createTempSync('dormos-cloud-widget-');
+    addTearDown(() => root.delete(recursive: true));
+    final repo = SqliteDormRepository.open(':memory:');
+    addTearDown(repo.close);
+    final sync = CloudSync(repo.cloud, SshVault(root), GitHubTransport(root));
+    final controller = DormController(repo, cloud: sync);
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('GitHub 云同步'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('配置仓库'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).first,
+      'https://github.com/Room/Dorm',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('git@github.com:room/dorm.git'), findsOneWidget);
+    expect(find.text('粘贴 SSH 私钥'), findsOneWidget);
+  });
+
+  test('the bundled Git runtime supports SSH', () {
+    expect(Libgit2.features, contains(GitFeature.ssh));
+  });
+  test(
+    'normalizes GitHub HTTPS and SSH and rejects other hosts and extra paths',
+    () {
+      for (final value in [
+        'https://github.com/Room/Dorm/',
+        'git@github.com:ROOM/dorm.git',
+        'ssh://git@github.com/room/dorm.git',
+        'room/dorm',
+      ]) {
+        expect(githubSshAddress(value), 'git@github.com:room/dorm.git');
+      }
+      for (final value in [
+        'https://github.com.evil.test/room/dorm',
+        'git@evil.test:room/dorm',
+        'https://github.com/room/dorm/tree/main',
+        'room/dorm;ls',
+        'room/..',
+      ]) {
+        expect(() => githubSshAddress(value), throwsA(isA<InputException>()));
+      }
+    },
+  );
+
+  test(
+    'migrates an existing database and retains its integer IDs and transfers',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'dormos-cloud-migrate-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final path = '${root.path}/dorm.sqlite';
+      final old = sqlite3.open(path);
+      for (final statement in schema) {
+        old.execute(statement);
+      }
+      old.execute('PRAGMA user_version = 1');
+      old.execute("INSERT INTO members(id,name) VALUES(47,'旧成员'),(48,'甲')");
+      old.execute(
+        "INSERT INTO bills(id,title,total,payer_id,created_at) VALUES(52,'旧账单',400,47,'2026-01-02T00:00:00Z')",
+      );
+      old.execute('INSERT INTO shares VALUES(52,47,200),(52,48,200)');
+      old.execute(
+        "INSERT INTO transfers(id,bill_id,member_id,amount,created_at) VALUES(57,52,48,100,'2026-01-02T00:00:00Z')",
+      );
+      old.close();
+      final repository = SqliteDormRepository.open(path);
+      addTearDown(repository.close);
+      expect(repository.members().first.id, 47);
+      expect(repository.billDetail(52).transfers.single.amount, 100);
+      final data = repository.cloud.snapshot();
+      expect(CloudSnapshot.decode(data.encoded).sameAs(data), isTrue);
+      expect(
+        data.tables['members']!.keys,
+        everyElement(matches(r'^[a-f0-9]{32}$')),
+      );
+      final target = SqliteDormRepository.open(':memory:');
+      addTearDown(target.close);
+      target.cloud.accept(data, data);
+      expect(target.cloud.snapshot().sameAs(data), isTrue);
+      expect(target.bills().single.outstanding, 100);
+    },
+  );
+
+  test('concurrent overpayment fails atomically without replacing any local records', () {
+    final repository = SqliteDormRepository.open(':memory:');
+    addTearDown(repository.close);
+    repository.saveMember('甲');
+    repository.saveMember('乙');
+    final bill = repository.addBill((
+      title: '水',
+      total: 200,
+      payerId: 1,
+      participantIds: [1, 2],
+      supplyId: null,
+    ));
+    final base = repository.cloud.snapshot();
+    repository.recordTransfer(bill, 2, 60);
+    final left = repository.cloud.snapshot();
+    final other = SqliteDormRepository.open(':memory:');
+    addTearDown(other.close);
+    other.cloud.accept(base, base);
+    final debtor = other.members().firstWhere((member) => member.name == '乙');
+    other.recordTransfer(other.bills().single.id, debtor.id, 60);
+    final right = other.cloud.snapshot();
+    final merge = CloudMerge(left, right, base);
+    expect(merge.conflicts, isEmpty);
+    expect(
+      () => repository.cloud.accept(merge.resolve({}), right),
+      throwsA(isA<InputException>()),
+    );
+    expect(repository.cloud.snapshot().sameAs(left), isTrue);
+    expect(repository.billDetail(bill).transfers.single.amount, 60);
+  });
+
+  test('two devices pull, merge independent edits, and resolve a row conflict through a Git repository', () async {
+    final root = await Directory.systemTemp.createTemp('dormos-cloud-git-');
+    addTearDown(() => root.delete(recursive: true));
+    final bare = Directory('${root.path}/remote.git')..createSync();
+    Repository.initBasic(path: bare.path, bare: true).free();
+    final a = SqliteDormRepository.open('${root.path}/a.sqlite');
+    final b = SqliteDormRepository.open('${root.path}/b.sqlite');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    final homeA = Directory('${root.path}/a');
+    final homeB = Directory('${root.path}/b');
+    final gitA = GitHubTransport(
+      Directory('${homeA.path}/git'),
+      localTestRemote: bare,
+    );
+    final gitB = GitHubTransport(
+      Directory('${homeB.path}/git'),
+      localTestRemote: bare,
+    );
+    final syncA = CloudSync(a.cloud, SshVault(homeA), gitA);
+    final syncB = CloudSync(b.cloud, SshVault(homeB), gitB);
+    addTearDown(syncA.dispose);
+    addTearDown(syncB.dispose);
+    final key = _syntheticKey();
+    final identityA = CloudSettings(
+      repository: 'https://github.com/test-owner/dorm',
+      operator: '操作者甲',
+    );
+    final identityB = CloudSettings(
+      repository: 'test-owner/dorm',
+      operator: '操作者乙',
+    );
+
+    a.saveMember('原姓名');
+    await syncA.configure(identityA, key);
+    expect(syncA.error, isNull);
+    await syncB.configure(identityB, key);
+    expect(syncB.error, isNull);
+    expect(b.members().single.name, '原姓名');
+    expect(b.cloud.settings!.operator, '操作者乙');
+    final localA = a.members().single.id;
+    final localB = b.members().single.id;
+
+    a.saveMember('独立成员甲');
+    b.saveMember('独立成员乙');
+    await syncA.sync();
+    await syncB.sync();
+    expect(syncB.error, isNull);
+    expect(syncB.conflict, isNull);
+    await syncA.sync();
+    expect(
+      a.members().map((member) => member.name),
+      unorderedEquals(['原姓名', '独立成员甲', '独立成员乙']),
+    );
+
+    a.saveMember('本机甲版本', id: localA);
+    b.saveMember('本机乙版本', id: localB);
+    await syncA.sync();
+    await syncB.sync();
+    expect(syncB.conflict?.merge?.conflicts, hasLength(1));
+    await syncB.resolve(choices: {0: CloudSide.local});
+    expect(syncB.error, isNull);
+    expect(syncB.conflict, isNull);
+    await syncA.sync();
+    expect(
+      a.members().firstWhere((member) => member.id == localA).name,
+      '本机乙版本',
+    );
+    final remote = (await gitA.pull(identityA, key))!;
+    expect(remote.author, '操作者乙');
+    expect(remote.data.encoded, isNot(contains('OPENSSH PRIVATE KEY')));
+    a.saveMember('重启时拉取');
+    await syncA.sync();
+    final reopened = SqliteDormRepository.open('${root.path}/b.sqlite');
+    addTearDown(reopened.close);
+    final restarted = CloudSync(
+      reopened.cloud,
+      SshVault(homeB),
+      GitHubTransport(Directory('${homeB.path}/git'), localTestRemote: bare),
+    );
+    addTearDown(restarted.dispose);
+    await restarted.startup();
+    expect(restarted.error, isNull);
+    expect(reopened.cloud.settings!.operator, '操作者乙');
+    expect(reopened.members().map((member) => member.name), contains('重启时拉取'));
+  });
+}
+
+// Deliberately not a usable private key. The transport test uses a local bare
+// repository, and this fixture exercises the application's key container parser.
+CloudKey _syntheticKey() {
+  Uint8List field(List<int> value) {
+    final length = ByteData(4)..setUint32(0, value.length);
+    return Uint8List.fromList([...length.buffer.asUint8List(), ...value]);
+  }
+
+  final body = [
+    ...utf8.encode('openssh-key-v1\u0000'),
+    ...field(utf8.encode('none')),
+    ...field(utf8.encode('none')),
+    ...field([]),
+    0,
+    0,
+    0,
+    1,
+    ...field(field(utf8.encode('ssh-ed25519'))),
+    ...field([0, 0, 0, 0]),
+  ];
+  return CloudKey(
+    '-----BEGIN OPENSSH PRIVATE KEY-----\n${base64.encode(body)}\n-----END OPENSSH PRIVATE KEY-----',
+    '',
+  );
+}

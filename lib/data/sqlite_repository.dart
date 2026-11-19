@@ -1,10 +1,13 @@
 import 'package:sqlite3/sqlite3.dart';
 
+import '../domain/cloud.dart';
 import '../domain/ledger.dart';
 import '../domain/models.dart';
 import '../domain/repository.dart';
 import '../domain/schedule.dart';
 import 'schema.dart';
+
+part 'sqlite_cloud.dart';
 
 class SqliteDormRepository implements DormRepository {
   SqliteDormRepository._(this._db);
@@ -22,9 +25,12 @@ class SqliteDormRepository implements DormRepository {
           for (final statement in schema) {
             repo._db.execute(statement);
           }
-          repo._db.execute('PRAGMA user_version = 1');
-        } else if (version != 1) {
+        } else if (version != 1 && version != 2) {
           throw const InputException('数据库版本较新，请升级 DormOS 后重试');
+        }
+        if (version != 2) {
+          _SqliteCloudStore.migrate(repo._db);
+          repo._db.execute('PRAGMA user_version = 2');
         }
       });
       return repo;
@@ -35,6 +41,8 @@ class SqliteDormRepository implements DormRepository {
   }
 
   final Database _db;
+
+  CloudStore get cloud => _SqliteCloudStore(this);
 
   T _transaction<T>(T Function() body) {
     _db.execute('BEGIN IMMEDIATE');
@@ -147,7 +155,9 @@ class SqliteDormRepository implements DormRepository {
   List<Bill> bills({int? supplyId}) {
     final filter = supplyId == null ? '' : 'WHERE b.supply_id = ?';
     return _db
-        .select('$_billQuery $filter ORDER BY b.id DESC', [?supplyId])
+        .select('$_billQuery $filter ORDER BY b.created_at DESC, b.id DESC', [
+          ?supplyId,
+        ])
         .map(_bill)
         .toList();
   }
@@ -165,7 +175,7 @@ class SqliteDormRepository implements DormRepository {
     );
     final transfers = _db.select(
       '''SELECT m.name, t.amount, t.created_at FROM transfers t
-      JOIN members m ON m.id = t.member_id WHERE t.bill_id = ? ORDER BY t.id DESC''',
+      JOIN members m ON m.id = t.member_id WHERE t.bill_id = ? ORDER BY t.created_at DESC, t.id DESC''',
       [id],
     );
     return (
@@ -334,13 +344,19 @@ class SqliteDormRepository implements DormRepository {
   void generateShiftsThrough(DateTime through) {
     final end = civilDay(through);
     _transaction(() {
+      final syncEnabled = _db.select('SELECT 1 FROM cloud_settings').isNotEmpty;
+      final members = _db.select(
+        'SELECT id, sync_id, active FROM members ORDER BY ${syncEnabled ? 'sync_id' : 'id'}',
+      );
       final active = [
-        for (final row in _db.select(
-          'SELECT id FROM members WHERE active = 1 ORDER BY id',
-        ))
-          row['id'] as int,
+        for (final row in members)
+          if (row['active'] == 1) row['id'] as int,
       ];
       if (active.isEmpty) return;
+      final ranks = {
+        for (final (index, row) in members.indexed) row['id'] as int: index,
+      };
+      final activeRanks = active.map((id) => ranks[id]!).toList();
       final tasks = _db.select(
         'SELECT * FROM chores WHERE active = 1 AND next_day <= ? ORDER BY id',
         [dayKey(end)],
@@ -352,7 +368,8 @@ class SqliteDormRepository implements DormRepository {
         var day = start;
         var member = task['last_member_id'] as int?;
         while (!day.isAfter(end)) {
-          member = nextAssignee(active, member);
+          member =
+              members[nextAssignee(activeRanks, ranks[member])]['id'] as int;
           _db.execute(
             'INSERT INTO shifts (task_id, day, member_id) VALUES (?,?,?)',
             [taskId, dayKey(day), member],

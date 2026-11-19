@@ -1,16 +1,27 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../data/cloud_sync.dart';
 import '../domain/ledger.dart';
 import '../domain/repository.dart';
 
 class DormController extends ChangeNotifier {
-  DormController(this.repository);
+  DormController(this.repository, {this.cloud}) {
+    cloud?.onDataChanged = notifyListeners;
+  }
 
   final DormRepository repository;
+  final CloudSync? cloud;
 
   void write(void Function() action) {
     action();
     notifyListeners();
+    cloud?.changed();
+  }
+
+  @override
+  void dispose() {
+    cloud?.dispose();
+    super.dispose();
   }
 }
 

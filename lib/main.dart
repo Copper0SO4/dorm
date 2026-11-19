@@ -1,8 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:git2dart/git2dart.dart' as git;
 import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'data/cloud_sync.dart';
+import 'data/github_transport.dart';
+import 'data/ssh_vault.dart';
 import 'data/sqlite_repository.dart';
 import 'ui/app.dart';
 import 'ui/common.dart';
@@ -19,9 +24,24 @@ class DormBootstrap extends StatefulWidget {
   State<DormBootstrap> createState() => _DormBootstrapState();
 }
 
-class _DormBootstrapState extends State<DormBootstrap> {
+class _DormBootstrapState extends State<DormBootstrap>
+    with WidgetsBindingObserver {
   SqliteDormRepository? _repository;
+  DormController? _controller;
   late Future<DormController> _initialization = _open();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_controller?.cloud?.sync());
+    }
+  }
 
   Future<DormController> _open() async {
     final base = await getApplicationSupportDirectory();
@@ -32,11 +52,23 @@ class _DormBootstrapState extends State<DormBootstrap> {
       '${directory.path}${Platform.pathSeparator}dormos.sqlite3',
     );
     _repository = repository;
-    return DormController(repository);
+    final cloud = CloudSync(
+      repository.cloud,
+      SshVault(directory),
+      GitHubTransport(
+        Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
+      ),
+      initialize: git.PlatformSpecific.initialize,
+    );
+    final controller = _controller = DormController(repository, cloud: cloud);
+    await cloud.startup();
+    return controller;
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
     _repository?.close();
     super.dispose();
   }

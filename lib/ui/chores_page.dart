@@ -42,6 +42,7 @@ class _ChoresPageState extends State<ChoresPage> {
     final repository = widget.controller.repository;
     try {
       repository.generateShiftsThrough(_end);
+      widget.controller.cloud?.changed();
       _shifts = repository.shifts(_start, _end);
       _error = null;
     } catch (error) {
@@ -436,6 +437,7 @@ Future<void> _swap(
   final repository = controller.repository;
   try {
     repository.generateShiftsThrough(through);
+    controller.cloud?.changed();
     final options = repository
         .shifts(day.subtract(const Duration(days: 35)), through)
         .where(

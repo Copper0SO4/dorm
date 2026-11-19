@@ -1,6 +1,6 @@
 # DormOS
 
-DormOS 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite 数据库中，运行时无需联网。
+DormOS 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite，支持离线操作和可选的 GitHub 云同步。
 
 ## 从源码运行 Linux 版
 
@@ -22,6 +22,18 @@ flutter run -d linux
 | 公共物资 | 录入名称、分类、数量、位置、备注和采购状态，按关键词、分类或状态查找。点击「记录采购」将支出记入总账，点击「采购账单」回看关联开销。 |
 
 宽屏显示侧边导航和账单表格，窄屏显示底部导航和卡片。主题默认跟随系统，也可通过顶部按钮切换。
+
+## GitHub 云同步
+
+1. 创建私有 GitHub 仓库。给寝室使用的 SSH 公钥可添加到仓库的 Deploy keys，勾选写入权限。也可使用有该仓库写权限的 GitHub 账户 SSH Key。 [GitHub Deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+2. 在 DormOS 右上角打开「GitHub 云同步」，填写仓库地址和操作者名称。支持仓库的 HTTPS 或 SSH 地址，保存时统一显示为 SSH 地址。操作者名称和可选邮箱用于 Git 提交，会保留到下次打开。
+3. 复制完整的 OpenSSH 私钥，在界面点击「粘贴 SSH 私钥」。加密私钥需要输入口令。不同设备可配置同一个仓库，并分别使用自己的操作者名称和 SSH Key。
+
+应用在启动时优先同步，本地写入后短延迟同步，运行时每 30 秒检查云端更新。启动等待最多 8 秒，网络慢时仍可进入本机界面，连接完成后继续同步。数据只写入专用的 `dormos-data` 分支，其中的 `dormos.json` 保存业务快照。连接采用 GitHub 的 SSH 443 入口并核对官方主机指纹。 [GitHub SSH 443](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) · [主机指纹](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
+
+本机和云端基于上次同步的快照自动合并独立改动。同一条记录的不同改动会在「解决同步冲突」里并列显示，可逐条保留本机或云端版本。首次连接已有两份不同数据时可选一份完整版本。合并会核对账单总额、转账余额和记录关联。
+
+私钥与口令文件保存在应用数据目录的 `cloud-credentials` 下，依赖操作系统的当前用户目录权限或移动设备应用沙盒保护。该目录不进入 Git 分支、同步快照或 Android 系统备份。断开连接会移除此仓库在本机保存的私钥。可复制关闭应用后的 SQLite 文件备份本机数据。
 
 ## 测试和构建
 
@@ -91,6 +103,6 @@ SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Linu
 DormOS 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 作为中文回退字体。字体按 SIL Open Font License 1.1 发布，许可文本保存在 `assets/fonts/OFL-NotoSansSC.txt`。
 
 - 金额以整数分持久化。余分依成员 ID 升序分配。付款者若在参与名单中，其本人份额计入消费，免于给自己转账。累计应收和应付均按成员间实际债权统计。
-- 每项卫生任务独立按成员 ID 轮换。已生成班次保留原负责人，成员变动自下一未生成班次起生效。已停用成员的旧班次会标记状态，可手动改派。打卡记录保存完成时间。
+- 每项卫生任务独立轮换。启用云同步时，设备使用相同的记录顺序。已生成班次保留原负责人，成员变动自下一未生成班次起生效。已停用成员的旧班次会标记状态，可手动改派。打卡记录保存完成时间。
 - 创建采购账单时，待采购物资更新为采购中。到货后可手动调整库存和状态。删除物资会从清单隐藏该物资，关联账单及采购名称快照仍可追溯。
-- 仓储接口与独立转账记录为接入 Supabase/PostgreSQL、撤销与审计预留扩展点。当前版本支持本机离线协作记录，账本暂未提供债务抵消及修改历史账单的功能。
+- 仓储接口与独立转账记录为接入 Supabase/PostgreSQL、撤销与审计预留扩展点。账本暂未提供债务抵消及修改历史账单的功能。
