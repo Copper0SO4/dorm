@@ -80,7 +80,7 @@ Dorm 随应用提供 Git 和 SSH 运行库，生成密钥及同步均可直接�
 
 ### 同步行为
 
-应用在启动时优先同步，本地写入后短延迟同步，运行时每 30 秒检查云端更新。启动等待最多 8 秒，网络慢时仍可进入本机界面，连接完成后继续同步。数据只写入专用的 `dormos-data` 分支，其中的 `dormos.json` 保存业务快照。连接采用 GitHub 的 SSH 443 入口并核对官方主机指纹。 [GitHub SSH 443](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) · [主机指纹](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
+应用在打开本地界面后启动后台同步。本地写入后短延迟同步，运行时每 30 秒检查云端更新。数据只写入专用的 `dormos-data` 分支，其中的 `dormos.json` 保存业务快照。连接采用 GitHub 的 SSH 443 入口并核对官方主机指纹。 [GitHub SSH 443](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) · [主机指纹](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
 
 含寝室事务或批量结算的快照需要同步设备升级至 v0.10.0。没有使用这两个模块的快照仍保持原有版本。
 

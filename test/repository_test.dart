@@ -12,6 +12,7 @@ import 'package:dormos/domain/procurement.dart';
 import 'package:dormos/domain/spending.dart';
 import 'package:dormos/domain/schedule.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 void main() {
   late SqliteDormRepository repo;
@@ -25,6 +26,24 @@ void main() {
   });
 
   tearDown(() => repo.close());
+
+  test('opening a migrated database does not reserve a write lock', () async {
+    final root = await Directory.systemTemp.createTemp('dorm-startup-lock-');
+    addTearDown(() => root.delete(recursive: true));
+    final path = '${root.path}/startup.sqlite3';
+    final original = SqliteDormRepository.open(path);
+    original.saveMember('原有账本');
+    original.close();
+
+    final writer = sqlite3.open(path);
+    addTearDown(writer.close);
+    writer.execute('BEGIN IMMEDIATE');
+    final reopened = SqliteDormRepository.open(path);
+    addTearDown(reopened.close);
+    expect(reopened.members().single.name, '原有账本');
+    expect(reopened.preferences.startupPage, StartupPage.ledger);
+    writer.execute('ROLLBACK');
+  });
 
   test('nonparticipant payer can receive partial and full repayments', () {
     final id = repo.addBill(

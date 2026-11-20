@@ -18,8 +18,27 @@ void main() {
   runApp(const DormBootstrap());
 }
 
+Future<DormController> _openDorm() async {
+  final directory = await dormDataDirectory();
+  await directory.create(recursive: true);
+  final repository = SqliteDormRepository.open(
+    '${directory.path}${Platform.pathSeparator}dormos.sqlite3',
+  );
+  final cloud = CloudSync(
+    repository.cloud,
+    SshVault(directory),
+    GitHubTransport(
+      Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
+    ),
+    initialize: git.PlatformSpecific.initialize,
+  );
+  return DormController(repository, cloud: cloud);
+}
+
 class DormBootstrap extends StatefulWidget {
-  const DormBootstrap({super.key});
+  const DormBootstrap({super.key, this.openController = _openDorm});
+
+  final Future<DormController> Function() openController;
 
   @override
   State<DormBootstrap> createState() => _DormBootstrapState();
@@ -27,8 +46,8 @@ class DormBootstrap extends StatefulWidget {
 
 class _DormBootstrapState extends State<DormBootstrap>
     with WidgetsBindingObserver {
-  SqliteDormRepository? _repository;
   DormController? _controller;
+  bool _scheduledSync = false;
   late Future<DormController> _initialization = _open();
 
   @override
@@ -39,37 +58,26 @@ class _DormBootstrapState extends State<DormBootstrap>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (_scheduledSync && state == AppLifecycleState.resumed) {
       unawaited(_controller?.cloud?.sync());
     }
   }
 
   Future<DormController> _open() async {
-    final directory = await dormDataDirectory();
-    await directory.create(recursive: true);
-    if (!mounted) throw StateError('Startup was interrupted');
-    final repository = SqliteDormRepository.open(
-      '${directory.path}${Platform.pathSeparator}dormos.sqlite3',
-    );
-    _repository = repository;
-    final cloud = CloudSync(
-      repository.cloud,
-      SshVault(directory),
-      GitHubTransport(
-        Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
-      ),
-      initialize: git.PlatformSpecific.initialize,
-    );
-    final controller = _controller = DormController(repository, cloud: cloud);
-    await cloud.startup();
-    return controller;
+    final controller = await widget.openController();
+    if (!mounted) {
+      controller.dispose();
+      controller.repository.close();
+      throw StateError('Startup was interrupted');
+    }
+    return _controller = controller;
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
-    _repository?.close();
+    _controller?.repository.close();
     super.dispose();
   }
 
@@ -77,7 +85,15 @@ class _DormBootstrapState extends State<DormBootstrap>
   Widget build(BuildContext context) => FutureBuilder<DormController>(
     future: _initialization,
     builder: (context, snapshot) {
-      if (snapshot.hasData) return DormApp(controller: snapshot.data!);
+      if (snapshot.data case final controller?) {
+        if (!_scheduledSync) {
+          _scheduledSync = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(controller.cloud?.startup());
+          });
+        }
+        return DormApp(controller: controller);
+      }
       return MaterialApp(
         debugShowCheckedModeBanner: false,
         title: dormFullName,

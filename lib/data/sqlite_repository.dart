@@ -20,54 +20,7 @@ class SqliteDormRepository implements DormRepository {
     try {
       repo._db.execute('PRAGMA busy_timeout = 2000');
       repo._db.execute('PRAGMA foreign_keys = ON');
-      repo._transaction(() {
-        final version =
-            repo._db.select('PRAGMA user_version').single['user_version']
-                as int;
-        if (version == 0) {
-          for (final statement in schema) {
-            repo._db.execute(statement);
-          }
-        } else if (version < 0 || version > 6) {
-          throw const InputException('数据库版本较新，请升级 Dorm 后重试');
-        }
-        if (version == 0 || version == 1) {
-          _SqliteCloudStore.migrate(repo._db);
-        }
-        if (version < 3) {
-          repo._db.execute(
-            'ALTER TABLE cloud_settings ADD COLUMN use_device_key '
-            'INTEGER NOT NULL DEFAULT 0 CHECK(use_device_key IN (0, 1))',
-          );
-        }
-        if (version < 4) {
-          repo._db.execute(
-            'ALTER TABLE shares ADD COLUMN personal_amount '
-            'INTEGER NOT NULL DEFAULT 0 CHECK(personal_amount BETWEEN 0 AND amount)',
-          );
-        }
-        if (version < 5) {
-          repo._db.execute(
-            "ALTER TABLE transfers ADD COLUMN batch_id TEXT "
-            "CHECK(batch_id IS NULL OR (length(batch_id)=32 AND batch_id NOT GLOB '*[^a-f0-9]*'))",
-          );
-          repo._db.execute(
-            'CREATE INDEX transfers_batch ON transfers(batch_id) WHERE batch_id IS NOT NULL',
-          );
-          repo._db.execute(mattersSchema);
-          _SqliteCloudStore.addSyncIds(repo._db, 'matters');
-        }
-        if (version < 6) {
-          repo._db.execute(
-            'ALTER TABLE bills ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0 '
-            'CHECK(deleted IN (0, 1))',
-          );
-          repo._db.execute('PRAGMA user_version = 6');
-        }
-        repo._db.execute(
-          'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
-        );
-      });
+      repo._migrate();
       return repo;
     } catch (_) {
       repo.close();
@@ -76,6 +29,62 @@ class SqliteDormRepository implements DormRepository {
   }
 
   final Database _db;
+
+  static const _currentSchemaVersion = 6;
+
+  int get _schemaVersion =>
+      _db.select('PRAGMA user_version').single['user_version'] as int;
+
+  void _migrate() {
+    if (_schemaVersion == _currentSchemaVersion) return;
+    _transaction(() {
+      final version = _schemaVersion;
+      if (version == _currentSchemaVersion) return;
+      if (version == 0) {
+        for (final statement in schema) {
+          _db.execute(statement);
+        }
+      } else if (version < 0 || version > _currentSchemaVersion) {
+        throw const InputException('数据库版本较新，请升级 Dorm 后重试');
+      }
+      if (version == 0 || version == 1) {
+        _SqliteCloudStore.migrate(_db);
+      }
+      if (version < 3) {
+        _db.execute(
+          'ALTER TABLE cloud_settings ADD COLUMN use_device_key '
+          'INTEGER NOT NULL DEFAULT 0 CHECK(use_device_key IN (0, 1))',
+        );
+      }
+      if (version < 4) {
+        _db.execute(
+          'ALTER TABLE shares ADD COLUMN personal_amount '
+          'INTEGER NOT NULL DEFAULT 0 CHECK(personal_amount BETWEEN 0 AND amount)',
+        );
+      }
+      if (version < 5) {
+        _db.execute(
+          "ALTER TABLE transfers ADD COLUMN batch_id TEXT "
+          "CHECK(batch_id IS NULL OR (length(batch_id)=32 AND batch_id NOT GLOB '*[^a-f0-9]*'))",
+        );
+        _db.execute(
+          'CREATE INDEX transfers_batch ON transfers(batch_id) WHERE batch_id IS NOT NULL',
+        );
+        _db.execute(mattersSchema);
+        _SqliteCloudStore.addSyncIds(_db, 'matters');
+      }
+      if (version < 6) {
+        _db.execute(
+          'ALTER TABLE bills ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0 '
+          'CHECK(deleted IN (0, 1))',
+        );
+      }
+      _db.execute(
+        'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
+      );
+      _db.execute('PRAGMA user_version = $_currentSchemaVersion');
+    });
+  }
 
   CloudStore get cloud => _SqliteCloudStore(this);
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,7 @@ import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/domain/models.dart';
+import 'package:dormos/main.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +22,70 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 void main() {
+  testWidgets('opens and saves local bills while startup sync is pending', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 850));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final local = SqliteDormRepository.open(':memory:');
+    local.saveMember('甲');
+    local.saveMember('乙');
+    local.addBill(
+      const BillDraft(
+        title: '本地原账单',
+        sharedAmount: 1000,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    local.cloud.saveSettings(
+      CloudSettings(
+        repository: 'room/dorm',
+        operator: '测试',
+        useDeviceKey: true,
+      ),
+    );
+    final snapshot = local.cloud.snapshot();
+    local.cloud.rememberBase(snapshot);
+    final vault = _WidgetVault(Directory.systemTemp);
+    await vault.generateDevice();
+    final transport = _DelayedStartupTransport();
+    final cloud = CloudSync(local.cloud, vault, transport);
+    final controller = DormController(local, cloud: cloud);
+    await tester.pumpWidget(
+      DormBootstrap(openController: () async => controller),
+    );
+    await tester.pump();
+    expect(find.text('本地原账单'), findsOneWidget);
+    expect(transport.pulls, 1);
+    expect(cloud.busy, isTrue);
+    expect(transport.remote.isCompleted, isFalse);
+
+    await tester.tap(find.text('新建账单'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), '同步期间新增');
+    await tester.enterText(fields.at(1), '5');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('写入总账'));
+    await tester.pumpAndSettle();
+    expect(find.text('同步期间新增'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 8));
+    expect(cloud.busy, isTrue);
+    transport.remote.complete((
+      revision: 'before',
+      author: '测试',
+      data: snapshot,
+    ));
+    await tester.pumpAndSettle();
+    expect(cloud.lastSynced, isNotNull);
+    expect(cloud.error, isNull);
+    expect(transport.uploaded?.data.tables['bills'], hasLength(2));
+    expect(find.text('同步期间新增'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'desktop settings normalize the Git URL, mask the key, and copy the full key',
     (tester) async {
@@ -525,4 +591,31 @@ class _WidgetVault extends SshVault {
 
   @override
   Future<CloudKey> generateDevice() async => _deviceKey ??= _syntheticKey();
+}
+
+class _DelayedStartupTransport implements CloudTransport {
+  final remote = Completer<RemoteCloud?>();
+  int pulls = 0;
+  RemoteCloud? uploaded;
+
+  @override
+  Future<RemoteCloud?> pull(
+    CloudSettings settings,
+    CloudKey key, {
+    CloudProxy? proxy,
+  }) async {
+    pulls++;
+    return uploaded ?? await remote.future;
+  }
+
+  @override
+  Future<void> push(
+    CloudSettings settings,
+    CloudKey key,
+    CloudSnapshot data,
+    String? expectedRevision, {
+    CloudProxy? proxy,
+  }) async {
+    uploaded = (revision: 'after', author: settings.operator, data: data);
+  }
 }
