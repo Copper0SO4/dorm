@@ -124,6 +124,16 @@ git rev-parse HEAD
 
 在 x86_64 Windows 主机使用 x64 Flutter。Flutter 3.50 按 Windows 宿主架构选择构建目标。归档整个 `build\windows\x64\runner\Release`，其中包含程序、Flutter 引擎、插件 DLL 和数据文件。
 
+### Windows x64 安装包
+
+运行 `Dorm-Windows-x64-Setup-v<版本>.exe`，可自选安装路径并添加桌面快捷方式。默认装在当前用户的 `%LocalAppData%\Programs\Dorm`，开始菜单可搜索 Dorm。可在「设置 → 应用 → 已安装的应用」卸载。覆盖安装或卸载都保留 Dorm 的本机业务数据。
+
+已有 Windows Release 时，在 Windows 侧运行以下命令打包。脚本使用 Inno Setup 7 和 Visual Studio 的 x64 Redistributable，将需要的 C++ 运行库放在应用目录。可以用 `-RuntimeDir` 指定 Visual Studio 的 `x64\Microsoft.VC*.CRT` 目录。
+
+```powershell
+.\tool\package-windows.ps1 -InnoCompiler $iscc -ReleaseDir $releaseDir -OutputDir $outputDir
+```
+
 ### Android ARM64 构建
 
 在 Debian 的同一 Git 提交使用 Linux Flutter、OpenJDK 21 和 Linux 版 [Android SDK Command-line Tools](https://developer.android.com/studio#command-tools)。JDK 负责运行 Gradle 与编译 Java，Android SDK 提供 API 36 的编译库及 APK 工具。可以请设备维护人运行 `sudo apt install openjdk-21-jdk-headless`，再将命令行工具解压至 `~/.local/opt/android-sdk/cmdline-tools/latest`。`bin/sdkmanager` 应直接位于该目录下。以下环境变量只用于当前终端。
