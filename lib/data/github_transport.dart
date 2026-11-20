@@ -344,7 +344,7 @@ void _publish(
           updateRef: outgoing,
           author: signature,
           committer: signature,
-          message: 'Sync DormOS data',
+          message: 'Sync Dorm data',
           tree: tree,
           parents: [?parent],
         );

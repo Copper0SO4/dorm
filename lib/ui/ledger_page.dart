@@ -74,7 +74,7 @@ class _LedgerPageState extends State<LedgerPage> {
               icon: Icons.receipt_long_outlined,
               title: '还没有公共账单',
               detail: haveMembers
-                  ? '记下第一笔共同开销，DormOS 会算出各成员的分摊。'
+                  ? '记下第一笔共同开销，Dorm 会算出各成员的分摊。'
                   : '先添加寝室成员，再开始记录共同开销。',
               action: TextButton.icon(
                 onPressed: haveMembers

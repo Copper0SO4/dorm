@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
@@ -18,6 +21,21 @@ void main() {
     repo.close();
   });
 
+  test(
+    'renamed Windows application still resolves the old data directory',
+    () async {
+      final roaming = Platform.environment['APPDATA']!;
+      final expected = [
+        roaming,
+        'org.dormos',
+        'dormos',
+        'dormos',
+      ].join(Platform.pathSeparator);
+      expect((await dormDataDirectory()).path, expected);
+    },
+    skip: !Platform.isWindows,
+  );
+
   testWidgets('desktop creates and settles a bill through dialogs', (
     tester,
   ) async {
@@ -28,6 +46,8 @@ void main() {
     await tester.pumpWidget(DormApp(controller: controller));
     await tester.pumpAndSettle();
     expect(find.byType(NavigationRail), findsOneWidget);
+    expect(find.text('Dorm'), findsOneWidget);
+    expect(find.text('DormOS'), findsNothing);
     await tester.tap(find.text('新建账单'));
     await tester.pumpAndSettle();
     final fields = find.byType(TextFormField);
@@ -106,6 +126,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('寝室成员'), findsOneWidget);
     expect(find.text('卫生任务'), findsOneWidget);
+    expect(find.text("Dorm Organizes Roomates' Matters"), findsOneWidget);
     await tester.tap(find.byType(DropdownButtonFormField<ThemeMode>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('深色').last);

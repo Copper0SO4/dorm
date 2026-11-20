@@ -91,7 +91,7 @@ class CloudKey {
       ...check,
       ...publicBlob,
       ..._sshField([...material.bytes, ...public]),
-      ..._sshField(utf8.encode('DormOS')),
+      ..._sshField(utf8.encode('Dorm')),
     ];
     final padding = (8 - privateBlob.length % 8) % 8;
     final encoded = base64.encode([

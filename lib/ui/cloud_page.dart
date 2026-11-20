@@ -212,7 +212,7 @@ class _CloudSettingsPanelState extends State<CloudSettingsPanel> {
               else if (snapshot.hasError)
                 Text(errorText(snapshot.error!, fallback: '无法读取或生成设备密钥'))
               else if (publicKey == null)
-                const Text('在本机生成 Ed25519 密钥。生成后可复制公钥，私钥由 DormOS 保存。')
+                const Text('在本机生成 Ed25519 密钥。生成后可复制公钥，私钥由 Dorm 保存。')
               else ...[
                 const Text(
                   '将公钥添加到 GitHub 仓库的 Deploy keys，并勾选 Allow write access。',
@@ -412,7 +412,7 @@ class _CloudEditorState extends State<_CloudEditor> {
         final accepted = await confirm(
           context,
           '切换同步仓库',
-          '当前本机数据将用于与新仓库同步。若新仓库为空，DormOS 会上传当前账本、排班和物资。',
+          '当前本机数据将用于与新仓库同步。若新仓库为空，Dorm 会上传当前账本、排班和物资。',
           action: '切换并同步',
         );
         if (!mounted || !accepted) return;

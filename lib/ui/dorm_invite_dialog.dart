@@ -13,7 +13,7 @@ import 'common.dart';
 
 typedef ImportedDormInvite = ({String repository, CloudKey? key});
 
-const _dormType = XTypeGroup(label: 'DormOS 邀请', extensions: ['dorm']);
+const _dormType = XTypeGroup(label: 'Dorm 邀请', extensions: ['dorm']);
 
 Future<ImportedDormInvite?> chooseDormInvite(BuildContext context) async {
   final file = await openFile(

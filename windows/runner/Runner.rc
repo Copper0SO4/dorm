@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "org.dormos" "\0"
-            VALUE "FileDescription", "dormos" "\0"
+            VALUE "FileDescription", "Dorm Organizes Roomates' Matters" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "dormos" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 org.dormos. All rights reserved." "\0"
-            VALUE "OriginalFilename", "dormos.exe" "\0"
-            VALUE "ProductName", "dormos" "\0"
+            VALUE "OriginalFilename", "Dorm.exe" "\0"
+            VALUE "ProductName", "Dorm" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

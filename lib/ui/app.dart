@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../app_identity.dart';
 import 'chores_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
@@ -91,7 +92,7 @@ class _DormAppState extends State<DormApp> {
     valueListenable: _mode,
     builder: (context, mode, _) => MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'DormOS',
+      title: dormName,
       theme: dormTheme(Brightness.light),
       darkTheme: dormTheme(Brightness.dark),
       themeMode: mode,
@@ -204,7 +205,7 @@ class _Brand extends StatelessWidget {
         ),
         const SizedBox(width: 10),
         Text(
-          'DormOS',
+          dormName,
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w900,
             letterSpacing: -0.8,

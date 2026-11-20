@@ -3,10 +3,11 @@ import 'dart:io';
 
 import 'package:git2dart/git2dart.dart' as git;
 import 'package:material_ui/material_ui.dart';
-import 'package:path_provider/path_provider.dart';
 
+import 'app_identity.dart';
 import 'data/cloud_sync.dart';
 import 'data/github_transport.dart';
+import 'data/local_directory.dart';
 import 'data/ssh_vault.dart';
 import 'data/sqlite_repository.dart';
 import 'ui/app.dart';
@@ -44,8 +45,7 @@ class _DormBootstrapState extends State<DormBootstrap>
   }
 
   Future<DormController> _open() async {
-    final base = await getApplicationSupportDirectory();
-    final directory = Directory('${base.path}${Platform.pathSeparator}dormos');
+    final directory = await dormDataDirectory();
     await directory.create(recursive: true);
     if (!mounted) throw StateError('Startup was interrupted');
     final repository = SqliteDormRepository.open(
@@ -80,6 +80,7 @@ class _DormBootstrapState extends State<DormBootstrap>
       if (snapshot.hasData) return DormApp(controller: snapshot.data!);
       return MaterialApp(
         debugShowCheckedModeBanner: false,
+        title: dormName,
         theme: dormTheme(Brightness.light),
         darkTheme: dormTheme(Brightness.dark),
         home: Scaffold(

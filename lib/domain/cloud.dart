@@ -156,7 +156,7 @@ class CloudSnapshot {
     }
     final format = value['format'];
     if (format is! int || (format != 1 && format != 2)) {
-      throw const InputException('云端文件版本不受支持，请检查 DormOS 更新');
+      throw const InputException('云端文件版本不受支持，请检查 Dorm 更新');
     }
     final rawTables = value['tables'] as Map<String, dynamic>;
     if (rawTables.length != cloudTables.length) {

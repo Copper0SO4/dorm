@@ -26,7 +26,7 @@ class SqliteDormRepository implements DormRepository {
             repo._db.execute(statement);
           }
         } else if (version < 0 || version > 4) {
-          throw const InputException('数据库版本较新，请升级 DormOS 后重试');
+          throw const InputException('数据库版本较新，请升级 Dorm 后重试');
         }
         if (version == 0 || version == 1) {
           _SqliteCloudStore.migrate(repo._db);

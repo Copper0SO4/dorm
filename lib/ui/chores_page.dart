@@ -513,7 +513,7 @@ Future<void> showChoreTasks(BuildContext context, DormController controller) =>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (tasks.isEmpty) const Text('添加卫生任务后，DormOS 会按设定频率轮换。'),
+                  if (tasks.isEmpty) const Text('添加卫生任务后，Dorm 会按设定频率轮换。'),
                   for (final task in tasks)
                     ListTile(
                       contentPadding: EdgeInsets.zero,

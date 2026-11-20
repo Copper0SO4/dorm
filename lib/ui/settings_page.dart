@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../app_identity.dart';
 import 'chores_page.dart';
 import 'cloud_page.dart';
 import 'common.dart';
@@ -107,6 +108,13 @@ class _SettingsPage extends StatelessWidget {
                 onTap: () => showChoreTasks(context, controller),
               ),
             ],
+          ),
+        ),
+        const Card(
+          child: ListTile(
+            leading: Icon(Icons.info_outline),
+            title: Text(dormName),
+            subtitle: Text(dormFullName),
           ),
         ),
       ],

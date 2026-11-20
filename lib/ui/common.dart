@@ -27,7 +27,7 @@ class DormController extends ChangeNotifier {
 
 String errorText(Object error, {String fallback = '操作失败，请重试。'}) {
   if (error is InputException) return error.message;
-  debugPrint('DormOS operation failed: ${error.runtimeType}');
+  debugPrint('Dorm operation failed: ${error.runtimeType}');
   return fallback;
 }
 

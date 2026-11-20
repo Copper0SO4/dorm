@@ -1,6 +1,8 @@
-# DormOS
+# Dorm
 
-DormOS 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite，支持离线操作和可选的 GitHub 云同步。
+**Dorm Organizes Roomates' Matters**
+
+Dorm 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite，支持离线操作和可选的 GitHub 云同步。
 
 ## 从源码运行 Linux 版
 
@@ -27,11 +29,11 @@ flutter run -d linux
 
 ## GitHub 云同步
 
-1. 创建私有 GitHub 仓库。在 DormOS 右上角打开「设置」，找到「GitHub 云同步」，点击「生成 SSH 密钥」，再点击「复制公钥」。
+1. 创建私有 GitHub 仓库。在 Dorm 右上角打开「设置」，找到「GitHub 云同步」，点击「生成 SSH 密钥」，再点击「复制公钥」。
 2. 在仓库的 Settings → Deploy keys 添加这段公钥，勾选 Allow write access。不同设备各自生成密钥，都可以连接同一个仓库。 [GitHub Deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-3. 回到 DormOS，点击「配置仓库」，输入仓库地址与操作者名称，保留「使用设备 SSH 密钥」，然后保存。仓库的 HTTPS 地址会转换为 SSH 地址，操作者和可选邮箱会保留并用于 Git 提交。已有 OpenSSH 私钥仍可通过「粘贴 SSH 私钥」导入，若私钥已加密，请填写口令。
+3. 回到 Dorm，点击「配置仓库」，输入仓库地址与操作者名称，保留「使用设备 SSH 密钥」，然后保存。仓库的 HTTPS 地址会转换为 SSH 地址，操作者和可选邮箱会保留并用于 Git 提交。已有 OpenSSH 私钥仍可通过「粘贴 SSH 私钥」导入，若私钥已加密，请填写口令。
 
-DormOS 随应用提供 Git 和 SSH 运行库，生成密钥及同步均可直接在应用中完成。生成的 Ed25519 私钥存放在本机受操作系统权限保护的应用目录。界面以星号遮挡公钥中段。「复制公钥」可将完整公钥复制到剪贴板。断开仓库后仍可继续使用该设备密钥。
+Dorm 随应用提供 Git 和 SSH 运行库，生成密钥及同步均可直接在应用中完成。生成的 Ed25519 私钥存放在本机受操作系统权限保护的应用目录。界面以星号遮挡公钥中段。「复制公钥」可将完整公钥复制到剪贴板。断开仓库后仍可继续使用该设备密钥。
 
 ### 代理设置
 
@@ -41,7 +43,7 @@ DormOS 随应用提供 Git 和 SSH 运行库，生成密钥及同步均可直接
 
 仓库配置完成后，在「GitHub 云同步」点击「导出 .dorm」。默认导出仓库地址，接收者可使用自己的 SSH 密钥。如果需要共享已授权的私钥，勾选「用口令加密后共享当前 SSH 私钥」，输入独立的邀请口令。文件与口令应通过不同渠道发送。能解锁该文件的成员会获得这把密钥对应的 GitHub 权限。
 
-接收者在同一页面点击「导入 .dorm」，选择文件并按提示输入邀请口令，再核对仓库地址、填写自己的操作者名称并保存。邀请不包含寝室业务数据或发送者身份。当前 DormOS 只有一套本机寝室数据，切换同步仓库前请核对目标。
+接收者在同一页面点击「导入 .dorm」，选择文件并按提示输入邀请口令，再核对仓库地址、填写自己的操作者名称并保存。邀请不包含寝室业务数据或发送者身份。当前 Dorm 只有一套本机寝室数据，切换同步仓库前请核对目标。
 
 ### 同步行为
 
@@ -65,7 +67,7 @@ Linux 分发需要整个 `build/linux/x64/release/bundle`。解包后从图形�
 
 ### Windows x86_64 构建
 
-从同一个 Git 提交克隆到独立的 Windows 原生工作目录，使用对应版本的 Windows Flutter。Visual Studio 需要「使用 C++ 的桌面开发」工作负载及 MSVC x64、Windows SDK 和 CMake 工具。用 Windows 端的 `flutter doctor -v` 检查 Visual Studio。可以从 WSL 启动 `powershell.exe -NoProfile`。在 Windows PowerShell 中，将 `$bundle` 指向交付的 `DormOS-source.bundle`，并指定新的 Windows 工作目录和 SDK 路径。
+从同一个 Git 提交克隆到独立的 Windows 原生工作目录，使用对应版本的 Windows Flutter。Visual Studio 需要「使用 C++ 的桌面开发」工作负载及 MSVC x64、Windows SDK 和 CMake 工具。用 Windows 端的 `flutter doctor -v` 检查 Visual Studio。可以从 WSL 启动 `powershell.exe -NoProfile`。在 Windows PowerShell 中，将 `$bundle` 指向交付的 `Dorm-source.bundle`，并指定新的 Windows 工作目录和 SDK 路径。
 
 ```powershell
 git clone --branch main $bundle $windowsWorktree
@@ -74,7 +76,7 @@ git rev-parse HEAD
 & $windowsFlutter doctor -v
 & $windowsFlutter pub get --enforce-lockfile
 & $windowsFlutter build windows --release
-& '.\build\windows\x64\runner\Release\dormos.exe'
+& '.\build\windows\x64\runner\Release\Dorm.exe'
 ```
 
 在 x86_64 Windows 主机使用 x64 Flutter。Flutter 3.50 按 Windows 宿主架构选择构建目标。归档整个 `build\windows\x64\runner\Release`，其中包含程序、Flutter 引擎、插件 DLL 和数据文件。
@@ -114,9 +116,9 @@ unzip -Z1 build/app/outputs/flutter-apk/app-release.apk | grep '^lib/'
 | `test/` | 数据、业务规则和 Widget 测试 |
 | `docs/development.md` | 开发与 AI 辅助记录 |
 
-SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Linux 应用支持目录默认使用 `$XDG_DATA_HOME`（未设置时为 `~/.local/share`）。关闭应用后可以复制该数据库文件做备份。业务数据在同一台设备上重启后保留。
+SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Linux 应用支持目录默认使用 `$XDG_DATA_HOME`（未设置时为 `~/.local/share`）。Windows 沿用早期版本在 `org.dormos/dormos` 下的应用支持目录。关闭应用后可以复制该数据库文件做备份。业务数据在同一台设备上重启后保留。
 
-DormOS 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 作为中文回退字体。字体按 SIL Open Font License 1.1 发布，许可文本保存在 `assets/fonts/OFL-NotoSansSC.txt`。
+Dorm 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 作为中文回退字体。字体按 SIL Open Font License 1.1 发布，许可文本保存在 `assets/fonts/OFL-NotoSansSC.txt`。
 
 - 金额以整数分持久化。余分依成员 ID 升序分配。付款者若在参与名单中，其本人份额计入消费，免于给自己转账。累计应收和应付均按成员间实际债权统计。
 - 每项卫生任务独立轮换。启用云同步时，设备使用相同的记录顺序。已生成班次保留原负责人，成员变动自下一未生成班次起生效。已停用成员的旧班次会标记状态，可手动改派。打卡记录保存完成时间。
