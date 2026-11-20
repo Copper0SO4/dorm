@@ -73,6 +73,10 @@ class CloudTable {
   final List<String> keyColumns;
 
   bool get hasSyncId => keyColumns.isEmpty;
+
+  List<String> wireColumns(int format) => format == 1 && name == 'shares'
+      ? const ['bill_id', 'member_id', 'amount']
+      : columns;
   String keyOf(Map<String, Object?> row) =>
       keyColumns.map((column) => row[column]).join('/');
 }
@@ -97,7 +101,7 @@ const cloudTables = [
   CloudTable(
     'shares',
     '分摊',
-    ['bill_id', 'member_id', 'amount'],
+    ['bill_id', 'member_id', 'amount', 'personal_amount'],
     references: {'bill_id': 'bills', 'member_id': 'members'},
     keyColumns: ['bill_id', 'member_id'],
   ),
@@ -134,7 +138,9 @@ class CloudSnapshot {
                 in (input[table.name]?.keys.toList() ?? <String>[])..sort())
               key: Map<String, Object?>.unmodifiable({
                 for (final column in table.columns)
-                  column: input[table.name]![key]![column],
+                  column: column == 'personal_amount'
+                      ? input[table.name]![key]![column] ?? 0
+                      : input[table.name]![key]![column],
               }),
           }),
       });
@@ -145,9 +151,12 @@ class CloudSnapshot {
     }
     final value = jsonDecode(encoded);
     if (value is! Map<String, dynamic> ||
-        value['format'] != 1 ||
         value['tables'] is! Map<String, dynamic>) {
       throw const InputException('云端文件格式不受支持');
+    }
+    final format = value['format'];
+    if (format is! int || (format != 1 && format != 2)) {
+      throw const InputException('云端文件版本不受支持，请检查 DormOS 更新');
     }
     final rawTables = value['tables'] as Map<String, dynamic>;
     if (rawTables.length != cloudTables.length) {
@@ -157,6 +166,7 @@ class CloudSnapshot {
     final syncId = RegExp(r'^[a-f0-9]{32}$');
     for (final table in cloudTables) {
       final rows = rawTables[table.name];
+      final columns = table.wireColumns(format);
       if (rows is! Map<String, dynamic>) {
         throw const InputException('云端文件表结构不完整');
       }
@@ -164,8 +174,8 @@ class CloudSnapshot {
       for (final entry in rows.entries) {
         final row = entry.value;
         if (row is! Map<String, dynamic> ||
-            row.length != table.columns.length ||
-            !table.columns.every(row.containsKey) ||
+            row.length != columns.length ||
+            !columns.every(row.containsKey) ||
             row.values.any(
               (value) => value != null && value is! int && value is! String,
             ) ||
@@ -194,6 +204,16 @@ class CloudSnapshot {
             throw InputException('云端${table.label}的日期格式不正确');
           }
         }
+        if (format == 2 && table.name == 'shares') {
+          final amount = row['amount'];
+          final personal = row['personal_amount'];
+          if (amount is! int ||
+              personal is! int ||
+              personal < 0 ||
+              personal > amount) {
+            throw const InputException('云端账单的个人费用无效');
+          }
+        }
         decoded[entry.key] = row;
       }
       tables[table.name] = decoded;
@@ -203,7 +223,29 @@ class CloudSnapshot {
 
   final Map<String, CloudRows> tables;
 
-  late final String encoded = jsonEncode({'format': 1, 'tables': tables});
+  late final String encoded = _encode();
+
+  String _encode() {
+    final shares = tables['shares']!;
+    if (shares.values.any((row) => row['personal_amount'] != 0)) {
+      return jsonEncode({'format': 2, 'tables': tables});
+    }
+    // Ordinary bills retain the original wire format for older clients.
+    return jsonEncode({
+      'format': 1,
+      'tables': {
+        ...tables,
+        'shares': {
+          for (final entry in shares.entries)
+            entry.key: {
+              for (final column in const ['bill_id', 'member_id', 'amount'])
+                column: entry.value[column],
+            },
+        },
+      },
+    });
+  }
+
   bool get isEmpty => tables.values.every((rows) => rows.isEmpty);
   bool sameAs(CloudSnapshot other) => encoded == other.encoded;
 }

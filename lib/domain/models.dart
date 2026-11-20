@@ -13,15 +13,31 @@ typedef Bill = ({
   int outstanding,
 });
 
-typedef BillDraft = ({
-  String title,
-  int total,
-  int payerId,
-  List<int> participantIds,
-  int? supplyId,
-});
+class BillDraft {
+  const BillDraft({
+    required this.title,
+    required this.sharedAmount,
+    required this.payerId,
+    required this.participantIds,
+    this.personalAmounts = const {},
+    this.supplyId,
+  });
 
-typedef Share = ({int memberId, String member, int amount, int paid});
+  final String title;
+  final int sharedAmount;
+  final int payerId;
+  final List<int> participantIds;
+  final Map<int, int> personalAmounts;
+  final int? supplyId;
+}
+
+typedef Share = ({
+  int memberId,
+  String member,
+  int amount,
+  int personalAmount,
+  int paid,
+});
 
 typedef Transfer = ({String member, int amount, String createdAt});
 

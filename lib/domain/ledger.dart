@@ -36,3 +36,32 @@ Map<int, int> splitEvenly(int cents, Iterable<int> participants) {
     for (var i = 0; i < ids.length; i++) ids[i]: base + (i < remainder ? 1 : 0),
   };
 }
+
+/// The payer advances both parts. Each personal cost belongs to one member.
+({int total, Map<int, int> shares}) allocateBill(
+  int sharedAmount,
+  Iterable<int> participants,
+  Map<int, int> personalAmounts,
+) {
+  final shares = sharedAmount == 0
+      ? <int, int>{}
+      : splitEvenly(sharedAmount, participants);
+  var total = sharedAmount;
+  for (final entry in personalAmounts.entries) {
+    final amount = entry.value;
+    if (amount <= 0 || amount > maxAmountCents) {
+      throw const InputException('每位成员的个人费用须为 0.01 至 9999999.99 元');
+    }
+    total += amount;
+    if (total > maxAmountCents) {
+      throw const InputException('公共费用和个人费用合计不能超过 9999999.99 元');
+    }
+    shares.update(
+      entry.key,
+      (shared) => shared + amount,
+      ifAbsent: () => amount,
+    );
+  }
+  if (total == 0) throw const InputException('请填写公共费用或个人费用');
+  return (total: total, shares: shares);
+}

@@ -20,13 +20,15 @@ void main() {
   tearDown(() => repo.close());
 
   test('nonparticipant payer can receive partial and full repayments', () {
-    final id = repo.addBill((
-      title: '纸巾',
-      total: 1000,
-      payerId: 4,
-      participantIds: [1, 2, 3],
-      supplyId: null,
-    ));
+    final id = repo.addBill(
+      BillDraft(
+        title: '纸巾',
+        sharedAmount: 1000,
+        payerId: 4,
+        participantIds: [1, 2, 3],
+        supplyId: null,
+      ),
+    );
     expect(repo.billDetail(id).shares.map((share) => share.amount), [
       334,
       333,
@@ -53,26 +55,95 @@ void main() {
 
   test('payer share creates no obligation and invalid bills write nothing', () {
     expect(
-      () => repo.addBill((
-        title: '坏账单',
-        total: 1000,
-        payerId: 1,
-        participantIds: [1, 99],
-        supplyId: null,
-      )),
+      () => repo.addBill(
+        BillDraft(
+          title: '坏账单',
+          sharedAmount: 1000,
+          payerId: 1,
+          participantIds: [1, 99],
+          supplyId: null,
+        ),
+      ),
       invalid,
     );
     expect(repo.bills(), isEmpty);
-    final id = repo.addBill((
-      title: '洗衣液',
-      total: 1000,
-      payerId: 1,
-      participantIds: [1, 2, 3],
-      supplyId: null,
-    ));
+    final id = repo.addBill(
+      BillDraft(
+        title: '洗衣液',
+        sharedAmount: 1000,
+        payerId: 1,
+        participantIds: [1, 2, 3],
+        supplyId: null,
+      ),
+    );
     expect(repo.bills().single.outstanding, 666);
     expect(() => repo.recordTransfer(id, 1, 334), invalid);
     expect(repo.billDetail(id).transfers, isEmpty);
+  });
+
+  test(
+    'personal costs add to public shares and are payable by their owner',
+    () {
+      final id = repo.addBill(
+        const BillDraft(
+          title: '聚餐和饮料',
+          sharedAmount: 1000,
+          payerId: 3,
+          participantIds: [1, 2, 3],
+          personalAmounts: {1: 800, 3: 500, 4: 200},
+        ),
+      );
+      final detail = repo.billDetail(id);
+      expect(detail.bill.total, 2500);
+      expect(
+        detail.shares.map(
+          (share) => (share.member, share.amount, share.personalAmount),
+        ),
+        [('甲', 1134, 800), ('乙', 333, 0), ('丙', 833, 500), ('丁', 200, 200)],
+      );
+      expect(detail.bill.outstanding, 1667);
+      expect(repo.balances()[2].receivable, 1667);
+      expect(() => repo.recordTransfer(id, 3, 833), invalid);
+      repo.recordTransfer(id, 1, 1000);
+      expect(repo.balances().first.openPayable, 134);
+      expect(() => repo.recordTransfer(id, 1, 135), invalid);
+      repo.recordTransfer(id, 1, 134);
+      expect(repo.billDetail(id).shares.first.paid, 1134);
+    },
+  );
+
+  test('a personal-only bill needs no public participant and invalid items do not write', () {
+    final id = repo.addBill(
+      const BillDraft(
+        title: '代买饮料',
+        sharedAmount: 0,
+        payerId: 3,
+        participantIds: [],
+        personalAmounts: {1: 550},
+      ),
+    );
+    expect(repo.billDetail(id).shares.single.amount, 550);
+    expect(repo.billDetail(id).bill.outstanding, 550);
+    for (final (shared, personal) in [
+      (0, <int, int>{}),
+      (0, {2: 0}),
+      (0, {99: 200}),
+      (maxAmountCents, {1: 1}),
+    ]) {
+      expect(
+        () => repo.addBill(
+          BillDraft(
+            title: '无效',
+            sharedAmount: shared,
+            payerId: 3,
+            participantIds: [1],
+            personalAmounts: personal,
+          ),
+        ),
+        invalid,
+      );
+    }
+    expect(repo.bills(), hasLength(1));
   });
 
   test('purchase updates procurement and preserves history after inventory deletion', () {
@@ -86,13 +157,15 @@ void main() {
     );
     repo.saveSupply(draft);
     final item = repo.supplies().single;
-    final id = repo.addBill((
-      title: '采购纸巾',
-      total: 399,
-      payerId: 4,
-      participantIds: [1, 2],
-      supplyId: item.id,
-    ));
+    final id = repo.addBill(
+      BillDraft(
+        title: '采购纸巾',
+        sharedAmount: 399,
+        payerId: 4,
+        participantIds: [1, 2],
+        supplyId: item.id,
+      ),
+    );
     expect(repo.supplies().single.status, PurchaseStatus.ordered);
     expect(repo.supplies().single.quantity, 0);
     repo.deleteSupply(item.id);
@@ -100,13 +173,15 @@ void main() {
     expect(repo.bills(supplyId: item.id).single.supplyName, '纸巾');
     expect(repo.billDetail(id).bill.outstanding, 399);
     expect(
-      () => repo.addBill((
-        title: '已删除',
-        total: 100,
-        payerId: 1,
-        participantIds: [2],
-        supplyId: item.id,
-      )),
+      () => repo.addBill(
+        BillDraft(
+          title: '已删除',
+          sharedAmount: 100,
+          payerId: 1,
+          participantIds: [2],
+          supplyId: item.id,
+        ),
+      ),
       invalid,
     );
     expect(repo.bills(), hasLength(1));
@@ -160,13 +235,15 @@ void main() {
       expect(original.members(), isEmpty);
       original.saveMember('甲');
       original.saveMember('乙');
-      id = original.addBill((
-        title: '水',
-        total: 500,
-        payerId: 1,
-        participantIds: [2],
-        supplyId: null,
-      ));
+      id = original.addBill(
+        BillDraft(
+          title: '水',
+          sharedAmount: 500,
+          payerId: 1,
+          participantIds: [2],
+          supplyId: null,
+        ),
+      );
     } finally {
       original.close();
     }

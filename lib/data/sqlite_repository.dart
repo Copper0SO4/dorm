@@ -18,25 +18,31 @@ class SqliteDormRepository implements DormRepository {
       repo._db.execute('PRAGMA busy_timeout = 2000');
       repo._db.execute('PRAGMA foreign_keys = ON');
       repo._transaction(() {
-        final version = repo._db
-            .select('PRAGMA user_version')
-            .single['user_version'];
+        final version =
+            repo._db.select('PRAGMA user_version').single['user_version']
+                as int;
         if (version == 0) {
           for (final statement in schema) {
             repo._db.execute(statement);
           }
-        } else if (version != 1 && version != 2 && version != 3) {
+        } else if (version < 0 || version > 4) {
           throw const InputException('数据库版本较新，请升级 DormOS 后重试');
         }
         if (version == 0 || version == 1) {
           _SqliteCloudStore.migrate(repo._db);
         }
-        if (version != 3) {
+        if (version < 3) {
           repo._db.execute(
             'ALTER TABLE cloud_settings ADD COLUMN use_device_key '
             'INTEGER NOT NULL DEFAULT 0 CHECK(use_device_key IN (0, 1))',
           );
-          repo._db.execute('PRAGMA user_version = 3');
+        }
+        if (version < 4) {
+          repo._db.execute(
+            'ALTER TABLE shares ADD COLUMN personal_amount '
+            'INTEGER NOT NULL DEFAULT 0 CHECK(personal_amount BETWEEN 0 AND amount)',
+          );
+          repo._db.execute('PRAGMA user_version = 4');
         }
       });
       return repo;
@@ -192,6 +198,7 @@ class SqliteDormRepository implements DormRepository {
             memberId: row['member_id'] as int,
             member: row['name'] as String,
             amount: row['amount'] as int,
+            personalAmount: row['personal_amount'] as int,
             paid: row['paid'] as int,
           ),
       ],
@@ -234,10 +241,14 @@ class SqliteDormRepository implements DormRepository {
   @override
   int addBill(BillDraft draft) {
     final title = _required(draft.title, '账单名称');
-    final shares = splitEvenly(draft.total, draft.participantIds);
+    final allocation = allocateBill(
+      draft.sharedAmount,
+      draft.participantIds,
+      draft.personalAmounts,
+    );
     return _transaction(() {
       _requireActiveMember(draft.payerId);
-      for (final memberId in shares.keys) {
+      for (final memberId in allocation.shares.keys) {
         _requireActiveMember(memberId);
       }
       final supplyId = draft.supplyId;
@@ -252,7 +263,7 @@ class SqliteDormRepository implements DormRepository {
         'INSERT INTO bills (title,total,payer_id,created_at,supply_id,supply_name) VALUES (?,?,?,?,?,?)',
         [
           title,
-          draft.total,
+          allocation.total,
           draft.payerId,
           _timestamp(),
           supplyId,
@@ -260,10 +271,15 @@ class SqliteDormRepository implements DormRepository {
         ],
       );
       final billId = _db.lastInsertRowId;
-      for (final entry in shares.entries) {
+      for (final entry in allocation.shares.entries) {
         _db.execute(
-          'INSERT INTO shares (bill_id,member_id,amount) VALUES (?,?,?)',
-          [billId, entry.key, entry.value],
+          'INSERT INTO shares (bill_id,member_id,amount,personal_amount) VALUES (?,?,?,?)',
+          [
+            billId,
+            entry.key,
+            entry.value,
+            draft.personalAmounts[entry.key] ?? 0,
+          ],
         );
       }
       if (supplyId != null) {

@@ -33,7 +33,7 @@ class _LedgerPageState extends State<LedgerPage> {
         children: [
           PageHeading(
             '公共账本',
-            '查看共同支出、成员分摊和转账进度。',
+            '查看公共费用、个人费用和转账进度。',
             actions: [
               OutlinedButton.icon(
                 onPressed: () => showMembers(context, controller),
@@ -119,7 +119,7 @@ class _LedgerSummary extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            '累计公共支出',
+            '累计账单金额',
             style: TextStyle(
               color: Color(0xffc5dece),
               fontWeight: FontWeight.w600,
@@ -390,6 +390,15 @@ Future<void> editBill(
   var amount = '';
   var payer = members.first.id;
   final participants = members.map((member) => member.id).toSet();
+  final personalInputs = <int, String>{};
+  var showPersonal = false;
+
+  int? sharedAmount() => amount.trim().isEmpty ? 0 : parseCents(amount);
+  Map<int, int> personalAmounts() => {
+    for (final entry in personalInputs.entries)
+      entry.key: parseCents(entry.value) ?? 0,
+  };
+
   final saved = await showDialog<bool>(
     context: context,
     builder: (context) => EditorDialog(
@@ -397,17 +406,27 @@ Future<void> editBill(
       action: '写入总账',
       fields: StatefulBuilder(
         builder: (context, update) {
-          final cents = parseCents(amount);
-          final preview = cents != null && cents > 0 && participants.isNotEmpty
-              ? splitEvenly(cents, participants)
-              : <int, int>{};
+          final personal = personalAmounts();
+          final payerName = members
+              .firstWhere((person) => person.id == payer)
+              .name;
+          ({int total, Map<int, int> shares})? preview;
+          if (sharedAmount() case final cents?) {
+            try {
+              preview = allocateBill(cents, participants, personal);
+            } on InputException {
+              // Incomplete amounts are validated when the form is saved.
+            }
+          }
           return fieldColumn([
             if (supply != null) Text('关联物资 · ${supply.name}'),
             textField('账单名称', title, (value) => title = value, autofocus: true),
             _amountField(
-              '账单金额（元）',
+              '公共费用（元）',
               '',
               (value) => update(() => amount = value),
+              allowZero: true,
+              helperText: '只记个人费用时可留空',
             ),
             DropdownButtonFormField<int>(
               decoration: const InputDecoration(labelText: '付款人'),
@@ -422,7 +441,10 @@ Future<void> editBill(
               ],
               onChanged: (value) => update(() => payer = value!),
             ),
-            const Text('参与成员', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text(
+              '公共费用参与成员',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
             Wrap(
               spacing: 7,
               runSpacing: 4,
@@ -441,7 +463,48 @@ Future<void> editBill(
                   ),
               ],
             ),
-            if (preview.isNotEmpty)
+            if (!showPersonal)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => update(() => showPersonal = true),
+                  icon: const Icon(Icons.person_add_alt_1_outlined),
+                  label: const Text('添加个人费用'),
+                ),
+              )
+            else ...[
+              const Text('个人费用', style: TextStyle(fontWeight: FontWeight.w700)),
+              const Text('选择成员后填写金额，该笔费用由该成员全额承担。'),
+              Wrap(
+                spacing: 7,
+                runSpacing: 4,
+                children: [
+                  for (final member in members)
+                    FilterChip(
+                      key: ValueKey('personal-member-${member.id}'),
+                      label: Text(member.name),
+                      selected: personalInputs.containsKey(member.id),
+                      onSelected: (selected) => update(() {
+                        if (selected) {
+                          personalInputs[member.id] = '';
+                        } else {
+                          personalInputs.remove(member.id);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+              for (final member in members.where(
+                (member) => personalInputs.containsKey(member.id),
+              ))
+                _amountField(
+                  '${member.name}的个人费用（元）',
+                  personalInputs[member.id]!,
+                  (value) => update(() => personalInputs[member.id] = value),
+                  key: ValueKey('personal-amount-${member.id}'),
+                ),
+            ],
+            if (preview case final allocation?)
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -457,12 +520,15 @@ Future<void> editBill(
                         '分摊预览',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      for (final member in members.where(
-                        (member) => preview.containsKey(member.id),
-                      ))
-                        Text(
-                          '${member.name}承担 ${formatCents(preview[member.id]!)} · ${member.id == payer || preview[member.id] == 0 ? '无须转账' : '转给 ${members.firstWhere((person) => person.id == payer).name}'}',
-                        ),
+                      Text('账单合计 ${formatCents(allocation.total)}'),
+                      for (final member in members)
+                        if (allocation.shares[member.id] case final share?) ...[
+                          Text(
+                            '${member.name}承担 ${formatCents(share)} · ${member.id == payer || share == 0 ? '无须转账' : '转给 $payerName'}',
+                          ),
+                          if (personal[member.id] case final amount?)
+                            Text(_shareBreakdown(share, amount)),
+                        ],
                     ],
                   ),
                 ),
@@ -471,13 +537,16 @@ Future<void> editBill(
         },
       ),
       onSave: () => controller.write(
-        () => controller.repository.addBill((
-          title: title,
-          total: parseCents(amount)!,
-          payerId: payer,
-          participantIds: participants.toList(),
-          supplyId: supply?.id,
-        )),
+        () => controller.repository.addBill(
+          BillDraft(
+            title: title,
+            sharedAmount: sharedAmount()!,
+            payerId: payer,
+            participantIds: participants.toList(),
+            personalAmounts: personalAmounts(),
+            supplyId: supply?.id,
+          ),
+        ),
       ),
     ),
   );
@@ -488,19 +557,34 @@ Widget _amountField(
   String label,
   String initial,
   ValueChanged<String> onChanged, {
+  Key? key,
   int? maximum,
+  bool allowZero = false,
+  String? helperText,
 }) => TextFormField(
+  key: key,
   initialValue: initial,
   onChanged: onChanged,
-  decoration: InputDecoration(labelText: label, prefixText: '¥ '),
+  decoration: InputDecoration(
+    labelText: label,
+    prefixText: '¥ ',
+    helperText: helperText,
+  ),
   keyboardType: const TextInputType.numberWithOptions(decimal: true),
   validator: (value) {
-    final cents = parseCents(value ?? '');
-    if (cents == null || cents == 0) return '请输入有效金额，最多两位小数';
+    final input = value?.trim() ?? '';
+    if (allowZero && input.isEmpty) return null;
+    final cents = parseCents(input);
+    if (cents == null || (!allowZero && cents == 0)) {
+      return '请输入有效金额，最多两位小数';
+    }
     if (maximum != null && cents > maximum) return '金额超过未结清金额';
     return null;
   },
 );
+
+String _shareBreakdown(int total, int personal) =>
+    '公共分摊 ${formatCents(total - personal)} · 个人费用 ${formatCents(personal)}';
 
 Future<void> showBill(
   BuildContext context,
@@ -536,7 +620,17 @@ Future<void> showBill(
                 ),
               ),
               if (bill.supplyName != null) Text('关联物资 · ${bill.supplyName}'),
-              const SectionHeading('成员分摊'),
+              if (detail.shares.any((share) => share.personalAmount > 0))
+                Text(
+                  _shareBreakdown(
+                    bill.total,
+                    detail.shares.fold(
+                      0,
+                      (sum, share) => sum + share.personalAmount,
+                    ),
+                  ),
+                ),
+              const SectionHeading('成员应付'),
               for (final share in detail.shares)
                 _ShareLine(bill: bill, share: share, controller: controller),
               const SectionHeading('实际转账'),
@@ -580,27 +674,34 @@ class _ShareLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final own = share.memberId == bill.payerId;
     final left = own ? 0 : share.amount - share.paid;
-    return Wrap(
-      spacing: 12,
-      runSpacing: 4,
-      crossAxisAlignment: WrapCrossAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '${share.member}承担 ${formatCents(share.amount)}',
-          style: const TextStyle(fontWeight: FontWeight.w600),
+        Wrap(
+          spacing: 12,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              '${share.member}承担 ${formatCents(share.amount)}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              own
+                  ? '已直接垫付'
+                  : left == 0
+                  ? '已结清'
+                  : '待转给 ${bill.payer} ${formatCents(left)}',
+            ),
+            if (left > 0)
+              TextButton(
+                onPressed: () => _record(context, left),
+                child: const Text('登记转账'),
+              ),
+          ],
         ),
-        Text(
-          own
-              ? '已直接垫付'
-              : left == 0
-              ? '已结清'
-              : '待转给 ${bill.payer} ${formatCents(left)}',
-        ),
-        if (left > 0)
-          TextButton(
-            onPressed: () => _record(context, left),
-            child: const Text('登记转账'),
-          ),
+        if (share.personalAmount > 0)
+          Text(_shareBreakdown(share.amount, share.personalAmount)),
       ],
     );
   }

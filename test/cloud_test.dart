@@ -8,6 +8,7 @@ import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
+import 'package:dormos/domain/models.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:flutter/services.dart';
@@ -94,6 +95,7 @@ void main() {
       before.cloud.rememberBase(base);
       before.close();
       final raw = sqlite3.open(path);
+      raw.execute('ALTER TABLE shares DROP COLUMN personal_amount');
       raw.execute('ALTER TABLE cloud_settings DROP COLUMN use_device_key');
       raw.execute('PRAGMA user_version = 2');
       raw.close();
@@ -159,6 +161,10 @@ void main() {
       addTearDown(repository.close);
       expect(repository.members().first.id, 47);
       expect(repository.billDetail(52).transfers.single.amount, 100);
+      expect(
+        repository.billDetail(52).shares.map((share) => share.personalAmount),
+        [0, 0],
+      );
       final data = repository.cloud.snapshot();
       expect(CloudSnapshot.decode(data.encoded).sameAs(data), isTrue);
       expect(
@@ -178,13 +184,15 @@ void main() {
     addTearDown(repository.close);
     repository.saveMember('甲');
     repository.saveMember('乙');
-    final bill = repository.addBill((
-      title: '水',
-      total: 200,
-      payerId: 1,
-      participantIds: [1, 2],
-      supplyId: null,
-    ));
+    final bill = repository.addBill(
+      BillDraft(
+        title: '水',
+        sharedAmount: 200,
+        payerId: 1,
+        participantIds: [1, 2],
+        supplyId: null,
+      ),
+    );
     final base = repository.cloud.snapshot();
     repository.recordTransfer(bill, 2, 60);
     final left = repository.cloud.snapshot();
@@ -309,6 +317,37 @@ void main() {
     expect(restarted.error, isNull);
     expect(reopened.cloud.settings!.operator, '操作者乙');
     expect(reopened.members().map((member) => member.name), contains('重启时拉取'));
+
+    expect((jsonDecode(a.cloud.snapshot().encoded) as Map)['format'], 1);
+    final payerId = a
+        .members()
+        .firstWhere((member) => member.name == '本机乙版本')
+        .id;
+    final borrowerId = a
+        .members()
+        .firstWhere((member) => member.name == '独立成员甲')
+        .id;
+    a.addBill(
+      BillDraft(
+        title: '饮料代付',
+        sharedAmount: 1000,
+        payerId: payerId,
+        participantIds: [borrowerId, payerId],
+        personalAmounts: {borrowerId: 300},
+      ),
+    );
+    await syncA.sync();
+    expect(syncA.error, isNull);
+    await restarted.sync();
+    expect(restarted.error, isNull);
+    final syncedBill = reopened.billDetail(reopened.bills().single.id);
+    expect(syncedBill.bill.total, 1300);
+    expect(syncedBill.bill.outstanding, 800);
+    expect(
+      syncedBill.shares.singleWhere((share) => share.personalAmount > 0).amount,
+      800,
+    );
+    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 2);
 
     final openedA = SqliteDormRepository.open('${root.path}/a.sqlite');
     addTearDown(openedA.close);

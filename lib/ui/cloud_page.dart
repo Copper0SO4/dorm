@@ -701,6 +701,7 @@ class _CloudConflictPageState extends State<CloudConflictPage> {
       'bill_id': '账单',
       'member_id': '成员',
       'amount': '金额（分）',
+      'personal_amount': '个人费用（分）',
       'cadence': '频率',
       'next_day': '下次排班',
       'last_member_id': '上次指派',
