@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/domain/models.dart';
+import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
@@ -222,6 +223,82 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('纸巾'), findsOneWidget);
     expect(find.text('豆浆'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('saved budget compares against public spending in the report', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 850));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('阿青');
+    repo.saveMember('小林');
+    repo.addBill(
+      const BillDraft(
+        title: '餐费',
+        sharedAmount: 3200,
+        personalAmounts: {2: 700},
+        payerId: 1,
+        participantIds: [1, 2],
+      ),
+    );
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('账本偏好'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('月度公共预算'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextFormField, '月度公共预算（元）'),
+      '30',
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('月度分析'));
+    await tester.pumpAndSettle();
+    expect(find.text('已用 ¥32.00 / ¥30.00'), findsOneWidget);
+    expect(find.text('已超出 ¥2.00'), findsOneWidget);
+    await tester.tap(find.byTooltip('上个月'));
+    await tester.pumpAndSettle();
+    expect(find.text('这个月暂无垫付记录'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('procurement queue orders and receives a low stock item', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 850));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.savePreferences(
+      const DormPreferences(startupPage: StartupPage.supplies),
+    );
+    repo.saveSupply((
+      name: '海绵',
+      category: '清洁用品',
+      quantity: 1,
+      location: '',
+      note: '',
+      status: PurchaseStatus.stocked,
+    ));
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    expect(find.text('低库存'), findsOneWidget);
+    await tester.tap(find.text('采购清单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('标记采购中'));
+    await tester.pumpAndSettle();
+    expect(repo.supplies().single.status, PurchaseStatus.ordered);
+    await tester.tap(find.text('补货入库'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextFormField, '本次入库数量'), '4');
+    await tester.tap(find.text('确认入库'));
+    await tester.pumpAndSettle();
+    expect(repo.supplies().single.quantity, 5);
+    expect(find.text('暂无待采购物资'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

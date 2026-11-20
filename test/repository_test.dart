@@ -7,6 +7,9 @@ import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/domain/ledger_export.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/domain/models.dart';
+import 'package:dormos/domain/preferences.dart';
+import 'package:dormos/domain/procurement.dart';
+import 'package:dormos/domain/spending.dart';
 import 'package:dormos/domain/schedule.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -381,6 +384,93 @@ void main() {
     );
   });
 
+  test('monthly spending separates public costs from personal purchases', () {
+    final mixed = repo.addBill(
+      const BillDraft(
+        title: '纸巾和饮料',
+        sharedAmount: 3000,
+        personalAmounts: {2: 800},
+        payerId: 1,
+        participantIds: [1, 2, 3],
+      ),
+    );
+    repo.addBill(
+      const BillDraft(
+        title: '代付打印',
+        sharedAmount: 0,
+        personalAmounts: {2: 200},
+        payerId: 3,
+        participantIds: [],
+      ),
+    );
+    repo.recordTransfer(mixed, 2, 500);
+    final now = DateTime.now();
+    final report = monthlySpending(repo.bills(), now);
+    expect(
+      (report.shared, report.personal, report.outstanding, report.billCount),
+      (3000, 1000, 2500, 2),
+    );
+    expect(report.advanced, {'甲': 3800, '丙': 200});
+    expect(
+      monthlySpending(
+        repo.bills(),
+        DateTime(now.year, now.month - 1),
+      ).billCount,
+      0,
+    );
+  });
+
+  test(
+    'purchase list follows preferences and receiving updates stock atomically',
+    () {
+      repo.saveSupply((
+        name: '杯子',
+        category: '杂物',
+        quantity: 2,
+        location: '',
+        note: '',
+        status: PurchaseStatus.stocked,
+      ));
+      repo.saveSupply((
+        name: '洗洁精',
+        category: '清洁',
+        quantity: 8,
+        location: '',
+        note: '',
+        status: PurchaseStatus.needed,
+      ));
+      final cup = repo.supplies().last;
+      final detergent = repo.supplies().first;
+      repo.savePreferences(const DormPreferences(stockThreshold: 2));
+      expect(needsPurchase(cup, repo.preferences), isTrue);
+      repo.savePreferences(repo.preferences.copyWith(stockAlerts: false));
+      expect(needsPurchase(cup, repo.preferences), isFalse);
+      expect(needsPurchase(detergent, repo.preferences), isTrue);
+
+      repo.addBill(
+        BillDraft(
+          title: '补购杯子',
+          sharedAmount: 300,
+          payerId: 1,
+          participantIds: [1, 2],
+          supplyId: cup.id,
+          markSupplyOrdered: true,
+        ),
+      );
+      expect(repo.supplies().last.status, PurchaseStatus.ordered);
+      repo.markSupplyOrdered(detergent.id);
+      expect(repo.supplies().first.status, PurchaseStatus.ordered);
+      expect(() => repo.receiveSupply(cup.id, maxStockQuantity), invalid);
+      expect(repo.supplies().last.quantity, 2);
+      repo.receiveSupply(cup.id, 3);
+      expect(
+        (repo.supplies().last.quantity, repo.supplies().last.status),
+        (5, PurchaseStatus.stocked),
+      );
+      expect(repo.bills(supplyId: cup.id), hasLength(1));
+    },
+  );
+
   test('file database survives close and two connections cannot overpay', () {
     final folder = Directory.systemTemp.createTempSync('dormos-test-');
     final file = '${folder.path}${Platform.pathSeparator}dormos.sqlite3';
@@ -391,6 +481,19 @@ void main() {
       expect(original.members(), isEmpty);
       original.saveMember('甲');
       original.saveMember('乙');
+      final before = original.cloud.snapshot().encoded;
+      original.savePreferences(
+        const DormPreferences(
+          startupPage: StartupPage.supplies,
+          ledgerFilter: LedgerFilter.outstanding,
+          selectAllParticipants: false,
+          monthlyBudget: 80000,
+          stockAlerts: false,
+          stockThreshold: 8,
+          matterView: MatterView.doing,
+        ),
+      );
+      expect(original.cloud.snapshot().encoded, before);
       id = original.addBill(
         BillDraft(
           title: '水',
@@ -408,6 +511,24 @@ void main() {
     addTearDown(first.close);
     addTearDown(second.close);
     expect(first.billDetail(id).shares.single.amount, 500);
+    final preferences = first.preferences;
+    expect(
+      (
+        preferences.startupPage,
+        preferences.ledgerFilter,
+        preferences.matterView,
+      ),
+      (StartupPage.supplies, LedgerFilter.outstanding, MatterView.doing),
+    );
+    expect(
+      (
+        preferences.selectAllParticipants,
+        preferences.monthlyBudget,
+        preferences.stockAlerts,
+        preferences.stockThreshold,
+      ),
+      (false, 80000, false, 8),
+    );
     first.recordTransfer(id, 2, 200);
     expect(() => second.recordTransfer(id, 2, 500), invalid);
     expect(second.bills().single.outstanding, 300);

@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../domain/matters.dart';
+import '../domain/preferences.dart';
 import '../domain/schedule.dart';
 import 'common.dart';
 
@@ -13,7 +14,13 @@ class MattersPage extends StatefulWidget {
 }
 
 class _MattersPageState extends State<MattersPage> {
-  var _selected = MatterStatus.open;
+  late final _initial = widget.controller.repository.preferences.matterView;
+  late var _selected = switch (_initial) {
+    MatterView.board || MatterView.open => MatterStatus.open,
+    MatterView.doing => MatterStatus.doing,
+    MatterView.done => MatterStatus.done,
+  };
+  late var _allLanes = _initial == MatterView.board;
   var _archived = false;
 
   @override
@@ -58,25 +65,17 @@ class _MattersPageState extends State<MattersPage> {
           else
             LayoutBuilder(
               builder: (context, constraints) {
-                if (constraints.maxWidth >= 790) {
-                  return Row(
+                final wide = constraints.maxWidth >= 790;
+                if (wide && _allLanes) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     spacing: 12,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      for (final status in MatterStatus.values)
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            spacing: 8,
-                            children: [
-                              Text(
-                                '${status.label} · ${lanes[status]!.length}',
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                              _lane(lanes[status]!, '暂无${status.label}事务'),
-                            ],
-                          ),
-                        ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: _viewChips(lanes, wide),
+                      ),
+                      _board(context, lanes),
                     ],
                   );
                 }
@@ -84,21 +83,7 @@ class _MattersPageState extends State<MattersPage> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   spacing: 12,
                   children: [
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        for (final status in MatterStatus.values)
-                          ChoiceChip(
-                            label: Text(
-                              '${status.label} · ${lanes[status]!.length}',
-                            ),
-                            selected: _selected == status,
-                            onSelected: (_) =>
-                                setState(() => _selected = status),
-                          ),
-                      ],
-                    ),
+                    _viewChips(lanes, wide),
                     _lane(lanes[_selected]!, '暂无${_selected.label}事务'),
                   ],
                 );
@@ -107,6 +92,51 @@ class _MattersPageState extends State<MattersPage> {
         ],
       );
     },
+  );
+
+  Widget _board(BuildContext context, Map<MatterStatus, List<Matter>> lanes) {
+    return Row(
+      spacing: 12,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final status in MatterStatus.values)
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 8,
+              children: [
+                Text(
+                  status.label,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                _lane(lanes[status]!, '暂无${status.label}事务'),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _viewChips(Map<MatterStatus, List<Matter>> lanes, bool wide) => Wrap(
+    spacing: 8,
+    runSpacing: 6,
+    children: [
+      if (wide)
+        ChoiceChip(
+          label: const Text('全部状态'),
+          selected: _allLanes,
+          onSelected: (_) => setState(() => _allLanes = true),
+        ),
+      for (final status in MatterStatus.values)
+        ChoiceChip(
+          label: Text('${status.label} · ${lanes[status]!.length}'),
+          selected: (!wide || !_allLanes) && _selected == status,
+          onSelected: (_) => setState(() {
+            _selected = status;
+            _allLanes = false;
+          }),
+        ),
+    ],
   );
 
   Widget _lane(List<Matter> matters, String empty) => matters.isEmpty

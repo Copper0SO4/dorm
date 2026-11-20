@@ -1,5 +1,6 @@
 import 'matters.dart';
 import 'models.dart';
+import 'preferences.dart';
 import 'schedule.dart';
 import 'settlement.dart';
 
@@ -40,6 +41,10 @@ abstract interface class DormRepository {
   List<Supply> supplies();
   void saveSupply(SupplyDraft draft, {int? id});
   void deleteSupply(int id);
+  void markSupplyOrdered(int id);
+  void receiveSupply(int id, int units);
+  DormPreferences get preferences;
+  void savePreferences(DormPreferences preferences);
   AppearanceMode get appearanceMode;
   void saveAppearanceMode(AppearanceMode mode);
   Future<void> writeBackup(String path);

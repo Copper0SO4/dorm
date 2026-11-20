@@ -1,8 +1,10 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../domain/models.dart';
+import '../domain/procurement.dart';
 import 'common.dart';
 import 'ledger_page.dart';
+import 'procurement_page.dart';
 
 class SuppliesPage extends StatefulWidget {
   const SuppliesPage({super.key, required this.controller});
@@ -24,6 +26,7 @@ class _SuppliesPageState extends State<SuppliesPage> {
     builder: (context, _) {
       final controller = widget.controller;
       final supplies = controller.repository.supplies();
+      final preferences = controller.repository.preferences;
       final categories = supplies.map((item) => item.category).toSet().toList()
         ..sort();
       final category = categories.contains(_category) ? _category : null;
@@ -47,6 +50,15 @@ class _SuppliesPageState extends State<SuppliesPage> {
             '公共物资',
             '管理库存、存放位置和公共采购。',
             actions: [
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => ProcurementPage(controller: controller),
+                  ),
+                ),
+                icon: const Icon(Icons.shopping_cart_outlined),
+                label: const Text('采购清单'),
+              ),
               FilledButton.icon(
                 onPressed: () => _editSupply(context, controller),
                 icon: const Icon(Icons.add),
@@ -134,6 +146,7 @@ class _SuppliesPageState extends State<SuppliesPage> {
                           width: width,
                           child: _SupplyCard(
                             item: item,
+                            lowStock: isLowStock(item, preferences),
                             controller: controller,
                           ),
                         ),
@@ -149,9 +162,14 @@ class _SuppliesPageState extends State<SuppliesPage> {
 }
 
 class _SupplyCard extends StatelessWidget {
-  const _SupplyCard({required this.item, required this.controller});
+  const _SupplyCard({
+    required this.item,
+    required this.lowStock,
+    required this.controller,
+  });
 
   final Supply item;
+  final bool lowStock;
   final DormController controller;
 
   @override
@@ -223,6 +241,12 @@ class _SupplyCard extends StatelessWidget {
                   background: theme.colorScheme.surfaceContainerHighest,
                   foreground: theme.colorScheme.onSurfaceVariant,
                 ),
+                if (lowStock)
+                  _Tag(
+                    '低库存',
+                    background: theme.colorScheme.errorContainer,
+                    foreground: theme.colorScheme.onErrorContainer,
+                  ),
                 _Tag(
                   item.status.label,
                   background: item.status == PurchaseStatus.needed

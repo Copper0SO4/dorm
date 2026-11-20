@@ -4,6 +4,7 @@ import '../domain/cloud.dart';
 import '../domain/ledger.dart';
 import '../domain/matters.dart';
 import '../domain/models.dart';
+import '../domain/preferences.dart';
 import '../domain/repository.dart';
 import '../domain/schedule.dart';
 import '../domain/settlement.dart';
@@ -165,7 +166,8 @@ class SqliteDormRepository implements DormRepository {
   }
 
   static const _billQuery = '''SELECT b.*, m.name AS payer,
-    COALESCE((SELECT SUM(o.outstanding) FROM obligations o WHERE o.bill_id = b.id), 0) AS outstanding
+    COALESCE((SELECT SUM(o.outstanding) FROM obligations o WHERE o.bill_id = b.id), 0) AS outstanding,
+    COALESCE((SELECT SUM(s.personal_amount) FROM shares s WHERE s.bill_id = b.id), 0) AS personal_amount
     FROM bills b JOIN members m ON m.id = b.payer_id''';
 
   Bill _bill(Row row) => (
@@ -177,6 +179,7 @@ class SqliteDormRepository implements DormRepository {
     createdAt: row['created_at'] as String,
     supplyName: row['supply_name'] as String?,
     outstanding: row['outstanding'] as int,
+    personalAmount: row['personal_amount'] as int,
   );
 
   @override
@@ -300,8 +303,8 @@ class SqliteDormRepository implements DormRepository {
       }
       if (supplyId != null) {
         _db.execute(
-          "UPDATE supplies SET status = 'ordered' WHERE id = ? AND status = 'needed'",
-          [supplyId],
+          "UPDATE supplies SET status = 'ordered' WHERE id = ? AND (status = 'needed' OR ? = 1)",
+          [supplyId, draft.markSupplyOrdered ? 1 : 0],
         );
       }
       return billId;
@@ -689,7 +692,7 @@ class SqliteDormRepository implements DormRepository {
   @override
   void saveSupply(SupplyDraft draft, {int? id}) {
     if (draft.quantity < 0 ||
-        draft.quantity > 999999 ||
+        draft.quantity > maxStockQuantity ||
         draft.location.runes.length > 80 ||
         draft.note.runes.length > 500) {
       throw const InputException('请检查库存数量、存放位置或备注长度');
@@ -726,6 +729,55 @@ class SqliteDormRepository implements DormRepository {
   }
 
   @override
+  void markSupplyOrdered(int id) {
+    _db.execute(
+      "UPDATE supplies SET status='ordered' WHERE id=? AND deleted=0",
+      [id],
+    );
+    _requireUpdate('物资已删除或不存在');
+  }
+
+  @override
+  void receiveSupply(int id, int units) {
+    if (units <= 0 || units > maxStockQuantity) {
+      throw const InputException('入库数量必须为 1 至 999999 的整数');
+    }
+    _db.execute(
+      "UPDATE supplies SET quantity=quantity+?, status='stocked' "
+      "WHERE id=? AND deleted=0 AND quantity<=?",
+      [units, id, maxStockQuantity - units],
+    );
+    _requireUpdate('物资已删除，或入库后库存将超过 999999');
+  }
+
+  @override
+  DormPreferences get preferences => DormPreferences.fromValues({
+    for (final row in _db.select('SELECT key,value FROM local_preferences'))
+      row['key'] as String: row['value'] as String,
+  });
+
+  @override
+  void savePreferences(DormPreferences preferences) {
+    if (preferences.monthlyBudget < 0 ||
+        preferences.monthlyBudget > maxAmountCents ||
+        preferences.stockThreshold < 0 ||
+        preferences.stockThreshold > maxStockQuantity) {
+      throw const InputException('月度预算或库存阈值超出范围');
+    }
+    _transaction(() {
+      for (final entry in preferences.toValues().entries) {
+        _saveLocalPreference(entry.key, entry.value);
+      }
+    });
+  }
+
+  void _saveLocalPreference(String key, String value) => _db.execute(
+    'INSERT INTO local_preferences VALUES (?, ?) '
+    'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, value],
+  );
+
+  @override
   AppearanceMode get appearanceMode {
     final value = _db
         .select("SELECT value FROM local_preferences WHERE key = 'appearance'")
@@ -737,13 +789,8 @@ class SqliteDormRepository implements DormRepository {
   }
 
   @override
-  void saveAppearanceMode(AppearanceMode mode) {
-    _db.execute(
-      "INSERT INTO local_preferences VALUES ('appearance', ?) "
-      'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-      [mode.name],
-    );
-  }
+  void saveAppearanceMode(AppearanceMode mode) =>
+      _saveLocalPreference('appearance', mode.name);
 
   @override
   Future<void> writeBackup(String path) async {

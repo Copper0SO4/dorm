@@ -4,10 +4,12 @@ import 'package:material_ui/material_ui.dart';
 import '../domain/ledger.dart';
 import '../domain/ledger_export.dart';
 import '../domain/models.dart';
+import '../domain/preferences.dart';
 import 'common.dart';
 import 'data_exports.dart';
 import 'members_dialog.dart';
 import 'settlement_page.dart';
+import 'spending_page.dart';
 
 class LedgerPage extends StatefulWidget {
   const LedgerPage({super.key, required this.controller});
@@ -20,8 +22,12 @@ class LedgerPage extends StatefulWidget {
 
 class _LedgerPageState extends State<LedgerPage> {
   var _showBalances = false;
-  var _onlyUnsettled = false;
-  var _thisMonth = false;
+  late bool _onlyUnsettled =
+      widget.controller.repository.preferences.ledgerFilter ==
+      LedgerFilter.outstanding;
+  late bool _thisMonth =
+      widget.controller.repository.preferences.ledgerFilter ==
+      LedgerFilter.currentMonth;
   var _exporting = false;
   final _search = TextEditingController();
 
@@ -147,6 +153,15 @@ class _LedgerPageState extends State<LedgerPage> {
                 ),
                 icon: const Icon(Icons.swap_horiz),
                 label: const Text('结算中心'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => SpendingPage(controller: controller),
+                  ),
+                ),
+                icon: const Icon(Icons.bar_chart_outlined),
+                label: const Text('月度分析'),
               ),
               FilledButton.icon(
                 onPressed: () => editBill(context, controller),
@@ -494,6 +509,7 @@ Future<void> editBill(
   BuildContext context,
   DormController controller, {
   Supply? supply,
+  bool markSupplyOrdered = false,
 }) async {
   final members = controller.repository
       .members()
@@ -510,7 +526,9 @@ Future<void> editBill(
   }
   var amount = '';
   var payer = members.first.id;
-  final participants = members.map((member) => member.id).toSet();
+  final participants = controller.repository.preferences.selectAllParticipants
+      ? members.map((member) => member.id).toSet()
+      : <int>{};
   final personalInputs = <int, String>{};
   var showPersonal = false;
 
@@ -666,6 +684,7 @@ Future<void> editBill(
             participantIds: participants.toList(),
             personalAmounts: personalAmounts(),
             supplyId: supply?.id,
+            markSupplyOrdered: markSupplyOrdered,
           ),
         ),
       ),

@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../data/cloud_sync.dart';
 import '../domain/ledger.dart';
+import '../domain/preferences.dart';
 import '../domain/repository.dart';
 
 class DormController extends ChangeNotifier {
@@ -16,6 +17,11 @@ class DormController extends ChangeNotifier {
     action();
     notifyListeners();
     cloud?.changed();
+  }
+
+  void updatePreferences(DormPreferences Function(DormPreferences) update) {
+    repository.savePreferences(update(repository.preferences));
+    notifyListeners();
   }
 
   @override

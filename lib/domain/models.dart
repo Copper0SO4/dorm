@@ -13,6 +13,7 @@ typedef Bill = ({
   String createdAt,
   String? supplyName,
   int outstanding,
+  int personalAmount,
 });
 
 class BillDraft {
@@ -23,6 +24,7 @@ class BillDraft {
     required this.participantIds,
     this.personalAmounts = const {},
     this.supplyId,
+    this.markSupplyOrdered = false,
   });
 
   final String title;
@@ -31,6 +33,7 @@ class BillDraft {
   final List<int> participantIds;
   final Map<int, int> personalAmounts;
   final int? supplyId;
+  final bool markSupplyOrdered;
 }
 
 typedef Share = ({

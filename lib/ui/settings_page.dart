@@ -1,7 +1,9 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../app_identity.dart';
+import '../domain/ledger.dart';
 import '../domain/models.dart';
+import '../domain/preferences.dart';
 import 'chores_page.dart';
 import 'cloud_page.dart';
 import 'common.dart';
@@ -9,7 +11,9 @@ import 'data_exports.dart';
 import 'members_dialog.dart';
 
 enum _Category {
-  appearance('外观', '主题与本机偏好', Icons.palette_outlined),
+  appearance('外观', '主题与启动页面', Icons.palette_outlined),
+  ledger('账本偏好', '月度预算、筛选和均摊方式', Icons.receipt_long_outlined),
+  supplies('物资偏好', '库存提醒和补货阈值', Icons.inventory_2_outlined),
   dorm('寝室管理', '成员与卫生任务', Icons.groups_outlined),
   sync('云同步', 'GitHub、SSH 密钥、代理与邀请', Icons.cloud_sync_outlined),
   data('本机数据', '账单 CSV 与数据库备份', Icons.storage_outlined),
@@ -181,6 +185,8 @@ class _SettingsPageState extends State<_SettingsPage> {
       if (showHeading) PageHeading(category.label, category.description),
       switch (category) {
         _Category.appearance => _appearance(),
+        _Category.ledger => _ledgerPreferences(),
+        _Category.supplies => _supplyPreferences(),
         _Category.dorm => _dorm(),
         _Category.sync => CloudSettingsPanel(cloud: controller.cloud!),
         _Category.data => _DataSettings(controller: controller),
@@ -195,10 +201,47 @@ class _SettingsPageState extends State<_SettingsPage> {
     ],
   );
 
-  Widget _appearance() => Card(
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: ValueListenableBuilder<AppearanceMode>(
+  Widget _withPreferences(List<Widget> Function(DormPreferences) fields) =>
+      ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: fieldColumn(fields(controller.repository.preferences)),
+          ),
+        ),
+      );
+
+  void _updatePreferences(DormPreferences Function(DormPreferences) update) {
+    try {
+      controller.updatePreferences(update);
+    } catch (error) {
+      notify(context, errorText(error, fallback: '无法保存设置'));
+    }
+  }
+
+  Widget _choice<T extends Enum>(
+    String label,
+    T selected,
+    List<T> values,
+    String Function(T) text,
+    ValueChanged<T> changed,
+  ) => DropdownButtonFormField<T>(
+    initialValue: selected,
+    isExpanded: true,
+    decoration: InputDecoration(labelText: label),
+    items: [
+      for (final option in values)
+        DropdownMenuItem(value: option, child: Text(text(option))),
+    ],
+    onChanged: (value) {
+      if (value != null) changed(value);
+    },
+  );
+
+  Widget _appearance() => _withPreferences(
+    (preferences) => [
+      ValueListenableBuilder<AppearanceMode>(
         valueListenable: widget.themeMode,
         builder: (context, mode, _) => DropdownButtonFormField<AppearanceMode>(
           key: ValueKey(mode),
@@ -221,30 +264,141 @@ class _SettingsPageState extends State<_SettingsPage> {
           },
         ),
       ),
-    ),
+      _choice(
+        '默认启动页面',
+        preferences.startupPage,
+        StartupPage.values,
+        (page) => page.label,
+        (page) =>
+            _updatePreferences((value) => value.copyWith(startupPage: page)),
+      ),
+    ],
   );
 
-  Widget _dorm() => Card(
-    clipBehavior: Clip.antiAlias,
-    child: Column(
-      children: [
-        ListTile(
-          leading: const Icon(Icons.group_outlined),
-          title: const Text('寝室成员'),
-          subtitle: const Text('添加、改名或停用成员'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => showMembers(context, controller),
+  Widget _ledgerPreferences() => _withPreferences(
+    (preferences) => [
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('月度公共预算'),
+        subtitle: Text(
+          preferences.monthlyBudget == 0
+              ? '未设置 · 仅统计公共支出'
+              : '${formatCents(preferences.monthlyBudget)} · 按自然月统计',
         ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.event_repeat_outlined),
-          title: const Text('卫生任务'),
-          subtitle: const Text('定义任务与轮换频率'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => showChoreTasks(context, controller),
+        trailing: const Icon(Icons.edit_outlined),
+        onTap: () => _editNumber(
+          label: '月度公共预算（元）',
+          initial: preferences.monthlyBudget == 0
+              ? ''
+              : formatCents(preferences.monthlyBudget).substring(1),
+          hint: '留空可清除预算',
+          parse: (text) => text.isEmpty ? 0 : parseCents(text),
+          update: (p, amount) => p.copyWith(monthlyBudget: amount),
         ),
-      ],
-    ),
+      ),
+      _choice(
+        '进入账本时的筛选',
+        preferences.ledgerFilter,
+        LedgerFilter.values,
+        (filter) => filter.label,
+        (filter) =>
+            _updatePreferences((value) => value.copyWith(ledgerFilter: filter)),
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('新建账单时默认全选均摊成员'),
+        value: preferences.selectAllParticipants,
+        onChanged: (enabled) => _updatePreferences(
+          (value) => value.copyWith(selectAllParticipants: enabled),
+        ),
+      ),
+    ],
+  );
+
+  Widget _supplyPreferences() => _withPreferences(
+    (preferences) => [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('低库存提醒'),
+        subtitle: const Text('达到阈值时在采购清单中显示物资'),
+        value: preferences.stockAlerts,
+        onChanged: (enabled) =>
+            _updatePreferences((value) => value.copyWith(stockAlerts: enabled)),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('低库存阈值'),
+        subtitle: Text('库存小于或等于 ${preferences.stockThreshold} 件时提醒'),
+        trailing: const Icon(Icons.edit_outlined),
+        onTap: () => _editNumber(
+          label: '低库存阈值',
+          initial: preferences.stockThreshold.toString(),
+          hint: '0 至 999999 的整数',
+          parse: (text) {
+            final value = int.tryParse(text);
+            return value != null && value >= 0 && value <= maxStockQuantity
+                ? value
+                : null;
+          },
+          update: (p, quantity) => p.copyWith(stockThreshold: quantity),
+        ),
+      ),
+    ],
+  );
+
+  Future<void> _editNumber({
+    required String label,
+    required String initial,
+    required String hint,
+    required int? Function(String) parse,
+    required DormPreferences Function(DormPreferences, int) update,
+  }) => showDialog<void>(
+    context: context,
+    builder: (context) {
+      var text = initial;
+      return EditorDialog(
+        title: label,
+        fields: TextFormField(
+          autofocus: true,
+          initialValue: initial,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(labelText: label, helperText: hint),
+          onChanged: (value) => text = value.trim(),
+          validator: (value) =>
+              parse((value ?? '').trim()) == null ? '请输入有效数字' : null,
+        ),
+        onSave: () =>
+            controller.updatePreferences((p) => update(p, parse(text)!)),
+      );
+    },
+  );
+
+  Widget _dorm() => _withPreferences(
+    (preferences) => [
+      ListTile(
+        leading: const Icon(Icons.group_outlined),
+        title: const Text('寝室成员'),
+        subtitle: const Text('添加、改名或停用成员'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => showMembers(context, controller),
+      ),
+      const Divider(height: 1),
+      ListTile(
+        leading: const Icon(Icons.event_repeat_outlined),
+        title: const Text('卫生任务'),
+        subtitle: const Text('定义任务与轮换频率'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => showChoreTasks(context, controller),
+      ),
+      _choice(
+        '进入事务时的视图',
+        preferences.matterView,
+        MatterView.values,
+        (view) => view.label,
+        (view) =>
+            _updatePreferences((value) => value.copyWith(matterView: view)),
+      ),
+    ],
   );
 }
 

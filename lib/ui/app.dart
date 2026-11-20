@@ -59,7 +59,8 @@ class DormApp extends StatefulWidget {
 
 class _DormAppState extends State<DormApp> {
   late final _mode = ValueNotifier(widget.controller.repository.appearanceMode);
-  int _selected = 0;
+  late int _selected =
+      widget.controller.repository.preferences.startupPage.index;
   final _storage = PageStorageBucket();
 
   static const _destinations = [
