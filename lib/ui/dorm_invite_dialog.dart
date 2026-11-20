@@ -2,7 +2,6 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/services.dart' show MethodChannel;
 import 'package:material_ui/material_ui.dart';
 
 import '../data/cloud_sync.dart';
@@ -10,6 +9,7 @@ import '../data/dorm_invite.dart';
 import '../data/ssh_vault.dart';
 import '../domain/ledger.dart';
 import 'common.dart';
+import 'save_document.dart';
 
 typedef ImportedDormInvite = ({String repository, CloudKey? key});
 
@@ -50,22 +50,12 @@ Future<bool> writeDormInvite(BuildContext context, CloudSync cloud) async {
   if (invite == null || !context.mounted) return false;
   final repository = invite.repository.split('/').last;
   final name = '${repository.substring(0, repository.length - 4)}.dorm';
-  final bytes = invite.encode();
-  if (Platform.isAndroid) {
-    return await const MethodChannel('org.dormos.dormos/invites')
-            .invokeMethod<bool>('save', {'name': name, 'bytes': bytes}) ??
-        false;
-  }
-  final destination = await getSaveLocation(
-    acceptedTypeGroups: const [_dormType],
-    suggestedName: name,
+  return saveDocument(
+    XFile.fromData(invite.encode(), name: name),
+    name: name,
+    extension: 'dorm',
+    label: 'Dorm 邀请',
   );
-  if (destination == null) return false;
-  if (!destination.path.toLowerCase().endsWith('.dorm')) {
-    throw const InputException('请用 .dorm 作为文件扩展名');
-  }
-  await XFile.fromData(bytes, name: name).saveTo(destination.path);
-  return true;
 }
 
 class _ExportInviteDialog extends StatefulWidget {

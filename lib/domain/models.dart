@@ -1,5 +1,7 @@
 import 'schedule.dart';
 
+enum AppearanceMode { system, light, dark }
+
 typedef Member = ({int id, String name, bool active});
 
 typedef Bill = ({

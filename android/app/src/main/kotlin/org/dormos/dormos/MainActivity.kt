@@ -6,16 +6,17 @@ import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 import java.io.IOException
 
 class MainActivity : FlutterActivity() {
-    private data class InviteSave(val bytes: ByteArray, val reply: MethodChannel.Result)
+    private data class DocumentSave(val source: File, val reply: MethodChannel.Result)
 
-    private var pendingInvite: InviteSave? = null
+    private var pendingDocument: DocumentSave? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "org.dormos.dormos/invites")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "org.dormos.dormos/documents")
             .setMethodCallHandler { call, result ->
                 if (call.method != "save") {
                     result.notImplemented()
@@ -23,23 +24,31 @@ class MainActivity : FlutterActivity() {
                 }
 
                 val name = call.argument<String>("name")
-                val bytes = call.argument<ByteArray>("bytes")
-                if (name == null || !name.endsWith(".dorm") || bytes == null || bytes.size > 65536) {
-                    result.error("invalid_invite", "Invalid invite file", null)
-                } else if (pendingInvite != null) {
+                val path = call.argument<String>("path")
+                val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                val source = try {
+                    path?.let { File(it).canonicalFile }
+                } catch (_: IOException) {
+                    null
+                }
+                if (name == null || source == null || source.name != name ||
+                    !source.path.startsWith(cacheDir.canonicalPath + File.separator) || !source.isFile
+                ) {
+                    result.error("invalid_document", "Invalid export file", null)
+                } else if (pendingDocument != null) {
                     result.error("save_in_progress", "File picker already open", null)
                 } else {
                     val create = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "application/octet-stream"
+                        type = mimeType
                         putExtra(Intent.EXTRA_TITLE, name)
                     }
-                    pendingInvite = InviteSave(bytes, result)
+                    pendingDocument = DocumentSave(source, result)
                     try {
                         @Suppress("DEPRECATION")
-                        startActivityForResult(create, SAVE_INVITE_REQUEST)
+                        startActivityForResult(create, SAVE_DOCUMENT_REQUEST)
                     } catch (_: ActivityNotFoundException) {
-                        pendingInvite = null
+                        pendingDocument = null
                         result.error("picker_unavailable", "File picker is unavailable", null)
                     }
                 }
@@ -50,9 +59,9 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != SAVE_INVITE_REQUEST) return
-        val pending = pendingInvite ?: return
-        pendingInvite = null
+        if (requestCode != SAVE_DOCUMENT_REQUEST) return
+        val pending = pendingDocument ?: return
+        pendingDocument = null
         val uri = data?.data
         if (resultCode != Activity.RESULT_OK || uri == null) {
             pending.reply.success(false)
@@ -62,10 +71,10 @@ class MainActivity : FlutterActivity() {
         Thread {
             try {
                 val stream = contentResolver.openOutputStream(uri) ?: throw IOException()
-                stream.use { it.write(pending.bytes) }
+                stream.use { output -> pending.source.inputStream().use { it.copyTo(output) } }
                 runOnUiThread { pending.reply.success(true) }
             } catch (_: IOException) {
-                runOnUiThread { pending.reply.error("save_failed", "Cannot write invite", null) }
+                runOnUiThread { pending.reply.error("save_failed", "Cannot write document", null) }
             } catch (_: SecurityException) {
                 runOnUiThread { pending.reply.error("save_failed", "Cannot access document", null) }
             }
@@ -73,6 +82,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private companion object {
-        const val SAVE_INVITE_REQUEST = 0x444f
+        const val SAVE_DOCUMENT_REQUEST = 0x444f
     }
 }

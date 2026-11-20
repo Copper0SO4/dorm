@@ -44,6 +44,9 @@ class SqliteDormRepository implements DormRepository {
           );
           repo._db.execute('PRAGMA user_version = 4');
         }
+        repo._db.execute(
+          'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
+        );
       });
       return repo;
     } catch (_) {
@@ -526,6 +529,39 @@ class SqliteDormRepository implements DormRepository {
       [id],
     );
     _requireUpdate('物资已删除或不存在');
+  }
+
+  @override
+  AppearanceMode get appearanceMode {
+    final value = _db
+        .select("SELECT value FROM local_preferences WHERE key = 'appearance'")
+        .firstOrNull?['value'];
+    return AppearanceMode.values.firstWhere(
+      (mode) => mode.name == value,
+      orElse: () => AppearanceMode.system,
+    );
+  }
+
+  @override
+  void saveAppearanceMode(AppearanceMode mode) {
+    _db.execute(
+      "INSERT INTO local_preferences VALUES ('appearance', ?) "
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [mode.name],
+    );
+  }
+
+  @override
+  Future<void> writeBackup(String path) async {
+    final copy = sqlite3.open(path);
+    try {
+      await _db.backup(copy).drain<void>();
+      copy.execute('PRAGMA secure_delete = ON');
+      copy.execute('DELETE FROM cloud_settings');
+      copy.execute('VACUUM');
+    } finally {
+      copy.close();
+    }
   }
 
   @override

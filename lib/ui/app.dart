@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../app_identity.dart';
+import '../domain/models.dart';
 import 'chores_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
@@ -56,7 +57,7 @@ class DormApp extends StatefulWidget {
 }
 
 class _DormAppState extends State<DormApp> {
-  final _mode = ValueNotifier(ThemeMode.system);
+  late final _mode = ValueNotifier(widget.controller.repository.appearanceMode);
   int _selected = 0;
   final _storage = PageStorageBucket();
 
@@ -88,14 +89,18 @@ class _DormAppState extends State<DormApp> {
   }
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<ThemeMode>(
+  Widget build(BuildContext context) => ValueListenableBuilder<AppearanceMode>(
     valueListenable: _mode,
     builder: (context, mode, _) => MaterialApp(
       debugShowCheckedModeBanner: false,
       title: dormFullName,
       theme: dormTheme(Brightness.light),
       darkTheme: dormTheme(Brightness.dark),
-      themeMode: mode,
+      themeMode: switch (mode) {
+        AppearanceMode.system => ThemeMode.system,
+        AppearanceMode.light => ThemeMode.light,
+        AppearanceMode.dark => ThemeMode.dark,
+      },
       locale: const Locale('zh', 'CN'),
       supportedLocales: const [Locale('zh', 'CN')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,

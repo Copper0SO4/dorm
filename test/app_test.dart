@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
+import 'package:dormos/domain/models.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:material_ui/material_ui.dart';
@@ -111,6 +112,47 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('filters bills by keyword and outstanding balance', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('阿青');
+    repo.saveMember('小林');
+    repo.addBill(
+      const BillDraft(
+        title: '外卖',
+        sharedAmount: 2000,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    final settled = repo.addBill(
+      const BillDraft(
+        title: '卫生纸',
+        sharedAmount: 800,
+        payerId: 2,
+        participantIds: [1],
+      ),
+    );
+    repo.recordTransfer(settled, 1, 800);
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    expect(find.text('外卖'), findsOneWidget);
+    expect(find.text('卫生纸'), findsOneWidget);
+    await tester.tap(find.text('仅待结清'));
+    await tester.pumpAndSettle();
+    expect(find.text('外卖'), findsOneWidget);
+    expect(find.text('卫生纸'), findsNothing);
+    await tester.enterText(find.widgetWithText(TextField, '搜索账单'), '小林');
+    await tester.pumpAndSettle();
+    expect(find.text('没有匹配的账单'), findsOneWidget);
+    await tester.tap(find.text('仅待结清'));
+    await tester.pumpAndSettle();
+    expect(find.text('卫生纸'), findsOneWidget);
+    expect(find.text('外卖'), findsNothing);
+  });
+
   testWidgets('narrow screen uses bottom navigation and toggles dark theme', (
     tester,
   ) async {
@@ -125,13 +167,20 @@ void main() {
     expect(find.text('任务设置'), findsOneWidget);
     await tester.tap(find.byTooltip('设置'));
     await tester.pumpAndSettle();
-    expect(find.text('寝室成员'), findsOneWidget);
-    expect(find.text('卫生任务'), findsOneWidget);
-    expect(find.text("Dorm Organizes Roomates' Matters"), findsOneWidget);
-    await tester.tap(find.byType(DropdownButtonFormField<ThemeMode>));
+    expect(find.text('寝室管理'), findsOneWidget);
+    expect(find.text('本机数据'), findsOneWidget);
+    expect(find.text('寝室成员'), findsNothing);
+    expect(find.byType(DropdownButtonFormField<AppearanceMode>), findsNothing);
+    await tester.tap(find.text('外观'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<AppearanceMode>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('深色').last);
     await tester.pumpAndSettle();
+    expect(repo.appearanceMode, AppearanceMode.dark);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('寝室管理'), findsOneWidget);
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
     expect(

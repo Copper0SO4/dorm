@@ -25,5 +25,8 @@ abstract interface class DormRepository {
   List<Supply> supplies();
   void saveSupply(SupplyDraft draft, {int? id});
   void deleteSupply(int id);
+  AppearanceMode get appearanceMode;
+  void saveAppearanceMode(AppearanceMode mode);
+  Future<void> writeBackup(String path);
   void close();
 }

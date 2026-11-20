@@ -39,6 +39,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('设置'));
       await tester.pumpAndSettle();
+      expect(find.text('配置仓库'), findsNothing);
+      await tester.tap(find.text('云同步'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('配置仓库'));
       await tester.tap(find.text('配置仓库'));
       await tester.pumpAndSettle();
@@ -105,6 +108,9 @@ void main() {
       await tester.pumpWidget(DormApp(controller: controller));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('配置仓库'), findsNothing);
+      await tester.tap(find.text('云同步'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('代理设置'));
       await tester.pumpAndSettle();

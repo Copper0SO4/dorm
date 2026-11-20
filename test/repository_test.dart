@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dormos/data/sqlite_repository.dart';
+import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
+import 'package:dormos/domain/ledger_export.dart';
 import 'package:dormos/domain/models.dart';
 import 'package:dormos/domain/schedule.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -223,6 +226,64 @@ void main() {
       for (final days in [0, 7, 14]) dayKey(start.add(Duration(days: days))),
     ]);
     expect(() => repo.completeShift(shifts.first.id), invalid);
+  });
+
+  test(
+    'exports a consistent database with records and local preferences',
+    () async {
+      final temp = Directory.systemTemp.createTempSync('dorm-backup-test-');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final backup = '${temp.path}${Platform.pathSeparator}copy.dormbak';
+      repo.saveAppearanceMode(AppearanceMode.dark);
+      repo.cloud.saveSettings(
+        CloudSettings(repository: 'owner/private', operator: '填写人'),
+      );
+      final id = repo.addBill(
+        const BillDraft(
+          title: '清洁用品',
+          sharedAmount: 4000,
+          payerId: 1,
+          participantIds: [2],
+        ),
+      );
+      repo.recordTransfer(id, 2, 1500);
+      await repo.writeBackup(backup);
+      final restored = SqliteDormRepository.open(backup);
+      addTearDown(restored.close);
+      expect(restored.bills().single.outstanding, 2500);
+      expect(restored.billDetail(id).transfers.single.amount, 1500);
+      expect(restored.appearanceMode, AppearanceMode.dark);
+      expect(restored.cloud.settings, isNull);
+      expect(
+        repo.cloud.settings!.repository,
+        'git@github.com:owner/private.git',
+      );
+      expect(
+        File(backup).readAsStringSync(encoding: latin1),
+        isNot(contains('owner/private')),
+      );
+    },
+  );
+
+  test('exports sheet-safe CSV and formats the current unpaid amounts', () {
+    final id = repo.addBill(
+      const BillDraft(
+        title: '=SUM(1,2) "饮料"',
+        sharedAmount: 1000,
+        personalAmounts: {2: 300},
+        payerId: 1,
+        participantIds: [1, 2],
+      ),
+    );
+    repo.recordTransfer(id, 2, 250);
+    final csv = billsCsv(repo.bills());
+    expect(csv, startsWith('\uFEFF账单名称'));
+    expect(csv, contains('\x22\u0027=SUM(1,2) \x22\x22饮料\x22\x22\x22'));
+    expect(csv, contains(',13.00,5.50,待结清,'));
+    expect(
+      settlementSummary(repo.billDetail(id)),
+      '=SUM(1,2) "饮料" · 甲垫付 ¥13.00\n乙 → 甲 ¥5.50',
+    );
   });
 
   test('file database survives close and two connections cannot overpay', () {

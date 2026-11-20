@@ -1,8 +1,11 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../domain/ledger.dart';
+import '../domain/ledger_export.dart';
 import '../domain/models.dart';
 import 'common.dart';
+import 'data_exports.dart';
 import 'members_dialog.dart';
 
 class LedgerPage extends StatefulWidget {
@@ -16,6 +19,100 @@ class LedgerPage extends StatefulWidget {
 
 class _LedgerPageState extends State<LedgerPage> {
   var _showBalances = false;
+  var _onlyUnsettled = false;
+  var _thisMonth = false;
+  var _exporting = false;
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  List<Bill> _filtered(List<Bill> bills) {
+    final query = _search.text.trim().toLowerCase();
+    final now = DateTime.now();
+    return bills.where((bill) {
+      if (_onlyUnsettled && bill.outstanding == 0) return false;
+      if (_thisMonth) {
+        final date = DateTime.tryParse(bill.createdAt)?.toLocal();
+        if (date?.year != now.year || date?.month != now.month) return false;
+      }
+      return query.isEmpty ||
+          [
+            bill.title,
+            bill.payer,
+            bill.supplyName ?? '',
+          ].any((value) => value.toLowerCase().contains(query));
+    }).toList();
+  }
+
+  void _clearFilters() => setState(() {
+    _search.clear();
+    _onlyUnsettled = false;
+    _thisMonth = false;
+  });
+
+  Future<void> _export(List<Bill> bills) async {
+    setState(() => _exporting = true);
+    try {
+      await exportBills(context, bills);
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  Widget _historyTools(List<Bill> visible, int total) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      spacing: 10,
+      children: [
+        TextField(
+          controller: _search,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            labelText: '搜索账单',
+            hintText: '账单名称、付款人或关联物资',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: _search.text.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: '清空搜索',
+                    icon: const Icon(Icons.clear),
+                    onPressed: () => setState(_search.clear),
+                  ),
+          ),
+        ),
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 6,
+          children: [
+            FilterChip(
+              label: const Text('仅待结清'),
+              selected: _onlyUnsettled,
+              onSelected: (value) => setState(() => _onlyUnsettled = value),
+            ),
+            FilterChip(
+              label: const Text('本月'),
+              selected: _thisMonth,
+              onSelected: (value) => setState(() => _thisMonth = value),
+            ),
+            if (visible.length != total) Text('${visible.length} / $total 笔'),
+            TextButton.icon(
+              onPressed: !(_exporting || visible.isEmpty)
+                  ? () => _export(visible)
+                  : null,
+              icon: const Icon(Icons.download_outlined),
+              label: const Text('导出当前结果'),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -23,6 +120,7 @@ class _LedgerPageState extends State<LedgerPage> {
     builder: (context, _) {
       final controller = widget.controller;
       final bills = controller.repository.bills();
+      final visible = _showBalances ? bills : _filtered(bills);
       final haveMembers = controller.repository.members().any(
         (member) => member.active,
       );
@@ -84,14 +182,27 @@ class _LedgerPageState extends State<LedgerPage> {
                 label: Text(haveMembers ? '记录开销' : '管理成员'),
               ),
             )
-          else
-            LayoutBuilder(
-              builder: (context, constraints) => BillList(
-                items: bills,
-                onOpen: (bill) => showBill(context, controller, bill.id),
-                useTable: constraints.maxWidth >= 690,
+          else ...[
+            _historyTools(visible, bills.length),
+            if (visible.isEmpty)
+              EmptyPanel(
+                icon: Icons.search_off_outlined,
+                title: '没有匹配的账单',
+                detail: '试试修改关键词或筛选条件。',
+                action: TextButton(
+                  onPressed: _clearFilters,
+                  child: const Text('清除筛选'),
+                ),
+              )
+            else
+              LayoutBuilder(
+                builder: (context, constraints) => BillList(
+                  items: visible,
+                  onOpen: (bill) => showBill(context, controller, bill.id),
+                  useTable: constraints.maxWidth >= 690,
+                ),
               ),
-            ),
+          ],
         ],
       );
     },
@@ -649,6 +760,21 @@ Future<void> showBill(
           ),
         ),
         actions: [
+          if (bill.outstanding > 0)
+            TextButton.icon(
+              onPressed: () async {
+                try {
+                  await Clipboard.setData(
+                    ClipboardData(text: settlementSummary(detail)),
+                  );
+                  if (context.mounted) notify(context, '已复制待付清单');
+                } catch (_) {
+                  if (context.mounted) notify(context, '复制待付清单失败');
+                }
+              },
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('复制待付清单'),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('关闭'),
