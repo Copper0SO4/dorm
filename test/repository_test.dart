@@ -269,6 +269,37 @@ void main() {
     },
   );
 
+  test('deleting one bill removes only its balance and batch allocation', () {
+    final removed = repo.addBill(
+      const BillDraft(
+        title: '重复录入',
+        sharedAmount: 500,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    final retained = repo.addBill(
+      const BillDraft(
+        title: '保留的账单',
+        sharedAmount: 500,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    repo.recordSettlement(2, 1, {removed: 500, retained: 500}, 750);
+    repo.deleteBill(removed);
+    expect(repo.bills().single.id, retained);
+    expect(repo.balances()[1].payable, 500);
+    expect(repo.balances()[1].openPayable, 250);
+    expect(repo.openSettlements().single.charges.single.billId, retained);
+    final history = repo.settlementHistory().single.allocations.single;
+    expect((history.billId, history.amount), (retained, 250));
+    expect(() => repo.billDetail(removed), invalid);
+    expect(() => repo.deleteBill(removed), invalid);
+    expect(() => repo.recordTransfer(removed, 2, 1), invalid);
+    expect(() => repo.recordSettlement(2, 1, {removed: 500}, 500), invalid);
+  });
+
   test('exports sheet-safe CSV and formats the current unpaid amounts', () {
     final id = repo.addBill(
       const BillDraft(

@@ -177,5 +177,19 @@ void main() {
     expect(repository.matters().single.status, MatterStatus.done);
     expect(repository.matters().single.archived, isTrue);
     expect(writes, 9);
+
+    expect(
+      (await request('/api/ledger/delete', data: {'id': bill.id})).status,
+      401,
+    );
+    await post('/api/ledger/delete', {'id': bill.id});
+    expect(repository.bills(), isEmpty);
+    expect(repository.supplies().single.name, '清洁剂');
+    expect((await request('/api/ledger/${bill.id}', token: token)).status, 400);
+    expect(
+      jsonDecode((await request('/api/ledger', token: token)).text)['count'],
+      0,
+    );
+    expect(writes, 10);
   });
 }

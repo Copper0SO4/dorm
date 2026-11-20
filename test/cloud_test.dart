@@ -155,6 +155,7 @@ void main() {
       before.close();
       final raw = sqlite3.open(path);
       raw.execute('DROP TABLE matters');
+      raw.execute('ALTER TABLE bills DROP COLUMN deleted');
       raw.execute('DROP INDEX transfers_batch');
       raw.execute('ALTER TABLE transfers DROP COLUMN batch_id');
       raw.execute('ALTER TABLE shares DROP COLUMN personal_amount');
@@ -170,6 +171,43 @@ void main() {
       expect(after.cloud.snapshot().sameAs(base), isTrue);
     },
   );
+
+  test('deleted bills stay removed when merging a concurrent transfer', () {
+    final a = SqliteDormRepository.open(':memory:');
+    final b = SqliteDormRepository.open(':memory:');
+    addTearDown(a.close);
+    addTearDown(b.close);
+    a.saveMember('付款人');
+    a.saveMember('参与人');
+    final firstId = a.addBill(
+      const BillDraft(
+        title: '将删除的账单',
+        sharedAmount: 500,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    final base = CloudSnapshot.decode(a.cloud.snapshot().encoded);
+    expect((jsonDecode(base.encoded) as Map)['format'], 1);
+    b.cloud.accept(base, base);
+    final debtor = b.members().singleWhere((member) => member.name == '参与人');
+    b.recordTransfer(b.bills().single.id, debtor.id, 200);
+    a.deleteBill(firstId);
+    final deleted = CloudSnapshot.decode(a.cloud.snapshot().encoded);
+    expect((jsonDecode(deleted.encoded) as Map)['format'], 4);
+    expect(deleted.tables['bills']!.values.single['deleted'], 1);
+    final merge = CloudMerge(b.cloud.snapshot(), deleted, base);
+    expect(merge.conflicts, isEmpty);
+    final result = merge.resolve({});
+    b.cloud.accept(result, result);
+    expect(b.bills(), isEmpty);
+    expect(b.balances().every((balance) => balance.payable == 0), isTrue);
+    expect(
+      b.cloud.snapshot().tables['transfers']!.values.single['amount'],
+      200,
+    );
+    expect(b.cloud.snapshot().sameAs(result), isTrue);
+  });
 
   test('the bundled Git runtime supports SSH', () {
     expect(Libgit2.features, contains(GitFeature.ssh));

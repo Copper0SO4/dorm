@@ -735,7 +735,21 @@ Future<void> showBill(
   builder: (context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) {
-      final detail = controller.repository.billDetail(id);
+      final BillDetail detail;
+      try {
+        detail = controller.repository.billDetail(id);
+      } on InputException catch (error) {
+        return AlertDialog(
+          title: const Text('账单不可用'),
+          content: Text(error.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      }
       final bill = detail.bill;
       return AlertDialog(
         scrollable: true,
@@ -789,6 +803,30 @@ Future<void> showBill(
           ),
         ),
         actions: [
+          TextButton.icon(
+            onPressed: () async {
+              final accepted = await confirm(
+                context,
+                '删除账单',
+                '将删除「${bill.title}」，并从账本和结算统计中移除这笔账的分摊与转账记录。此操作无法在应用内撤销。',
+                action: '确认删除',
+                destructive: true,
+              );
+              if (!accepted || !context.mounted) return;
+              try {
+                controller.write(() => controller.repository.deleteBill(id));
+                notify(context, '已删除账单');
+                Navigator.pop(context);
+              } catch (error) {
+                notify(context, errorText(error, fallback: '无法删除账单，请重试'));
+              }
+            },
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('删除账单'),
+          ),
           if (bill.outstanding > 0)
             TextButton.icon(
               onPressed: () async {

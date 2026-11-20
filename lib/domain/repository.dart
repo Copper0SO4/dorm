@@ -13,6 +13,7 @@ abstract interface class DormRepository {
   BillDetail billDetail(int id);
   List<Balance> balances();
   int addBill(BillDraft draft);
+  void deleteBill(int id);
   void recordTransfer(int billId, int memberId, int amount);
   List<SettlementPair> openSettlements();
   List<SettlementBatch> settlementHistory();

@@ -79,6 +79,8 @@ class CloudTable {
   bool inFormat(int format) => name != 'matters' || format >= 3;
 
   List<String> wireColumns(int format) => switch (name) {
+    'bills' when format < 4 =>
+      columns.where((column) => column != 'deleted').toList(),
     'shares' when format == 1 => const ['bill_id', 'member_id', 'amount'],
     'transfers' when format < 3 => const [
       'bill_id',
@@ -106,7 +108,15 @@ const cloudTables = [
   CloudTable(
     'bills',
     '账单',
-    ['title', 'total', 'payer_id', 'created_at', 'supply_id', 'supply_name'],
+    [
+      'title',
+      'total',
+      'payer_id',
+      'created_at',
+      'supply_id',
+      'supply_name',
+      'deleted',
+    ],
     references: {'payer_id': 'members', 'supply_id': 'supplies'},
     nullableReferences: {'supply_id'},
   ),
@@ -168,7 +178,7 @@ class CloudSnapshot {
                 in (input[table.name]?.keys.toList() ?? <String>[])..sort())
               key: Map<String, Object?>.unmodifiable({
                 for (final column in table.columns)
-                  column: column == 'personal_amount'
+                  column: column == 'personal_amount' || column == 'deleted'
                       ? input[table.name]![key]![column] ?? 0
                       : input[table.name]![key]![column],
               }),
@@ -185,7 +195,7 @@ class CloudSnapshot {
       throw const InputException('云端文件格式不受支持');
     }
     final format = value['format'];
-    if (format is! int || (format < 1 || format > 3)) {
+    if (format is! int || (format < 1 || format > 4)) {
       throw const InputException('云端文件版本不受支持，请检查 Dorm 更新');
     }
     final rawTables = value['tables'] as Map<String, dynamic>;
@@ -246,6 +256,12 @@ class CloudSnapshot {
             throw const InputException('云端账单的个人费用无效');
           }
         }
+        if (format >= 4 &&
+            table.name == 'bills' &&
+            row['deleted'] != 0 &&
+            row['deleted'] != 1) {
+          throw const InputException('云端账单的删除标记无效');
+        }
         final batch = row['batch_id'];
         if (table.name == 'transfers' && batch != null) {
           if (batch is! String || !syncId.hasMatch(batch)) {
@@ -270,7 +286,12 @@ class CloudSnapshot {
     final hasPersonal = tables['shares']!.values.any(
       (row) => row['personal_amount'] != 0,
     );
-    final format = hasNewRecords ? 3 : (hasPersonal ? 2 : 1);
+    final hasDeletedBills = tables['bills']!.values.any(
+      (row) => row['deleted'] != 0,
+    );
+    final format = hasDeletedBills
+        ? 4
+        : (hasNewRecords ? 3 : (hasPersonal ? 2 : 1));
     return jsonEncode({
       'format': format,
       'tables': {

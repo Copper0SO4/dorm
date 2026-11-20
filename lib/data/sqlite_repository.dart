@@ -28,7 +28,7 @@ class SqliteDormRepository implements DormRepository {
           for (final statement in schema) {
             repo._db.execute(statement);
           }
-        } else if (version < 0 || version > 5) {
+        } else if (version < 0 || version > 6) {
           throw const InputException('数据库版本较新，请升级 Dorm 后重试');
         }
         if (version == 0 || version == 1) {
@@ -56,7 +56,13 @@ class SqliteDormRepository implements DormRepository {
           );
           repo._db.execute(mattersSchema);
           _SqliteCloudStore.addSyncIds(repo._db, 'matters');
-          repo._db.execute('PRAGMA user_version = 5');
+        }
+        if (version < 6) {
+          repo._db.execute(
+            'ALTER TABLE bills ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0 '
+            'CHECK(deleted IN (0, 1))',
+          );
+          repo._db.execute('PRAGMA user_version = 6');
         }
         repo._db.execute(
           'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
@@ -168,7 +174,7 @@ class SqliteDormRepository implements DormRepository {
   static const _billQuery = '''SELECT b.*, m.name AS payer,
     COALESCE((SELECT SUM(o.outstanding) FROM obligations o WHERE o.bill_id = b.id), 0) AS outstanding,
     COALESCE((SELECT SUM(s.personal_amount) FROM shares s WHERE s.bill_id = b.id), 0) AS personal_amount
-    FROM bills b JOIN members m ON m.id = b.payer_id''';
+    FROM bills b JOIN members m ON m.id = b.payer_id WHERE b.deleted = 0''';
 
   Bill _bill(Row row) => (
     id: row['id'] as int,
@@ -184,7 +190,7 @@ class SqliteDormRepository implements DormRepository {
 
   @override
   List<Bill> bills({int? supplyId}) {
-    final filter = supplyId == null ? '' : 'WHERE b.supply_id = ?';
+    final filter = supplyId == null ? '' : 'AND b.supply_id = ?';
     return _db
         .select('$_billQuery $filter ORDER BY b.created_at DESC, b.id DESC', [
           ?supplyId,
@@ -196,7 +202,7 @@ class SqliteDormRepository implements DormRepository {
   @override
   BillDetail billDetail(int id) {
     final bill = _bill(
-      _requireRow('$_billQuery WHERE b.id = ?', [id], '账单不存在'),
+      _requireRow('$_billQuery AND b.id = ?', [id], '账单不存在或已删除'),
     );
     final shares = _db.select(
       '''SELECT s.*, m.name,
@@ -235,11 +241,13 @@ class SqliteDormRepository implements DormRepository {
   @override
   List<Balance> balances() {
     final rows = _db.select(
-      '''WITH movements AS (
+      '''WITH active_obligations AS (
+      SELECT o.* FROM obligations o JOIN bills b ON b.id = o.bill_id WHERE b.deleted = 0
+    ), movements AS (
       SELECT payer_id AS member_id, amount AS receivable, 0 AS payable,
-        outstanding AS open_receivable, 0 AS open_payable FROM obligations
+        outstanding AS open_receivable, 0 AS open_payable FROM active_obligations
       UNION ALL
-      SELECT member_id, 0, amount, 0, outstanding FROM obligations
+      SELECT member_id, 0, amount, 0, outstanding FROM active_obligations
     ) SELECT m.name, COALESCE(SUM(receivable), 0) AS receivable,
       COALESCE(SUM(payable), 0) AS payable, COALESCE(SUM(open_receivable), 0) AS open_receivable,
       COALESCE(SUM(open_payable), 0) AS open_payable
@@ -312,11 +320,20 @@ class SqliteDormRepository implements DormRepository {
   }
 
   @override
+  void deleteBill(int id) {
+    _db.execute('UPDATE bills SET deleted = 1 WHERE id = ? AND deleted = 0', [
+      id,
+    ]);
+    _requireUpdate('账单不存在或已删除');
+  }
+
+  @override
   void recordTransfer(int billId, int memberId, int amount) {
     if (amount <= 0) throw const InputException('转账金额必须大于零');
     _transaction(() {
       final obligation = _requireRow(
-        'SELECT outstanding FROM obligations WHERE bill_id = ? AND member_id = ?',
+        '''SELECT o.outstanding FROM obligations o JOIN bills b ON b.id = o.bill_id
+          WHERE o.bill_id = ? AND o.member_id = ? AND b.deleted = 0''',
         [billId, memberId],
         '这位成员无须向付款人转账',
       );
@@ -337,7 +354,7 @@ class SqliteDormRepository implements DormRepository {
     JOIN bills b ON b.id = o.bill_id
     JOIN members debtor ON debtor.id = o.member_id
     JOIN members payer ON payer.id = o.payer_id
-    WHERE o.outstanding > 0''';
+    WHERE o.outstanding > 0 AND b.deleted = 0''';
 
   OpenCharge _charge(Row row) => (
     billId: row['bill_id'] as int,
@@ -409,7 +426,8 @@ class SqliteDormRepository implements DormRepository {
       FROM transfers t JOIN bills b ON t.bill_id=b.id
       JOIN members debtor ON t.member_id=debtor.id
       JOIN members payer ON b.payer_id=payer.id
-      WHERE t.batch_id IS NOT NULL ORDER BY t.created_at DESC, t.batch_id, b.created_at, b.id
+      WHERE t.batch_id IS NOT NULL AND b.deleted = 0
+      ORDER BY t.created_at DESC, t.batch_id, b.created_at, b.id
     ''')) {
       final id = row['batch_id'] as String;
       final batch = batches.putIfAbsent(

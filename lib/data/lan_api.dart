@@ -73,6 +73,8 @@ class LanApi {
           markSupplyOrdered: supplyId != null,
         );
         write(() => repository.addBill(draft));
+      case ['ledger', 'delete']:
+        write(() => repository.deleteBill(data.id('id')));
       case ['transfers']:
         write(
           () => repository.recordTransfer(

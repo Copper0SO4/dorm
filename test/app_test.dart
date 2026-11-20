@@ -69,6 +69,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(repo.bills().single.outstanding, 0);
     expect(find.text('小周 → 小李'), findsOneWidget);
+    await tester.tap(find.text('删除账单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(repo.bills(), hasLength(1));
+    await tester.tap(find.text('删除账单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认删除'));
+    await tester.pumpAndSettle();
+    expect(repo.bills(), isEmpty);
+    expect(find.text('宿舍饮用水'), findsNothing);
+    expect(find.text('已删除账单'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

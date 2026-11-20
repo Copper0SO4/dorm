@@ -104,8 +104,8 @@ function openDialog(title, children) {
   byId('dialog-body').replaceChildren(...children);
   if (!dialog.open) dialog.showModal();
 }
-function editor(title, fields, saveLabel, submit) {
-  const ok = node('button', {type: 'submit', class: 'primary'}, saveLabel);
+function editor(title, fields, saveLabel, submit, kind = 'primary') {
+  const ok = node('button', {type: 'submit', class: kind}, saveLabel);
   const error = node('p', {class: 'error', role: 'alert'});
   const form = node('form', {class: 'dialog-form'}, fields, ok, error);
   form.addEventListener('submit', async (event) => {
@@ -259,7 +259,19 @@ async function billDetails(id) {
     transfers.length ? node('ul', {}, transfers.map(item =>
       node('li', {}, item.member + ' · ' + money(item.amount) + ' · ' + time(item.createdAt))))
       : node('p', {class: 'quiet'}, '还没有登记转账'),
+    node('div', {class: 'actions'}, button('删除账单', () => deleteBill(bill), 'danger-outline')),
   )]);
+}
+
+function deleteBill(bill) {
+  editor('删除账单', [
+    node('p', {}, '将删除「' + bill.title + '」，并从账本和结算统计中移除这笔账的分摊与转账记录。此操作无法在应用内撤销。'),
+    button('取消', () => billDetails(bill.id)),
+  ], '确认删除', async () => {
+    await request('/api/ledger/delete', {id: bill.id});
+    filters.page = 0;
+    message('已删除账单');
+  }, 'danger');
 }
 
 function transferEditor(bill, share) {

@@ -69,6 +69,7 @@ Future<bool> confirm(
   String title,
   String message, {
   String action = '确认',
+  bool destructive = false,
 }) async =>
     await showDialog<bool>(
       context: context,
@@ -82,6 +83,12 @@ Future<bool> confirm(
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
+            style: destructive
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                    foregroundColor: Theme.of(context).colorScheme.onError,
+                  )
+                : null,
             child: Text(action),
           ),
         ],
