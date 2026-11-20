@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -19,15 +18,14 @@ class DormLanServer extends ChangeNotifier {
 
   final LanApi _api;
   final Future<String> Function(String) _loadAsset;
-  _LanSession? _session;
+  _LanShare? _share;
   bool _starting = false;
   bool _disposed = false;
 
   bool get starting => _starting;
-  bool get running => _session != null;
-  int? get port => _session?.server.port;
-  String? get pairingCode => _session?.code;
-  List<String> get addresses => _session?.addresses ?? const [];
+  bool get running => _share != null;
+  int? get port => _share?.server.port;
+  List<String> get addresses => _share?.addresses ?? const [];
 
   Future<void> start(int port) async {
     if (_disposed || _starting || running) return;
@@ -53,15 +51,27 @@ class DormLanServer extends ChangeNotifier {
       final hosts = {
         for (final network in interfaces)
           for (final address in network.addresses) address.address,
-      }.toList()..sort();
-      final session = _session = _LanSession(listener, assets, [
-        for (final host in hosts) 'http://$host:${listener.port}',
-        'http://127.0.0.1:${listener.port}',
-      ]);
+      }..remove('127.0.0.1');
+      final names = [...hosts]..sort();
+      final boundPort = listener.port;
+      final share = _share = _LanShare(
+        listener,
+        assets,
+        [
+          for (final host in [...names, '127.0.0.1'])
+            Uri(scheme: 'http', host: host, port: boundPort).origin,
+        ],
+        {
+          for (final host in [...names, '127.0.0.1', 'localhost']) ...[
+            '$host:$boundPort',
+            if (boundPort == 80) host,
+          ],
+        },
+      );
       listener.listen(
-        (request) => unawaited(_serve(session, request)),
+        (request) => unawaited(_serve(share, request)),
         onError: (Object _) {
-          if (identical(_session, session)) unawaited(stop());
+          if (identical(_share, share)) unawaited(stop());
         },
       );
     } on SocketException {
@@ -72,18 +82,11 @@ class DormLanServer extends ChangeNotifier {
     }
   }
 
-  void rotateCode() {
-    final session = _session;
-    if (session == null) return;
-    session.rotate();
-    notifyListeners();
-  }
-
   Future<void> stop() async {
-    final session = _session;
-    if (session == null) return;
-    _session = null;
-    await session.server.close(force: true);
+    final share = _share;
+    if (share == null) return;
+    _share = null;
+    await share.server.close(force: true);
     if (!_disposed) notifyListeners();
   }
 
@@ -94,7 +97,7 @@ class DormLanServer extends ChangeNotifier {
     super.dispose();
   }
 
-  Future<void> _serve(_LanSession session, HttpRequest request) async {
+  Future<void> _serve(_LanShare share, HttpRequest request) async {
     final response = request.response;
     response.headers
       ..set(HttpHeaders.cacheControlHeader, 'no-store')
@@ -106,7 +109,7 @@ class DormLanServer extends ChangeNotifier {
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       );
     try {
-      await _handle(session, request);
+      await _handle(share, request);
     } on InputException catch (error) {
       _error(response, HttpStatus.badRequest, error.message);
     } on FormatException {
@@ -128,10 +131,16 @@ class DormLanServer extends ChangeNotifier {
     }
   }
 
-  Future<void> _handle(_LanSession session, HttpRequest request) async {
+  Future<void> _handle(_LanShare share, HttpRequest request) async {
     final response = request.response;
-    if (!identical(_session, session)) {
+    if (!identical(_share, share)) {
       _error(response, HttpStatus.serviceUnavailable, '服务器已停止');
+      return;
+    }
+    // Limit HTTP origins to this listener's addresses to guard against DNS rebinding.
+    final host = request.headers.value(HttpHeaders.hostHeader)?.toLowerCase();
+    if (host == null || !share.hostHeaders.contains(host)) {
+      _error(response, HttpStatus.forbidden, '请使用 Dorm 设置中显示的地址');
       return;
     }
     final path = request.uri.path;
@@ -142,7 +151,7 @@ class DormLanServer extends ChangeNotifier {
         file.type,
         charset: 'utf-8',
       );
-      response.write(session.assets[path]!);
+      response.write(share.assets[path]!);
       return;
     }
     if (!path.startsWith('/api/')) {
@@ -151,20 +160,13 @@ class DormLanServer extends ChangeNotifier {
     }
     if (request.method == 'POST') {
       final origin = request.headers.value('origin');
-      final host = request.headers.value(HttpHeaders.hostHeader);
-      if (origin != null && origin != 'http://$host') {
+      final site = request.headers.value('sec-fetch-site');
+      if ((origin != null && origin != Uri.parse('http://$host').origin) ||
+          site == 'cross-site' ||
+          site == 'same-site') {
         _error(response, HttpStatus.forbidden, '跨站请求已拒绝');
         return;
       }
-    }
-    if (path == '/api/session' && request.method == 'POST') {
-      await _pair(session, request);
-      return;
-    }
-    final bearer = request.headers.value(HttpHeaders.authorizationHeader);
-    if (!_sameSecret(bearer ?? '', 'Bearer ${session.ticket}')) {
-      _error(response, HttpStatus.unauthorized, '请先输入访问码');
-      return;
     }
     final route = request.uri.pathSegments.skip(1).toList();
     if (request.method == 'GET') {
@@ -176,9 +178,8 @@ class DormLanServer extends ChangeNotifier {
       }
     } else if (request.method == 'POST') {
       final body = await _body(request).timeout(const Duration(seconds: 8));
-      if (!identical(_session, session) ||
-          !_sameSecret(bearer ?? '', 'Bearer ${session.ticket}')) {
-        _error(response, HttpStatus.unauthorized, '会话已失效，请重新连接');
+      if (!identical(_share, share)) {
+        _error(response, HttpStatus.serviceUnavailable, '服务器已停止');
       } else if (!_api.mutate(route, body)) {
         _error(response, HttpStatus.notFound, '接口不存在');
       } else {
@@ -188,26 +189,6 @@ class DormLanServer extends ChangeNotifier {
       response.headers.set(HttpHeaders.allowHeader, 'GET, POST');
       _error(response, HttpStatus.methodNotAllowed, '请求方法不支持');
     }
-  }
-
-  Future<void> _pair(_LanSession session, HttpRequest request) async {
-    final body = await _body(request).timeout(const Duration(seconds: 8));
-    if (!identical(_session, session)) {
-      _error(request.response, HttpStatus.serviceUnavailable, '服务器已停止');
-      return;
-    }
-    if (session.pairingLimited()) {
-      _error(request.response, HttpStatus.tooManyRequests, '尝试过多，请稍后再试');
-      return;
-    }
-    final code = body['code'];
-    if (code is! String ||
-        !_sameSecret(code.trim().toUpperCase(), session.code)) {
-      session.failedPairings++;
-      _error(request.response, HttpStatus.unauthorized, '访问码不正确');
-      return;
-    }
-    _json(request.response, HttpStatus.ok, {'token': session.ticket});
   }
 
   Future<Map<String, dynamic>> _body(HttpRequest request) async {
@@ -239,45 +220,11 @@ class DormLanServer extends ChangeNotifier {
   }
 }
 
-class _LanSession {
-  _LanSession(this.server, this.assets, this.addresses) {
-    rotate();
-  }
+class _LanShare {
+  const _LanShare(this.server, this.assets, this.addresses, this.hostHeaders);
 
   final HttpServer server;
   final Map<String, String> assets;
   final List<String> addresses;
-  final _random = Random.secure();
-  late String code;
-  late String ticket;
-  late DateTime _windowStart;
-  int failedPairings = 0;
-
-  void rotate() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    code = List.generate(
-      12,
-      (_) => alphabet[_random.nextInt(alphabet.length)],
-    ).join();
-    ticket = base64UrlEncode(List.generate(32, (_) => _random.nextInt(256)));
-    _windowStart = DateTime.now();
-    failedPairings = 0;
-  }
-
-  bool pairingLimited() {
-    if (DateTime.now().difference(_windowStart) >= const Duration(minutes: 1)) {
-      _windowStart = DateTime.now();
-      failedPairings = 0;
-    }
-    return failedPairings >= 12;
-  }
-}
-
-bool _sameSecret(String a, String b) {
-  if (a.length != b.length) return false;
-  var difference = 0;
-  for (var index = 0; index < a.length; index++) {
-    difference |= a.codeUnitAt(index) ^ b.codeUnitAt(index);
-  }
-  return difference == 0;
+  final Set<String> hostHeaders;
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dormos/data/dorm_invite.dart';
 import 'package:dormos/data/invite_qr.dart';
+import 'package:dormos/data/qr_image.dart';
 import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,7 +17,7 @@ void main() {
     final text = inviteQrText(invite);
     expect(text, isNot(contains(code)));
     expect(text, isNot(contains('PRIVATE KEY')));
-    final image = await makeInviteQr(text);
+    final image = await makeQrPng(text);
     final recovered = await readInviteQrImage(image);
     expect(recovered.repository, invite.repository);
     expect(recovered.requiresPassword, isTrue);

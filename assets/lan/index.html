@@ -9,19 +9,7 @@
   <script defer src="/dorm.js"></script>
 </head>
 <body>
-  <main id="connect" class="connect">
-    <section class="login-panel">
-      <div class="brand"><span class="logo" aria-hidden="true">D</span><strong>Dorm</strong></div>
-      <h1>加入寝室工作台</h1>
-      <p>输入服务器所在设备上显示的访问码。</p>
-      <form id="pair">
-        <label>访问码<input name="code" type="password" autocomplete="off" required minlength="12" maxlength="12"></label>
-        <button class="primary" type="submit">进入工作台</button>
-        <p id="pair-error" class="error" role="status"></p>
-      </form>
-    </section>
-  </main>
-  <div id="app" class="app" hidden>
+  <div class="app">
     <aside class="sidebar">
       <div class="brand"><span class="logo" aria-hidden="true">D</span><strong>Dorm</strong></div>
       <nav aria-label="寝室模块">
@@ -31,8 +19,7 @@
         <button type="button" data-section="matters"><span aria-hidden="true">☷</span>寝室事务</button>
       </nav>
       <div class="sidebar-footer">
-        <span class="online">局域网连接</span>
-        <button id="logout" type="button" class="ghost">退出工作台</button>
+        <span id="server-status">正在连接</span>
       </div>
     </aside>
     <main class="workspace">
@@ -40,7 +27,7 @@
         <div><h1 id="section-title"></h1><p id="section-description"></p></div>
         <button id="refresh" type="button" class="ghost">刷新</button>
       </div>
-      <div id="content" aria-live="polite"></div>
+      <div id="content" aria-live="polite"><p class="empty">正在读取数据…</p></div>
     </main>
   </div>
   <dialog id="dialog" aria-labelledby="dialog-title">

@@ -38,12 +38,7 @@ h3 { font-size: 1.05rem; }
 small, .quiet { color: var(--quiet); }
 .brand { display: flex; align-items: center; gap: 11px; font-size: 1.5rem; letter-spacing: -.02em; }
 .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: var(--green); color: #fff; font-weight: 750; }
-.connect { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
 .login-panel, dialog { background: var(--surface); border: 1px solid var(--edge); border-radius: 18px; box-shadow: 0 18px 50px #244a3915; }
-.login-panel { width: min(100%, 430px); padding: clamp(20px, 6vw, 38px); }
-.login-panel h1 { margin: 24px 0 8px; }
-.login-panel p { color: var(--quiet); }
-.login-panel form { display: grid; gap: 12px; margin-top: 23px; }
 .app { min-height: 100vh; display: grid; grid-template-columns: 218px minmax(0, 1fr); }
 .sidebar {
   padding: 24px 16px; display: flex; flex-direction: column; gap: 26px;

@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import '../data/cloud_sync.dart';
 import '../data/dorm_invite.dart';
 import '../data/invite_qr.dart';
+import '../data/qr_image.dart';
 import '../domain/ledger.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
@@ -86,7 +87,7 @@ class _InviteQrDialogState extends State<_InviteQrDialog> {
   Future<({String text, Uint8List png})> _generate() async {
     final invite = await widget.cloud.exportInvite(password: _code);
     final text = inviteQrText(invite);
-    return (text: text, png: await makeInviteQr(text));
+    return (text: text, png: await makeQrPng(text));
   }
 
   Future<void> _copy(String value, String label) async {

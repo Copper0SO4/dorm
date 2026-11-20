@@ -13,11 +13,8 @@ const purchaseStates = {stocked: '已入库', needed: '待采购', ordered: '采
 const matterStates = {open: '待处理', doing: '进行中', done: '已完成'};
 const filters = {query: '', unpaid: false, page: 0, day: '', archived: false};
 let current = 'ledger';
-let token = '';
 let renderId = 0;
 let toastTimer;
-
-try { token = sessionStorage.getItem('dormLanSession') || ''; } catch (_) {}
 
 function node(tag, attributes = {}, ...children) {
   const element = document.createElement(tag);
@@ -53,25 +50,12 @@ async function run(action) {
   try { await action(); } catch (error) { message(error.message); }
 }
 
-function endSession(text = '') {
-  token = '';
-  renderId++;
-  try { sessionStorage.removeItem('dormLanSession'); } catch (_) {}
-  if (dialog.open) dialog.close();
-  byId('app').hidden = true;
-  byId('connect').hidden = false;
-  byId('pair-error').textContent = text;
-}
-
-async function request(path, data, pairing = false) {
+async function request(path, data) {
   let response;
   try {
     response = await fetch(path, {
       method: data === undefined ? 'GET' : 'POST',
-      headers: {
-        ...(data === undefined ? {} : {'Content-Type': 'application/json'}),
-        ...(token && !pairing ? {'Authorization': 'Bearer ' + token} : {}),
-      },
+      headers: data === undefined ? {} : {'Content-Type': 'application/json'},
       body: data === undefined ? undefined : JSON.stringify(data),
       cache: 'no-store',
     });
@@ -79,7 +63,6 @@ async function request(path, data, pairing = false) {
     throw new Error('连接服务器失败。请检查 Dorm 是否仍在运行。');
   }
   const result = await response.json();
-  if (response.status === 401 && !pairing) endSession('会话已失效，请重新输入访问码。');
   if (!response.ok) throw new Error(result.error || '操作失败');
   return result;
 }
@@ -127,32 +110,6 @@ function editor(title, fields, saveLabel, submit, kind = 'primary') {
   openDialog(title, [form]);
 }
 
-async function openApp() {
-  byId('connect').hidden = true;
-  byId('app').hidden = false;
-  await render();
-}
-
-byId('pair').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const submit = form.querySelector('button');
-  if (submit.disabled) return;
-  submit.disabled = true;
-  byId('pair-error').textContent = '';
-  try {
-    const result = await request('/api/session', {code: new FormData(form).get('code')}, true);
-    token = result.token;
-    try { sessionStorage.setItem('dormLanSession', token); } catch (_) {}
-    form.reset();
-    await openApp();
-  } catch (error) {
-    endSession(error.message);
-  } finally {
-    submit.disabled = false;
-  }
-});
-byId('logout').addEventListener('click', () => endSession());
 byId('refresh').addEventListener('click', () => run(render));
 byId('dialog-close').addEventListener('click', () => dialog.close());
 document.querySelectorAll('[data-section]').forEach((item) => {
@@ -164,7 +121,6 @@ document.querySelectorAll('[data-section]').forEach((item) => {
 });
 
 async function render() {
-  if (!token) return;
   const id = ++renderId;
   const section = current;
   byId('section-title').textContent = sections[section][0];
@@ -180,10 +136,20 @@ async function render() {
     params.set('page', String(filters.page));
   }
   if (section === 'chores' && filters.day) params.set('day', filters.day);
-  const data = await request('/api/' + section + '?' + params);
-  if (id !== renderId || !token) return;
-  const view = {ledger: ledgerView, chores: choreView, supplies: supplyView, matters: matterView}[section];
-  content.replaceChildren(view(data));
+  const status = byId('server-status');
+  try {
+    const data = await request('/api/' + section + '?' + params);
+    if (id !== renderId) return;
+    const view = {ledger: ledgerView, chores: choreView, supplies: supplyView, matters: matterView}[section];
+    content.replaceChildren(view(data));
+    status.textContent = '局域网连接';
+    status.classList.add('online');
+  } catch (error) {
+    if (id !== renderId) return;
+    status.textContent = '连接异常';
+    status.classList.remove('online');
+    content.replaceChildren(empty(error.message));
+  }
 }
 
 function ledgerView(data) {
@@ -404,6 +370,6 @@ async function matterEditor(item = {}) {
 }
 
 setInterval(() => {
-  if (token && !document.hidden && !dialog.open && !content.contains(document.activeElement)) run(render);
+  if (!document.hidden && !dialog.open && !content.contains(document.activeElement)) run(render);
 }, 20000);
-if (token) run(openApp);
+run(render);
