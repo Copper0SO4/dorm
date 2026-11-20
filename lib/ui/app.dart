@@ -8,6 +8,7 @@ import 'ledger_page.dart';
 import 'matters_page.dart';
 import 'settings_page.dart';
 import 'supplies_page.dart';
+import 'tools_page.dart';
 
 ThemeData dormTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
@@ -88,6 +89,12 @@ class _DormAppState extends State<DormApp> {
       icon: Icons.view_kanban_outlined,
       selected: Icons.view_kanban_rounded,
     ),
+    (
+      label: '寝室工具箱',
+      short: '工具',
+      icon: Icons.casino_outlined,
+      selected: Icons.casino_rounded,
+    ),
   ];
 
   @override
@@ -122,7 +129,8 @@ class _DormAppState extends State<DormApp> {
               0 => LedgerPage(controller: widget.controller),
               1 => ChoresPage(controller: widget.controller),
               2 => SuppliesPage(controller: widget.controller),
-              _ => MattersPage(controller: widget.controller),
+              3 => MattersPage(controller: widget.controller),
+              _ => ToolsPage(controller: widget.controller),
             },
           );
           return Scaffold(

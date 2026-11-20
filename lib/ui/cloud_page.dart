@@ -8,6 +8,7 @@ import '../domain/cloud.dart';
 import 'cloud_proxy_dialog.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
+import 'invite_qr_dialog.dart';
 
 class CloudSettingsPanel extends StatefulWidget {
   const CloudSettingsPanel({super.key, required this.cloud});
@@ -177,6 +178,21 @@ class _CloudSettingsPanelState extends State<CloudSettingsPanel> {
                     icon: const Icon(Icons.file_open_outlined),
                     label: const Text('导入 .dorm'),
                   ),
+                  OutlinedButton.icon(
+                    onPressed: _openingInvite || cloud.busy
+                        ? null
+                        : () => _importInvite(context, qr: true),
+                    icon: const Icon(Icons.qr_code_scanner_outlined),
+                    label: const Text('导入邀请二维码'),
+                  ),
+                  if (hasRepository)
+                    FilledButton.tonalIcon(
+                      onPressed: _openingInvite
+                          ? null
+                          : () => showInviteQr(context, cloud),
+                      icon: const Icon(Icons.qr_code_2_outlined),
+                      label: const Text('分享仓库二维码'),
+                    ),
                   if (hasRepository)
                     OutlinedButton.icon(
                       onPressed: _openingInvite
@@ -268,16 +284,18 @@ class _CloudSettingsPanelState extends State<CloudSettingsPanel> {
     }
   }
 
-  Future<void> _importInvite(BuildContext context) async {
+  Future<void> _importInvite(BuildContext context, {bool qr = false}) async {
     setState(() => _openingInvite = true);
     try {
-      final invite = await chooseDormInvite(context);
+      final invite = qr
+          ? await importInviteQr(context)
+          : await chooseDormInvite(context);
       if (invite != null && context.mounted) {
         await _edit(context, invite: invite);
       }
     } catch (error) {
       if (context.mounted) {
-        notify(context, errorText(error, fallback: '无法读取 .dorm 邀请'));
+        notify(context, errorText(error, fallback: '无法读取仓库邀请'));
       }
     } finally {
       if (mounted) setState(() => _openingInvite = false);

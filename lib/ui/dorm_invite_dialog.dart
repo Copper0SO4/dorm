@@ -30,7 +30,14 @@ Future<ImportedDormInvite?> chooseDormInvite(BuildContext context) async {
     }
     contents.add(chunk);
   }
-  final invite = DormInvite.read(contents.takeBytes());
+  if (!context.mounted) return null;
+  return unlockDormInvite(context, DormInvite.read(contents.takeBytes()));
+}
+
+Future<ImportedDormInvite?> unlockDormInvite(
+  BuildContext context,
+  DormInvite invite,
+) async {
   if (!invite.requiresPassword) {
     return (repository: invite.repository, key: null);
   }

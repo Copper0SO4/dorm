@@ -39,6 +39,33 @@ void main() {
     skip: !Platform.isWindows,
   );
 
+  testWidgets('tools use dorm members for draws and quick rolls', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('甲');
+    repo.saveMember('乙');
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('寝室工具箱'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('开始抽签'));
+    await tester.pumpAndSettle();
+    expect(find.text('抽签结果'), findsOneWidget);
+    expect(find.byType(Chip), findsOneWidget);
+    await tester.tap(find.text('随机分组'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('开始分组'));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1 组'), findsOneWidget);
+    expect(find.text('第 2 组'), findsOneWidget);
+    await tester.tap(find.text('抛硬币'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining(RegExp(r'^(正面|反面)$')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('desktop creates and settles a bill through dialogs', (
     tester,
   ) async {

@@ -4,7 +4,8 @@ enum StartupPage {
   ledger('公共账本'),
   chores('卫生排班'),
   supplies('公共物资'),
-  matters('寝室事务');
+  matters('寝室事务'),
+  tools('寝室工具箱');
 
   const StartupPage(this.label);
   final String label;

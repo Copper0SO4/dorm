@@ -1,11 +1,32 @@
 import 'dart:convert';
 
 import 'package:dormos/data/dorm_invite.dart';
+import 'package:dormos/data/invite_qr.dart';
 import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('the QR image round trips the same encrypted repository key', () async {
+    final key = await CloudKey.generate();
+    final code = newInviteCode();
+    final invite = await DormInvite('room/dorm').withSharedKey(key, code);
+    final text = inviteQrText(invite);
+    expect(text, isNot(contains(code)));
+    expect(text, isNot(contains('PRIVATE KEY')));
+    final image = await makeInviteQr(text);
+    final recovered = await readInviteQrImage(image);
+    expect(recovered.repository, invite.repository);
+    expect(recovered.requiresPassword, isTrue);
+    expect((await recovered.unlock(code)).privateKey, key.privateKey);
+    expect(
+      () => readInviteQrText('http://invalid.example/qrcode'),
+      throwsA(isA<InputException>()),
+    );
+  });
+
   test('a repository-only invite round trips without a credential', () {
     final encoded = DormInvite('https://github.com/Room/Dorm.git').encode();
     final invite = DormInvite.read(encoded);
