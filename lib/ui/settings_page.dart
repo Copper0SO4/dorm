@@ -8,6 +8,7 @@ import 'chores_page.dart';
 import 'cloud_page.dart';
 import 'common.dart';
 import 'data_exports.dart';
+import 'lan_settings.dart';
 import 'members_dialog.dart';
 
 enum _Category {
@@ -16,6 +17,7 @@ enum _Category {
   supplies('物资偏好', '库存提醒和补货阈值', Icons.inventory_2_outlined),
   dorm('寝室管理', '成员与卫生任务', Icons.groups_outlined),
   sync('云同步', 'GitHub、SSH 密钥、代理与邀请', Icons.cloud_sync_outlined),
+  lan('局域网服务器', '浏览器访问与多人操作', Icons.lan_outlined),
   data('本机数据', '账单 CSV 与数据库备份', Icons.storage_outlined),
   about('关于 Dorm', '应用名称与用途', Icons.info_outline);
 
@@ -189,6 +191,7 @@ class _SettingsPageState extends State<_SettingsPage> {
         _Category.supplies => _supplyPreferences(),
         _Category.dorm => _dorm(),
         _Category.sync => CloudSettingsPanel(cloud: controller.cloud!),
+        _Category.lan => LanSettings(controller: controller),
         _Category.data => _DataSettings(controller: controller),
         _Category.about => const Card(
           child: ListTile(

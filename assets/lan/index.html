@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Dorm · 局域网工作台</title>
+  <link rel="stylesheet" href="/dorm.css">
+  <script defer src="/dorm.js"></script>
+</head>
+<body>
+  <main id="connect" class="connect">
+    <section class="login-panel">
+      <div class="brand"><span class="logo" aria-hidden="true">D</span><strong>Dorm</strong></div>
+      <h1>加入寝室工作台</h1>
+      <p>输入服务器所在设备上显示的访问码。</p>
+      <form id="pair">
+        <label>访问码<input name="code" type="password" autocomplete="off" required minlength="12" maxlength="12"></label>
+        <button class="primary" type="submit">进入工作台</button>
+        <p id="pair-error" class="error" role="status"></p>
+      </form>
+    </section>
+  </main>
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="logo" aria-hidden="true">D</span><strong>Dorm</strong></div>
+      <nav aria-label="寝室模块">
+        <button type="button" data-section="ledger"><span aria-hidden="true">▤</span>公共账本</button>
+        <button type="button" data-section="chores"><span aria-hidden="true">▦</span>卫生排班</button>
+        <button type="button" data-section="supplies"><span aria-hidden="true">◇</span>公共物资</button>
+        <button type="button" data-section="matters"><span aria-hidden="true">☷</span>寝室事务</button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="online">局域网连接</span>
+        <button id="logout" type="button" class="ghost">退出工作台</button>
+      </div>
+    </aside>
+    <main class="workspace">
+      <div class="workspace-header">
+        <div><h1 id="section-title"></h1><p id="section-description"></p></div>
+        <button id="refresh" type="button" class="ghost">刷新</button>
+      </div>
+      <div id="content" aria-live="polite"></div>
+    </main>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <div class="dialog-header"><h2 id="dialog-title"></h2><button id="dialog-close" type="button" class="ghost" aria-label="关闭">关闭</button></div>
+    <div id="dialog-body"></div>
+  </dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

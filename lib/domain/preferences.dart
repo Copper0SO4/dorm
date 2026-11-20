@@ -30,6 +30,7 @@ enum MatterView {
 }
 
 const maxStockQuantity = 999999;
+const defaultLanPort = 8765;
 
 class DormPreferences {
   const DormPreferences({
@@ -40,6 +41,7 @@ class DormPreferences {
     this.stockAlerts = true,
     this.stockThreshold = 1,
     this.matterView = MatterView.board,
+    this.lanPort = defaultLanPort,
   });
 
   factory DormPreferences.fromValues(Map<String, String> values) {
@@ -58,6 +60,7 @@ class DormPreferences {
       monthlyBudget: _readInt(values['monthlyBudget'], maxAmountCents, 0),
       stockAlerts: values['stockAlerts'] != 'false',
       stockThreshold: _readInt(values['stockThreshold'], maxStockQuantity, 1),
+      lanPort: _readInt(values['lanPort'], 65535, defaultLanPort, minimum: 1),
       matterView: _readEnum(
         MatterView.values,
         values['matterView'],
@@ -73,6 +76,7 @@ class DormPreferences {
   final bool stockAlerts;
   final int stockThreshold;
   final MatterView matterView;
+  final int lanPort;
 
   DormPreferences copyWith({
     StartupPage? startupPage,
@@ -82,6 +86,7 @@ class DormPreferences {
     bool? stockAlerts,
     int? stockThreshold,
     MatterView? matterView,
+    int? lanPort,
   }) => DormPreferences(
     startupPage: startupPage ?? this.startupPage,
     ledgerFilter: ledgerFilter ?? this.ledgerFilter,
@@ -90,6 +95,7 @@ class DormPreferences {
     stockAlerts: stockAlerts ?? this.stockAlerts,
     stockThreshold: stockThreshold ?? this.stockThreshold,
     matterView: matterView ?? this.matterView,
+    lanPort: lanPort ?? this.lanPort,
   );
 
   Map<String, String> toValues() => {
@@ -100,13 +106,16 @@ class DormPreferences {
     'stockAlerts': stockAlerts.toString(),
     'stockThreshold': stockThreshold.toString(),
     'matterView': matterView.name,
+    'lanPort': lanPort.toString(),
   };
 }
 
 T _readEnum<T extends Enum>(List<T> values, String? value, T fallback) =>
     values.firstWhere((item) => item.name == value, orElse: () => fallback);
 
-int _readInt(String? text, int maximum, int fallback) {
+int _readInt(String? text, int maximum, int fallback, {int minimum = 0}) {
   final value = int.tryParse(text ?? '');
-  return value != null && value >= 0 && value <= maximum ? value : fallback;
+  return value != null && value >= minimum && value <= maximum
+      ? value
+      : fallback;
 }

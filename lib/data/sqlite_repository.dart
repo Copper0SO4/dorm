@@ -758,6 +758,9 @@ class SqliteDormRepository implements DormRepository {
 
   @override
   void savePreferences(DormPreferences preferences) {
+    if (preferences.lanPort < 1 || preferences.lanPort > 65535) {
+      throw const InputException('请输入 1 至 65535 之间的端口');
+    }
     if (preferences.monthlyBudget < 0 ||
         preferences.monthlyBudget > maxAmountCents ||
         preferences.stockThreshold < 0 ||

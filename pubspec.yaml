@@ -1,7 +1,7 @@
 name: dormos
 description: Offline dorm collaboration with optional GitHub sync.
 publish_to: none
-version: 0.11.0+13
+version: 0.12.0+14
 environment:
   sdk: '>=3.14.0 <4.0.0'
   flutter: '>=3.50.0'
@@ -25,6 +25,7 @@ flutter:
 
   assets:
     - assets/fonts/OFL-NotoSansSC.txt
+    - assets/lan/
   fonts:
     - family: NotoSansSC
       fonts:

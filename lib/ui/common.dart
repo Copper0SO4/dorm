@@ -1,6 +1,9 @@
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:material_ui/material_ui.dart';
 
 import '../data/cloud_sync.dart';
+import '../data/lan_api.dart';
+import '../data/lan_server.dart';
 import '../domain/ledger.dart';
 import '../domain/preferences.dart';
 import '../domain/repository.dart';
@@ -12,6 +15,9 @@ class DormController extends ChangeNotifier {
 
   final DormRepository repository;
   final CloudSync? cloud;
+  DormLanServer? _lan;
+  DormLanServer get lan =>
+      _lan ??= DormLanServer(LanApi(repository, write), rootBundle.loadString);
 
   void write(void Function() action) {
     action();
@@ -26,6 +32,7 @@ class DormController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _lan?.dispose();
     cloud?.dispose();
     super.dispose();
   }
