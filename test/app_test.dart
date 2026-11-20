@@ -102,7 +102,15 @@ void main() {
     await tester.tap(find.text('排班'));
     await tester.pumpAndSettle();
     expect(find.text('任务设置'), findsOneWidget);
-    await tester.tap(find.byTooltip('切换深色主题'));
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    expect(find.text('寝室成员'), findsOneWidget);
+    expect(find.text('卫生任务'), findsOneWidget);
+    await tester.tap(find.byType(DropdownButtonFormField<ThemeMode>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('深色').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
     expect(
       Theme.of(tester.element(find.text('任务设置'))).brightness,

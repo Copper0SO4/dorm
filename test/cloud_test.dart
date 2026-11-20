@@ -19,67 +19,77 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 void main() {
-  testWidgets('the cloud settings preview converts an HTTPS URL to SSH', (
-    tester,
-  ) async {
-    final root = Directory.systemTemp.createTempSync('dormos-cloud-widget-');
-    addTearDown(() => root.delete(recursive: true));
-    final repo = SqliteDormRepository.open(':memory:');
-    addTearDown(repo.close);
-    final sync = CloudSync(
-      repo.cloud,
-      _WidgetVault(root),
-      GitHubTransport(root),
-    );
-    final controller = DormController(repo, cloud: sync);
-    addTearDown(controller.dispose);
-    await tester.pumpWidget(DormApp(controller: controller));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('GitHub 云同步'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('配置仓库'));
-    await tester.tap(find.text('配置仓库'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byType(TextField).first,
-      'https://github.com/Room/Dorm',
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('git@github.com:room/dorm.git'), findsOneWidget);
-    expect(find.text('粘贴 SSH 私钥'), findsOneWidget);
+  testWidgets(
+    'desktop settings normalize the Git URL, mask the key, and copy the full key',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 840));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final root = Directory.systemTemp.createTempSync('dormos-cloud-widget-');
+      addTearDown(() => root.delete(recursive: true));
+      final repo = SqliteDormRepository.open(':memory:');
+      addTearDown(repo.close);
+      final sync = CloudSync(
+        repo.cloud,
+        _WidgetVault(root),
+        GitHubTransport(root),
+      );
+      final controller = DormController(repo, cloud: sync);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(DormApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('配置仓库'));
+      await tester.tap(find.text('配置仓库'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).first,
+        'https://github.com/Room/Dorm',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('git@github.com:room/dorm.git'), findsOneWidget);
+      expect(find.text('粘贴 SSH 私钥'), findsOneWidget);
 
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('生成 SSH 密钥'));
-    await tester.tap(find.text('生成 SSH 密钥'));
-    await tester.pumpAndSettle();
-    expect(find.text(_WidgetVault.publicKey), findsOneWidget);
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    String? copied;
-    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-      if (call.method == 'Clipboard.setData') {
-        copied = (call.arguments as Map)['text'] as String;
-      }
-      return null;
-    });
-    addTearDown(
-      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
-    );
-    await tester.ensureVisible(find.text('复制公钥'));
-    await tester.tap(find.text('复制公钥'));
-    await tester.pumpAndSettle();
-    expect(copied, _WidgetVault.publicKey);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('生成 SSH 密钥'));
+      await tester.tap(find.text('生成 SSH 密钥'));
+      await tester.pumpAndSettle();
+      final publicKey = _WidgetVault.publicKey;
+      final data = publicKey.split(' ')[1];
+      final mask = find.byKey(const ValueKey('masked-ssh-key'));
+      expect(
+        tester.widget<Text>(mask).data,
+        'ssh-ed25519 ${data.substring(0, 6)}********${data.substring(data.length - 6)}',
+      );
+      expect(find.text(publicKey), findsNothing);
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      String? copied;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await tester.ensureVisible(find.text('复制公钥'));
+      await tester.tap(find.text('复制公钥'));
+      await tester.pumpAndSettle();
+      expect(copied, _WidgetVault.publicKey);
 
-    await tester.ensureVisible(find.text('配置仓库'));
-    await tester.tap(find.text('配置仓库'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-      isTrue,
-    );
-    expect(find.text('粘贴 SSH 私钥'), findsNothing);
-  });
+      await tester.ensureVisible(find.text('配置仓库'));
+      await tester.tap(find.text('配置仓库'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
+        isTrue,
+      );
+      expect(find.text('粘贴 SSH 私钥'), findsNothing);
+    },
+  );
 
   testWidgets(
     'proxy settings can be configured before connecting a repository',
@@ -94,7 +104,9 @@ void main() {
       addTearDown(controller.dispose);
       await tester.pumpWidget(DormApp(controller: controller));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('GitHub 云同步'));
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('代理设置'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('代理设置'));
       await tester.pumpAndSettle();
@@ -115,6 +127,7 @@ void main() {
       expect(sync.settings, isNull);
       expect((await vault.readProxy())?.kind, CloudProxyKind.socks5);
       expect((await vault.readProxy())?.port, 7891);
+      expect(find.text('SOCKS5'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

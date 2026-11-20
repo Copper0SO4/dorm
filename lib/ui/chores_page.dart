@@ -187,7 +187,7 @@ class _ChoresPageState extends State<ChoresPage> {
               label: const Text('寝室成员'),
             ),
             FilledButton.icon(
-              onPressed: () => _showTasks(context, controller),
+              onPressed: () => showChoreTasks(context, controller),
               icon: const Icon(Icons.tune_outlined),
               label: const Text('任务设置'),
             ),
@@ -498,7 +498,7 @@ Future<void> _chooseAssignment(
   if (saved == true && context.mounted) notify(context, '班次已更新');
 }
 
-Future<void> _showTasks(BuildContext context, DormController controller) =>
+Future<void> showChoreTasks(BuildContext context, DormController controller) =>
     showDialog<void>(
       context: context,
       builder: (context) => ListenableBuilder(

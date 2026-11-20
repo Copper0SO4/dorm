@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../data/cloud_proxy.dart';
 import '../data/cloud_sync.dart';
 import '../data/ssh_vault.dart';
 import '../domain/cloud.dart';
@@ -8,191 +9,188 @@ import 'cloud_proxy_dialog.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
 
-class CloudAction extends StatelessWidget {
-  const CloudAction({super.key, required this.cloud});
+class CloudSettingsPanel extends StatefulWidget {
+  const CloudSettingsPanel({super.key, required this.cloud});
 
   final CloudSync cloud;
+
+  @override
+  State<CloudSettingsPanel> createState() => _CloudSettingsPanelState();
+}
+
+class _CloudSettingsPanelState extends State<CloudSettingsPanel> {
+  CloudSync get cloud => widget.cloud;
+  late Future<String?> _deviceKey = cloud.devicePublicKey();
+  late Future<CloudProxy?> _proxy = cloud.readProxy();
+  bool _openingInvite = false;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: cloud,
-    builder: (context, _) => IconButton(
-      tooltip: cloud.conflict == null ? 'GitHub 云同步' : 'GitHub 云同步有冲突',
-      icon: cloud.busy
-          ? const SizedBox.square(
-              dimension: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Badge(
-              isLabelVisible: cloud.conflict != null || cloud.error != null,
-              child: Icon(
-                cloud.conflict != null
-                    ? Icons.cloud_off_outlined
-                    : Icons.cloud_sync_outlined,
+    builder: (context, _) {
+      final settings = cloud.settings;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        spacing: 12,
+        children: [
+          Text('GitHub 云同步', style: Theme.of(context).textTheme.titleLarge),
+          _connectionCard(context, settings),
+          _deviceKeyCard(context),
+          _networkAndInvitesCard(settings != null),
+        ],
+      );
+    },
+  );
+
+  Widget _connectionCard(BuildContext context, CloudSettings? settings) {
+    final lastSync = cloud.lastSynced;
+    final status = settings == null
+        ? '尚未连接仓库'
+        : cloud.busy
+        ? '正在同步'
+        : cloud.conflict != null
+        ? '等待解决冲突'
+        : cloud.error ?? '已配置自动同步';
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            leading: Icon(cloud.busy ? Icons.sync : Icons.cloud_outlined),
+            title: Text(status),
+            subtitle: Text(
+              lastSync == null
+                  ? '同步到私有仓库的 $cloudBranch 分支'
+                  : '最近成功 · ${MaterialLocalizations.of(context).formatCompactDate(lastSync)} '
+                        '${TimeOfDay.fromDateTime(lastSync).format(context)}',
+            ),
+          ),
+          if (settings != null) ...[
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.link_outlined),
+              title: const Text('仓库'),
+              subtitle: SelectableText(settings.repository),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.person_outline),
+              title: Text(settings.operator),
+              subtitle: Text(
+                [
+                  if (settings.email.isNotEmpty) settings.email,
+                  settings.useDeviceKey ? '设备 SSH 密钥' : '导入的 SSH 密钥',
+                ].join(' · '),
               ),
             ),
-      onPressed: () => Navigator.of(
-        context,
-      ).push<void>(MaterialPageRoute(builder: (_) => CloudPage(cloud: cloud))),
-    ),
-  );
-}
-
-class CloudPage extends StatefulWidget {
-  const CloudPage({super.key, required this.cloud});
-
-  final CloudSync cloud;
-
-  @override
-  State<CloudPage> createState() => _CloudPageState();
-}
-
-class _CloudPageState extends State<CloudPage> {
-  CloudSync get cloud => widget.cloud;
-  late Future<String?> _deviceKey = cloud.devicePublicKey();
-  bool _openingInvite = false;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('GitHub 云同步')),
-    body: ListenableBuilder(
-      listenable: cloud,
-      builder: (context, _) {
-        final settings = cloud.settings;
-        final lastSync = cloud.lastSynced;
-        return PageBody(
-          storageKey: 'cloud',
-          children: [
-            PageHeading('云端存储', '将寝室数据同步到 GitHub 的 $cloudBranch 分支。'),
-            Wrap(
+          ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+            child: Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                OutlinedButton.icon(
-                  onPressed: () => editCloudProxy(context, cloud),
-                  icon: const Icon(Icons.settings_ethernet_outlined),
-                  label: const Text('代理设置'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _openingInvite || cloud.busy
-                      ? null
-                      : () => _importInvite(context),
-                  icon: const Icon(Icons.file_open_outlined),
-                  label: const Text('导入 .dorm'),
-                ),
-                if (settings != null)
-                  OutlinedButton.icon(
-                    onPressed: _openingInvite
-                        ? null
-                        : () => _exportInvite(context),
-                    icon: const Icon(Icons.ios_share_outlined),
-                    label: const Text('导出 .dorm'),
-                  ),
-              ],
-            ),
-            _deviceKeyCard(context),
-            if (settings == null)
-              EmptyPanel(
-                icon: Icons.cloud_outlined,
-                title: '尚未连接仓库',
-                detail: '添加私有 GitHub 仓库，选择设备密钥或导入已有私钥。',
-                action: FilledButton.icon(
-                  onPressed: () => _edit(context),
-                  icon: const Icon(Icons.add_link),
-                  label: const Text('配置仓库'),
-                ),
-              )
-            else
-              Card(
-                child: Column(
-                  children: [
-                    ListTile(
-                      leading: const Icon(Icons.link),
-                      title: const Text('仓库'),
-                      subtitle: SelectableText(settings.repository),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.person_outline),
-                      title: const Text('操作者'),
-                      subtitle: Text(
-                        settings.email.isEmpty
-                            ? settings.operator
-                            : '${settings.operator} · ${settings.email}',
-                      ),
-                    ),
-                    ListTile(
-                      leading: Icon(
-                        cloud.busy ? Icons.sync : Icons.cloud_done_outlined,
-                      ),
-                      title: Text(
-                        cloud.busy
-                            ? '同步中'
-                            : cloud.conflict != null
-                            ? '等待解决冲突'
-                            : cloud.error ?? '已配置自动同步',
-                      ),
-                      subtitle: lastSync == null
-                          ? null
-                          : Text(
-                              '最近成功 · ${MaterialLocalizations.of(context).formatCompactDate(lastSync)} '
-                              '${TimeOfDay.fromDateTime(lastSync).format(context)}',
-                            ),
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.key_outlined),
-                      title: const Text('同步密钥'),
-                      subtitle: Text(
-                        settings.useDeviceKey ? '设备 SSH 密钥' : '导入的 SSH 密钥',
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            if (cloud.conflict != null)
-                              FilledButton.icon(
-                                onPressed: () => Navigator.of(context)
-                                    .push<void>(
-                                      MaterialPageRoute(
-                                        builder: (_) =>
-                                            CloudConflictPage(cloud: cloud),
-                                      ),
-                                    ),
-                                icon: const Icon(Icons.merge_type),
-                                label: const Text('解决冲突'),
-                              )
-                            else
-                              FilledButton.icon(
-                                onPressed: cloud.busy ? null : cloud.sync,
-                                icon: const Icon(Icons.sync),
-                                label: const Text('立即同步'),
-                              ),
-                            OutlinedButton(
-                              onPressed: cloud.busy
-                                  ? null
-                                  : () => _edit(context),
-                              child: const Text('编辑配置'),
-                            ),
-                            TextButton(
-                              onPressed: cloud.busy
-                                  ? null
-                                  : () => _disconnect(context),
-                              child: const Text('断开连接'),
-                            ),
-                          ],
+                if (settings == null)
+                  FilledButton.icon(
+                    onPressed: () => _edit(context),
+                    icon: const Icon(Icons.add_link),
+                    label: const Text('配置仓库'),
+                  )
+                else ...[
+                  if (cloud.conflict != null)
+                    FilledButton.icon(
+                      onPressed: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => CloudConflictPage(cloud: cloud),
                         ),
                       ),
+                      icon: const Icon(Icons.merge_type),
+                      label: const Text('解决冲突'),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: cloud.busy ? null : cloud.sync,
+                      icon: const Icon(Icons.sync),
+                      label: const Text('立即同步'),
                     ),
-                  ],
-                ),
+                  OutlinedButton(
+                    onPressed: cloud.busy ? null : () => _edit(context),
+                    child: const Text('编辑配置'),
+                  ),
+                  TextButton(
+                    onPressed: cloud.busy ? null : () => _disconnect(context),
+                    child: const Text('断开连接'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _networkAndInvitesCard(bool hasRepository) => Card(
+    clipBehavior: Clip.antiAlias,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        FutureBuilder<CloudProxy?>(
+          future: _proxy,
+          builder: (context, snapshot) => ListTile(
+            leading: const Icon(Icons.settings_ethernet_outlined),
+            title: const Text('代理设置'),
+            subtitle: Text(
+              snapshot.hasError
+                  ? '无法读取代理设置'
+                  : snapshot.connectionState != ConnectionState.done
+                  ? '正在读取设置'
+                  : snapshot.data?.kind.label ?? '直连',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () async {
+              await editCloudProxy(context, cloud);
+              if (!mounted) return;
+              setState(() {
+                _proxy = cloud.readProxy();
+              });
+            },
+          ),
+        ),
+        const Divider(height: 1, indent: 16, endIndent: 16),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('仓库邀请', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _openingInvite || cloud.busy
+                        ? null
+                        : () => _importInvite(context),
+                    icon: const Icon(Icons.file_open_outlined),
+                    label: const Text('导入 .dorm'),
+                  ),
+                  if (hasRepository)
+                    OutlinedButton.icon(
+                      onPressed: _openingInvite
+                          ? null
+                          : () => _exportInvite(context),
+                      icon: const Icon(Icons.ios_share_outlined),
+                      label: const Text('导出 .dorm'),
+                    ),
+                ],
               ),
-          ],
-        );
-      },
+            ],
+          ),
+        ),
+      ],
     ),
   );
 
@@ -220,7 +218,11 @@ class _CloudPageState extends State<CloudPage> {
                   '将公钥添加到 GitHub 仓库的 Deploy keys，并勾选 Allow write access。',
                 ),
                 const SizedBox(height: 8),
-                SelectableText(publicKey),
+                Text(
+                  _maskedPublicKey(publicKey),
+                  key: const ValueKey('masked-ssh-key'),
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ],
               if (!loading) ...[
                 const SizedBox(height: 8),
@@ -246,12 +248,23 @@ class _CloudPageState extends State<CloudPage> {
     },
   );
 
+  String _maskedPublicKey(String key) {
+    const mask = '********';
+    final parts = key.split(' ');
+    if (parts.length < 2) return mask;
+    final data = parts[1];
+    if (data.length <= 12) return '${parts.first} $mask';
+    final prefix = data.substring(0, 6);
+    final suffix = data.substring(data.length - 6);
+    return '${parts.first} $prefix$mask$suffix';
+  }
+
   Future<void> _copyPublicKey(BuildContext context, String publicKey) async {
     try {
       await Clipboard.setData(ClipboardData(text: publicKey));
       if (context.mounted) notify(context, '已复制 SSH 公钥');
     } catch (_) {
-      if (context.mounted) notify(context, '无法复制公钥，请手动选中复制');
+      if (context.mounted) notify(context, '无法复制完整公钥，请重试');
     }
   }
 

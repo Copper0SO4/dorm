@@ -1,9 +1,9 @@
 import 'package:material_ui/material_ui.dart';
 
 import 'chores_page.dart';
-import 'cloud_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
+import 'settings_page.dart';
 import 'supplies_page.dart';
 
 ThemeData dormTheme(Brightness brightness) {
@@ -55,7 +55,7 @@ class DormApp extends StatefulWidget {
 }
 
 class _DormAppState extends State<DormApp> {
-  ThemeMode _mode = ThemeMode.system;
+  final _mode = ValueNotifier(ThemeMode.system);
   int _selected = 0;
   final _storage = PageStorageBucket();
 
@@ -81,103 +81,101 @@ class _DormAppState extends State<DormApp> {
   ];
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    title: 'DormOS',
-    theme: dormTheme(Brightness.light),
-    darkTheme: dormTheme(Brightness.dark),
-    themeMode: _mode,
-    locale: const Locale('zh', 'CN'),
-    supportedLocales: const [Locale('zh', 'CN')],
-    localizationsDelegates: GlobalMaterialLocalizations.delegates,
-    home: LayoutBuilder(
-      builder: (context, constraints) {
-        final desktop = constraints.maxWidth >= 830;
-        final theme = Theme.of(context);
-        final dark = theme.brightness == Brightness.dark;
-        final toggle = IconButton(
-          tooltip: dark ? '切换浅色主题' : '切换深色主题',
-          onPressed: () =>
-              setState(() => _mode = dark ? ThemeMode.light : ThemeMode.dark),
-          icon: Icon(
-            dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-          ),
-        );
-        final page = PageStorage(
-          bucket: _storage,
-          child: switch (_selected) {
-            0 => LedgerPage(controller: widget.controller),
-            1 => ChoresPage(controller: widget.controller),
-            _ => SuppliesPage(controller: widget.controller),
-          },
-        );
-        return Scaffold(
-          appBar: AppBar(
-            title: desktop ? const Text('寝室工作台') : const _Brand(),
-            actions: [
-              if (widget.controller.cloud case final cloud?)
-                CloudAction(cloud: cloud),
-              toggle,
-              const SizedBox(width: 12),
-            ],
-          ),
-          body: SafeArea(
-            top: false,
-            child: Row(
-              children: [
-                if (desktop) ...[
-                  NavigationRail(
-                    extended: true,
-                    minExtendedWidth: 204,
-                    backgroundColor: theme.colorScheme.surfaceContainerLow,
-                    leading: const Padding(
-                      padding: EdgeInsets.fromLTRB(12, 14, 12, 28),
-                      child: _Brand(),
-                    ),
-                    trailing: const Expanded(
-                      child: Align(
-                        alignment: Alignment.bottomCenter,
-                        child: Padding(
-                          padding: EdgeInsets.all(16),
-                          child: _LocalStatus(),
+  void dispose() {
+    _mode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<ThemeMode>(
+    valueListenable: _mode,
+    builder: (context, mode, _) => MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'DormOS',
+      theme: dormTheme(Brightness.light),
+      darkTheme: dormTheme(Brightness.dark),
+      themeMode: mode,
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      home: LayoutBuilder(
+        builder: (context, constraints) {
+          final desktop = constraints.maxWidth >= 830;
+          final theme = Theme.of(context);
+          final page = PageStorage(
+            bucket: _storage,
+            child: switch (_selected) {
+              0 => LedgerPage(controller: widget.controller),
+              1 => ChoresPage(controller: widget.controller),
+              _ => SuppliesPage(controller: widget.controller),
+            },
+          );
+          return Scaffold(
+            appBar: AppBar(
+              title: desktop ? const Text('寝室工作台') : const _Brand(),
+              actions: [
+                SettingsAction(controller: widget.controller, themeMode: _mode),
+                const SizedBox(width: 12),
+              ],
+            ),
+            body: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  if (desktop) ...[
+                    NavigationRail(
+                      extended: true,
+                      minExtendedWidth: 204,
+                      backgroundColor: theme.colorScheme.surfaceContainerLow,
+                      leading: const Padding(
+                        padding: EdgeInsets.fromLTRB(12, 14, 12, 28),
+                        child: _Brand(),
+                      ),
+                      trailing: const Expanded(
+                        child: Align(
+                          alignment: Alignment.bottomCenter,
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: _LocalStatus(),
+                          ),
                         ),
                       ),
+                      destinations: [
+                        for (final item in _destinations)
+                          NavigationRailDestination(
+                            icon: Icon(item.icon),
+                            selectedIcon: Icon(item.selected),
+                            label: Text(item.label),
+                          ),
+                      ],
+                      selectedIndex: _selected,
+                      onDestinationSelected: (index) =>
+                          setState(() => _selected = index),
                     ),
-                    destinations: [
-                      for (final item in _destinations)
-                        NavigationRailDestination(
-                          icon: Icon(item.icon),
-                          selectedIcon: Icon(item.selected),
-                          label: Text(item.label),
-                        ),
-                    ],
+                    const VerticalDivider(width: 1),
+                  ],
+                  Expanded(child: page),
+                ],
+              ),
+            ),
+            bottomNavigationBar: desktop
+                ? null
+                : NavigationBar(
                     selectedIndex: _selected,
                     onDestinationSelected: (index) =>
                         setState(() => _selected = index),
+                    destinations: [
+                      for (final item in _destinations)
+                        NavigationDestination(
+                          icon: Icon(item.icon),
+                          selectedIcon: Icon(item.selected),
+                          label: item.short,
+                        ),
+                    ],
                   ),
-                  const VerticalDivider(width: 1),
-                ],
-                Expanded(child: page),
-              ],
-            ),
-          ),
-          bottomNavigationBar: desktop
-              ? null
-              : NavigationBar(
-                  selectedIndex: _selected,
-                  onDestinationSelected: (index) =>
-                      setState(() => _selected = index),
-                  destinations: [
-                    for (final item in _destinations)
-                      NavigationDestination(
-                        icon: Icon(item.icon),
-                        selectedIcon: Icon(item.selected),
-                        label: item.short,
-                      ),
-                  ],
-                ),
-        );
-      },
+          );
+        },
+      ),
     ),
   );
 }
