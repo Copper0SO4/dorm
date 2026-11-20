@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:cryptography/cryptography.dart' show Ed25519;
 
 import '../domain/ledger.dart';
 
@@ -72,6 +74,52 @@ class CloudKey {
     }
   }
 
+  static Future<CloudKey> generate() async {
+    final random = Random.secure();
+    final pair = await Ed25519().newKeyPairFromSeed(
+      List.generate(32, (_) => random.nextInt(256)),
+    );
+    final material = await pair.extract();
+    final algorithm = utf8.encode('ssh-ed25519');
+    final public = material.publicKey.bytes;
+    final publicBlob = [..._sshField(algorithm), ..._sshField(public)];
+    final check = List.generate(4, (_) => random.nextInt(256));
+    // OpenSSH expects the secret seed followed by the public key.
+    final privateBlob = [
+      ...check,
+      ...check,
+      ...publicBlob,
+      ..._sshField([...material.bytes, ...public]),
+      ..._sshField(utf8.encode('DormOS')),
+    ];
+    final padding = (8 - privateBlob.length % 8) % 8;
+    final encoded = base64.encode([
+      ...utf8.encode('openssh-key-v1\u0000'),
+      ..._sshField(utf8.encode('none')),
+      ..._sshField(utf8.encode('none')),
+      ..._sshField([]),
+      0,
+      0,
+      0,
+      1,
+      ..._sshField(publicBlob),
+      ..._sshField([...privateBlob, for (var i = 1; i <= padding; i++) i]),
+    ]);
+    final lines = RegExp('.{1,70}')
+        .allMatches(encoded)
+        .map((m) => m[0])
+        .join('\n');
+    return CloudKey(
+      '-----BEGIN OPENSSH PRIVATE KEY-----\n$lines\n-----END OPENSSH PRIVATE KEY-----',
+      '',
+    );
+  }
+
+  static List<int> _sshField(List<int> bytes) {
+    final length = ByteData(4)..setUint32(0, bytes.length);
+    return [...length.buffer.asUint8List(), ...bytes];
+  }
+
   const CloudKey._(this.privateKey, this.publicKey, this.passphrase);
 
   final String privateKey;
@@ -89,19 +137,55 @@ class SshVault {
       );
 
   final Directory _directory;
+  Future<CloudKey>? _generation;
+
+  File get _deviceFile =>
+      File('${_directory.path}${Platform.pathSeparator}device-key.json');
+
+  Future<CloudKey?> readDevice() => _read(_deviceFile);
+
+  Future<CloudKey> generateDevice() async {
+    final pending = _generation ??= _generateDevice();
+    try {
+      return await pending;
+    } finally {
+      if (identical(_generation, pending)) _generation = null;
+    }
+  }
+
+  Future<CloudKey> _generateDevice() async {
+    await _directory.create(recursive: true);
+    // Separate app processes must reuse the same key if both request generation.
+    final lock = await File('${_deviceFile.path}.lock')
+        .open(mode: FileMode.append);
+    try {
+      await lock.lock(FileLock.blockingExclusive);
+      final existing = await readDevice();
+      if (existing != null) return existing;
+      final key = await CloudKey.generate();
+      await _save(_deviceFile, key);
+      return key;
+    } finally {
+      await lock.close();
+    }
+  }
 
   File _file(String repository) => File(
     '${_directory.path}${Platform.pathSeparator}${cloudRepositoryId(repository)}.json',
   );
 
-  Future<CloudKey?> read(String repository) async {
-    final file = _file(repository);
+  Future<CloudKey?> read(String repository) => _read(_file(repository));
+
+  Future<CloudKey?> _read(File file) async {
     if (!await file.exists()) return null;
     final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
     return CloudKey(json['key'] as String, json['passphrase'] as String);
   }
 
-  Future<void> save(String repository, CloudKey key) async {
+  Future<void> save(String repository, CloudKey key) =>
+      _save(_file(repository), key);
+
+  Future<void> _save(File file, CloudKey key) async {
     await _directory.create(recursive: true);
     if (Platform.isWindows) {
       final user = await Process.run('whoami.exe', [
@@ -129,7 +213,6 @@ class SshVault {
         throw const InputException('无法限制私钥目录权限，私钥未保存');
       }
     }
-    final file = _file(repository);
     final temp = File('${file.path}.tmp');
     try {
       await temp.writeAsString(

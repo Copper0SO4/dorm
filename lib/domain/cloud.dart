@@ -31,6 +31,7 @@ class CloudSettings {
     required String repository,
     required String operator,
     String email = '',
+    this.useDeviceKey = false,
   }) : repository = githubSshAddress(repository),
        operator = operator.trim(),
        email = email.trim() {
@@ -50,6 +51,7 @@ class CloudSettings {
   final String repository;
   final String operator;
   final String email;
+  final bool useDeviceKey;
 
   String get commitEmail =>
       email.isEmpty ? 'dormos@users.noreply.github.com' : email;

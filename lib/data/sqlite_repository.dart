@@ -25,12 +25,18 @@ class SqliteDormRepository implements DormRepository {
           for (final statement in schema) {
             repo._db.execute(statement);
           }
-        } else if (version != 1 && version != 2) {
+        } else if (version != 1 && version != 2 && version != 3) {
           throw const InputException('数据库版本较新，请升级 DormOS 后重试');
         }
-        if (version != 2) {
+        if (version == 0 || version == 1) {
           _SqliteCloudStore.migrate(repo._db);
-          repo._db.execute('PRAGMA user_version = 2');
+        }
+        if (version != 3) {
+          repo._db.execute(
+            'ALTER TABLE cloud_settings ADD COLUMN use_device_key '
+            'INTEGER NOT NULL DEFAULT 0 CHECK(use_device_key IN (0, 1))',
+          );
+          repo._db.execute('PRAGMA user_version = 3');
         }
       });
       return repo;

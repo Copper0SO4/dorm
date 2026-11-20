@@ -26,7 +26,9 @@ class _SqliteCloudStore implements CloudStore {
   @override
   CloudSettings? get settings {
     final row = _db
-        .select('SELECT repository, operator, email FROM cloud_settings')
+        .select(
+          'SELECT repository, operator, email, use_device_key FROM cloud_settings',
+        )
         .firstOrNull;
     return row == null
         ? null
@@ -34,6 +36,7 @@ class _SqliteCloudStore implements CloudStore {
             repository: row['repository'] as String,
             operator: row['operator'] as String,
             email: row['email'] as String,
+            useDeviceKey: row['use_device_key'] == 1,
           );
   }
 
@@ -43,10 +46,16 @@ class _SqliteCloudStore implements CloudStore {
       _db.execute('DELETE FROM cloud_settings');
     } else {
       _db.execute(
-        '''INSERT INTO cloud_settings (id, repository, operator, email) VALUES (1, ?, ?, ?)
+        '''INSERT INTO cloud_settings (id, repository, operator, email, use_device_key) VALUES (1, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET base = CASE WHEN repository = excluded.repository THEN base END,
-          repository = excluded.repository, operator = excluded.operator, email = excluded.email''',
-        [settings.repository, settings.operator, settings.email],
+          repository = excluded.repository, operator = excluded.operator,
+          email = excluded.email, use_device_key = excluded.use_device_key''',
+        [
+          settings.repository,
+          settings.operator,
+          settings.email,
+          settings.useDeviceKey ? 1 : 0,
+        ],
       );
     }
   }

@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dormos/data/cloud_sync.dart';
 import 'package:dormos/data/github_transport.dart';
@@ -11,6 +10,7 @@ import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git2dart/git2dart.dart';
 import 'package:material_ui/material_ui.dart';
@@ -24,7 +24,11 @@ void main() {
     addTearDown(() => root.delete(recursive: true));
     final repo = SqliteDormRepository.open(':memory:');
     addTearDown(repo.close);
-    final sync = CloudSync(repo.cloud, SshVault(root), GitHubTransport(root));
+    final sync = CloudSync(
+      repo.cloud,
+      _WidgetVault(root),
+      GitHubTransport(root),
+    );
     final controller = DormController(repo, cloud: sync);
     addTearDown(controller.dispose);
     await tester.pumpWidget(DormApp(controller: controller));
@@ -40,7 +44,67 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('git@github.com:room/dorm.git'), findsOneWidget);
     expect(find.text('粘贴 SSH 私钥'), findsOneWidget);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('生成 SSH 密钥'));
+    await tester.tap(find.text('生成 SSH 密钥'));
+    await tester.pumpAndSettle();
+    expect(find.text(_WidgetVault.publicKey), findsOneWidget);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    String? copied;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String;
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+    await tester.ensureVisible(find.text('复制公钥'));
+    await tester.tap(find.text('复制公钥'));
+    await tester.pumpAndSettle();
+    expect(copied, _WidgetVault.publicKey);
+
+    await tester.ensureVisible(find.text('配置仓库'));
+    await tester.tap(find.text('配置仓库'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
+      isTrue,
+    );
+    expect(find.text('粘贴 SSH 私钥'), findsNothing);
   });
+
+  test(
+    'migrates a v2 cloud configuration with its existing sync baseline',
+    () async {
+      final root = await Directory.systemTemp.createTemp('dormos-cloud-v2-');
+      addTearDown(() => root.delete(recursive: true));
+      final path = '${root.path}/dorm.sqlite';
+      final before = SqliteDormRepository.open(path);
+      before.saveMember('旧成员');
+      before.cloud.saveSettings(
+        CloudSettings(repository: 'test/dorm', operator: '原操作者'),
+      );
+      final base = before.cloud.snapshot();
+      before.cloud.rememberBase(base);
+      before.close();
+      final raw = sqlite3.open(path);
+      raw.execute('ALTER TABLE cloud_settings DROP COLUMN use_device_key');
+      raw.execute('PRAGMA user_version = 2');
+      raw.close();
+      final after = SqliteDormRepository.open(path);
+      addTearDown(after.close);
+
+      expect(after.cloud.settings!.operator, '原操作者');
+      expect(after.cloud.settings!.useDeviceKey, isFalse);
+      expect(after.cloud.base!.sameAs(base), isTrue);
+      expect(after.cloud.snapshot().sameAs(base), isTrue);
+    },
+  );
 
   test('the bundled Git runtime supports SSH', () {
     expect(Libgit2.features, contains(GitFeature.ssh));
@@ -172,8 +236,25 @@ void main() {
       operator: '操作者乙',
     );
 
+    final deviceIdentity = CloudSettings(
+      repository: identityA.repository,
+      operator: identityA.operator,
+      useDeviceKey: true,
+    );
+    final keys = await Future.wait([
+      syncA.generateDevicePublicKey(),
+      syncA.generateDevicePublicKey(),
+    ]);
+    expect(keys.first, matches(r'^ssh-ed25519 [A-Za-z0-9+/]+=*$'));
+    expect(keys.last, keys.first);
+    final newVault = SshVault(homeA);
+    expect((await newVault.readDevice())!.publicKey, keys.first);
+    expect((await CloudKey.generate()).publicKey, isNot(keys.first));
+
     a.saveMember('原姓名');
-    await syncA.configure(identityA, key);
+    await syncA.configure(deviceIdentity, null);
+    expect(a.cloud.settings!.useDeviceKey, isTrue);
+    expect(await newVault.read(identityA.repository), isNull);
     expect(syncA.error, isNull);
     await syncB.configure(identityB, key);
     expect(syncB.error, isNull);
@@ -224,6 +305,13 @@ void main() {
     expect(restarted.error, isNull);
     expect(reopened.cloud.settings!.operator, '操作者乙');
     expect(reopened.members().map((member) => member.name), contains('重启时拉取'));
+
+    final openedA = SqliteDormRepository.open('${root.path}/a.sqlite');
+    addTearDown(openedA.close);
+    expect(openedA.cloud.settings!.useDeviceKey, isTrue);
+    await syncA.disconnect();
+    expect(syncA.settings, isNull);
+    expect(await syncA.devicePublicKey(), keys.first);
   });
 }
 
@@ -251,4 +339,17 @@ CloudKey _syntheticKey() {
     '-----BEGIN OPENSSH PRIVATE KEY-----\n${base64.encode(body)}\n-----END OPENSSH PRIVATE KEY-----',
     '',
   );
+}
+
+class _WidgetVault extends SshVault {
+  _WidgetVault(super.appDirectory);
+
+  static String get publicKey => _syntheticKey().publicKey;
+  CloudKey? _deviceKey;
+
+  @override
+  Future<CloudKey?> readDevice() async => _deviceKey;
+
+  @override
+  Future<CloudKey> generateDevice() async => _deviceKey ??= _syntheticKey();
 }

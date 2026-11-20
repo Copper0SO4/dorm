@@ -25,9 +25,11 @@ flutter run -d linux
 
 ## GitHub 云同步
 
-1. 创建私有 GitHub 仓库。给寝室使用的 SSH 公钥可添加到仓库的 Deploy keys，勾选写入权限。也可使用有该仓库写权限的 GitHub 账户 SSH Key。 [GitHub Deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-2. 在 DormOS 右上角打开「GitHub 云同步」，填写仓库地址和操作者名称。支持仓库的 HTTPS 或 SSH 地址，保存时统一显示为 SSH 地址。操作者名称和可选邮箱用于 Git 提交，会保留到下次打开。
-3. 复制完整的 OpenSSH 私钥，在界面点击「粘贴 SSH 私钥」。加密私钥需要输入口令。不同设备可配置同一个仓库，并分别使用自己的操作者名称和 SSH Key。
+1. 创建私有 GitHub 仓库。在 DormOS 右上角打开「GitHub 云同步」，点击「生成 SSH 密钥」，再点击「复制公钥」。
+2. 在仓库的 Settings → Deploy keys 添加这段公钥，勾选 Allow write access。不同设备各自生成密钥，都可以连接同一个仓库。 [GitHub Deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+3. 回到 DormOS，点击「配置仓库」，输入仓库地址与操作者名称，保留「使用设备 SSH 密钥」，然后保存。仓库的 HTTPS 地址会转换为 SSH 地址，操作者和可选邮箱会保留并用于 Git 提交。已有 OpenSSH 私钥仍可通过「粘贴 SSH 私钥」导入，若私钥已加密，请填写口令。
+
+DormOS 随应用提供 Git 和 SSH 运行库，生成密钥及同步均可直接在应用中完成。生成的 Ed25519 私钥存放在本机受操作系统权限保护的应用目录。界面仅提供公钥复制，断开仓库后仍可继续使用该设备密钥。
 
 应用在启动时优先同步，本地写入后短延迟同步，运行时每 30 秒检查云端更新。启动等待最多 8 秒，网络慢时仍可进入本机界面，连接完成后继续同步。数据只写入专用的 `dormos-data` 分支，其中的 `dormos.json` 保存业务快照。连接采用 GitHub 的 SSH 443 入口并核对官方主机指纹。 [GitHub SSH 443](https://docs.github.com/en/authentication/troubleshooting-ssh/using-ssh-over-the-https-port) · [主机指纹](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
 

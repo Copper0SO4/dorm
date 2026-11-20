@@ -46,6 +46,12 @@ class CloudSync extends ChangeNotifier {
   CloudConflict? get conflict => _conflict;
   DateTime? get lastSynced => _lastSynced;
 
+  Future<String?> devicePublicKey() async =>
+      (await _vault.readDevice())?.publicKey;
+
+  Future<String> generateDevicePublicKey() async =>
+      (await _vault.generateDevice()).publicKey;
+
   Future<void> startup() async {
     _poll ??= Timer.periodic(const Duration(seconds: 30), (_) {
       if (!_busy) unawaited(sync());
@@ -57,10 +63,14 @@ class CloudSync extends ChangeNotifier {
     if (_busy) throw const InputException('同步正在进行，请稍后再保存配置');
     _setBusy();
     try {
-      if (newKey != null) {
+      if (settings.useDeviceKey) {
+        if (await _vault.readDevice() == null) {
+          throw const InputException('请先生成设备 SSH 密钥');
+        }
+      } else if (newKey != null) {
         await _vault.save(settings.repository, newKey);
       } else if (await _vault.read(settings.repository) == null) {
-        throw const InputException('请先粘贴这个仓库的 SSH 私钥');
+        throw const InputException('请选择设备密钥，或粘贴仓库的 SSH 私钥');
       }
       if (_disposed) return;
       final changedRepository =
@@ -238,8 +248,10 @@ class CloudSync extends ChangeNotifier {
   Future<CloudKey> _key(CloudSettings current) async {
     _initialized ??= _initialize?.call() ?? Future<void>.value();
     await _initialized;
-    return await _vault.read(current.repository) ??
-        (throw const InputException('SSH 私钥未找到，请重新配置'));
+    final key = current.useDeviceKey
+        ? await _vault.readDevice()
+        : await _vault.read(current.repository);
+    return key ?? (throw const InputException('SSH 私钥未找到，请重新配置'));
   }
 
   void _apply(CloudSnapshot local, CloudSnapshot merged, CloudSnapshot base) {

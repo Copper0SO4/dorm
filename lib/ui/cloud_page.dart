@@ -36,10 +36,18 @@ class CloudAction extends StatelessWidget {
   );
 }
 
-class CloudPage extends StatelessWidget {
+class CloudPage extends StatefulWidget {
   const CloudPage({super.key, required this.cloud});
 
   final CloudSync cloud;
+
+  @override
+  State<CloudPage> createState() => _CloudPageState();
+}
+
+class _CloudPageState extends State<CloudPage> {
+  CloudSync get cloud => widget.cloud;
+  late Future<String?> _deviceKey = cloud.devicePublicKey();
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -53,11 +61,12 @@ class CloudPage extends StatelessWidget {
           storageKey: 'cloud',
           children: [
             PageHeading('云端存储', '将寝室数据同步到 GitHub 的 $cloudBranch 分支。'),
+            _deviceKeyCard(context),
             if (settings == null)
               EmptyPanel(
                 icon: Icons.cloud_outlined,
                 title: '尚未连接仓库',
-                detail: '添加私有 GitHub 仓库和有写权限的 SSH Key。',
+                detail: '添加私有 GitHub 仓库，选择设备密钥或导入已有私钥。',
                 action: FilledButton.icon(
                   onPressed: () => _edit(context),
                   icon: const Icon(Icons.add_link),
@@ -99,6 +108,13 @@ class CloudPage extends StatelessWidget {
                               '最近成功 · ${MaterialLocalizations.of(context).formatCompactDate(lastSync)} '
                               '${TimeOfDay.fromDateTime(lastSync).format(context)}',
                             ),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.key_outlined),
+                      title: const Text('同步密钥'),
+                      subtitle: Text(
+                        settings.useDeviceKey ? '设备 SSH 密钥' : '导入的 SSH 密钥',
+                      ),
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -151,16 +167,83 @@ class CloudPage extends StatelessWidget {
     ),
   );
 
-  void _edit(BuildContext context) => showDialog<void>(
-    context: context,
-    builder: (_) => _CloudEditor(cloud: cloud),
+  Widget _deviceKeyCard(BuildContext context) => FutureBuilder<String?>(
+    future: _deviceKey,
+    builder: (context, snapshot) {
+      final publicKey = snapshot.data;
+      final loading = snapshot.connectionState != ConnectionState.done;
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('设备 SSH 密钥', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              if (loading)
+                const LinearProgressIndicator()
+              else if (snapshot.hasError)
+                Text(errorText(snapshot.error!, fallback: '无法读取或生成设备密钥'))
+              else if (publicKey == null)
+                const Text('在本机生成 Ed25519 密钥。生成后可复制公钥，私钥由 DormOS 保存。')
+              else ...[
+                const Text(
+                  '将公钥添加到 GitHub 仓库的 Deploy keys，并勾选 Allow write access。',
+                ),
+                const SizedBox(height: 8),
+                SelectableText(publicKey),
+              ],
+              if (!loading) ...[
+                const SizedBox(height: 8),
+                if (publicKey == null)
+                  FilledButton.tonalIcon(
+                    onPressed: () => setState(() {
+                      _deviceKey = cloud.generateDevicePublicKey();
+                    }),
+                    icon: const Icon(Icons.key_outlined),
+                    label: const Text('生成 SSH 密钥'),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: () => _copyPublicKey(context, publicKey),
+                    icon: const Icon(Icons.copy_outlined),
+                    label: const Text('复制公钥'),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
   );
+
+  Future<void> _copyPublicKey(BuildContext context, String publicKey) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: publicKey));
+      if (context.mounted) notify(context, '已复制 SSH 公钥');
+    } catch (_) {
+      if (context.mounted) notify(context, '无法复制公钥，请手动选中复制');
+    }
+  }
+
+  Future<void> _edit(BuildContext context) async {
+    final publicKey = await _deviceKey.then(
+      (key) => key,
+      onError: (Object _) => null,
+    );
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) =>
+          _CloudEditor(cloud: cloud, hasDeviceKey: publicKey != null),
+    );
+  }
 
   Future<void> _disconnect(BuildContext context) async {
     if (!await confirm(
       context,
       '断开云同步',
-      '本机数据和 GitHub 分支会保留，应用会移除这台设备保存的私钥。',
+      '本机数据、设备密钥和 GitHub 分支会保留。导入到此仓库的私钥会从这台设备移除。',
       action: '断开连接',
     )) {
       return;
@@ -174,9 +257,10 @@ class CloudPage extends StatelessWidget {
 }
 
 class _CloudEditor extends StatefulWidget {
-  const _CloudEditor({required this.cloud});
+  const _CloudEditor({required this.cloud, required this.hasDeviceKey});
 
   final CloudSync cloud;
+  final bool hasDeviceKey;
 
   @override
   State<_CloudEditor> createState() => _CloudEditorState();
@@ -191,6 +275,8 @@ class _CloudEditorState extends State<_CloudEditor> {
   );
   late final _email = TextEditingController(text: widget.cloud.settings?.email);
   final _passphrase = TextEditingController();
+  late bool _useDeviceKey =
+      widget.cloud.settings?.useDeviceKey ?? widget.hasDeviceKey;
   String? _key;
   String? _error;
   bool _saving = false;
@@ -229,9 +315,12 @@ class _CloudEditorState extends State<_CloudEditor> {
         repository: _address.text,
         operator: _operator.text,
         email: _email.text,
+        useDeviceKey: _useDeviceKey,
       );
-      final key = _key == null ? null : CloudKey(_key!, _passphrase.text);
-      if (key == null && _passphrase.text.isNotEmpty) {
+      final key = _useDeviceKey || _key == null
+          ? null
+          : CloudKey(_key!, _passphrase.text);
+      if (!_useDeviceKey && key == null && _passphrase.text.isNotEmpty) {
         setState(() => _error = '更改口令时请同时粘贴私钥');
         return;
       }
@@ -288,22 +377,37 @@ class _CloudEditorState extends State<_CloudEditor> {
             decoration: const InputDecoration(labelText: 'Git 提交邮箱（可留空）'),
           ),
           const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _saving ? null : _paste,
-            icon: const Icon(Icons.key_outlined),
-            label: Text(_key == null ? '粘贴 SSH 私钥' : '已粘贴私钥 · 重新粘贴'),
-          ),
-          if (_key == null &&
-              widget.cloud.settings?.repository == _normalized(_address.text) &&
-              widget.cloud.settings != null)
-            const Text('留空会保留现有私钥。'),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _passphrase,
-            enabled: !_saving,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'SSH 私钥口令（可留空）'),
-          ),
+          if (widget.hasDeviceKey || _useDeviceKey)
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('使用设备 SSH 密钥'),
+              value: _useDeviceKey,
+              onChanged: _saving
+                  ? null
+                  : (value) => setState(() {
+                      _useDeviceKey = value!;
+                      _error = null;
+                    }),
+            ),
+          if (!_useDeviceKey) ...[
+            OutlinedButton.icon(
+              onPressed: _saving ? null : _paste,
+              icon: const Icon(Icons.key_outlined),
+              label: Text(_key == null ? '粘贴 SSH 私钥' : '已粘贴私钥 · 重新粘贴'),
+            ),
+            if (_key == null &&
+                widget.cloud.settings?.repository ==
+                    _normalized(_address.text) &&
+                widget.cloud.settings?.useDeviceKey == false)
+              const Text('留空会保留现有私钥。'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _passphrase,
+              enabled: !_saving,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'SSH 私钥口令（可留空）'),
+            ),
+          ],
           const SizedBox(height: 10),
           const Text('请使用私有仓库。操作者名称及邮箱将写入提交记录。'),
           if (_error case final error?)
