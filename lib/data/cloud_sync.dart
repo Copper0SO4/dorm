@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import 'dorm_invite.dart';
 import 'github_transport.dart';
 import 'ssh_vault.dart';
 
@@ -51,6 +52,14 @@ class CloudSync extends ChangeNotifier {
 
   Future<String> generateDevicePublicKey() async =>
       (await _vault.generateDevice()).publicKey;
+
+  Future<DormInvite> exportInvite({String? password}) async {
+    final current = settings;
+    if (current == null) throw const InputException('请先配置 GitHub 仓库');
+    final invite = DormInvite(current.repository);
+    if (password == null) return invite;
+    return invite.withSharedKey(await _readKey(current), password);
+  }
 
   Future<void> startup() async {
     _poll ??= Timer.periodic(const Duration(seconds: 30), (_) {
@@ -248,6 +257,10 @@ class CloudSync extends ChangeNotifier {
   Future<CloudKey> _key(CloudSettings current) async {
     _initialized ??= _initialize?.call() ?? Future<void>.value();
     await _initialized;
+    return _readKey(current);
+  }
+
+  Future<CloudKey> _readKey(CloudSettings current) async {
     final key = current.useDeviceKey
         ? await _vault.readDevice()
         : await _vault.read(current.repository);

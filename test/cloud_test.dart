@@ -35,6 +35,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('GitHub 云同步'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('配置仓库'));
     await tester.tap(find.text('配置仓库'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -253,6 +254,9 @@ void main() {
 
     a.saveMember('原姓名');
     await syncA.configure(deviceIdentity, null);
+    final invite = await syncA.exportInvite();
+    expect(invite.repository, identityA.repository);
+    expect(invite.requiresPassword, isFalse);
     expect(a.cloud.settings!.useDeviceKey, isTrue);
     expect(await newVault.read(identityA.repository), isNull);
     expect(syncA.error, isNull);

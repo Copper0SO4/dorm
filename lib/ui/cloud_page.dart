@@ -5,6 +5,7 @@ import '../data/cloud_sync.dart';
 import '../data/ssh_vault.dart';
 import '../domain/cloud.dart';
 import 'common.dart';
+import 'dorm_invite_dialog.dart';
 
 class CloudAction extends StatelessWidget {
   const CloudAction({super.key, required this.cloud});
@@ -48,6 +49,7 @@ class CloudPage extends StatefulWidget {
 class _CloudPageState extends State<CloudPage> {
   CloudSync get cloud => widget.cloud;
   late Future<String?> _deviceKey = cloud.devicePublicKey();
+  bool _openingInvite = false;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -61,6 +63,27 @@ class _CloudPageState extends State<CloudPage> {
           storageKey: 'cloud',
           children: [
             PageHeading('云端存储', '将寝室数据同步到 GitHub 的 $cloudBranch 分支。'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _openingInvite || cloud.busy
+                      ? null
+                      : () => _importInvite(context),
+                  icon: const Icon(Icons.file_open_outlined),
+                  label: const Text('导入 .dorm'),
+                ),
+                if (settings != null)
+                  OutlinedButton.icon(
+                    onPressed: _openingInvite
+                        ? null
+                        : () => _exportInvite(context),
+                    icon: const Icon(Icons.ios_share_outlined),
+                    label: const Text('导出 .dorm'),
+                  ),
+              ],
+            ),
             _deviceKeyCard(context),
             if (settings == null)
               EmptyPanel(
@@ -226,7 +249,37 @@ class _CloudPageState extends State<CloudPage> {
     }
   }
 
-  Future<void> _edit(BuildContext context) async {
+  Future<void> _importInvite(BuildContext context) async {
+    setState(() => _openingInvite = true);
+    try {
+      final invite = await chooseDormInvite(context);
+      if (invite != null && context.mounted) {
+        await _edit(context, invite: invite);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        notify(context, errorText(error, fallback: '无法读取 .dorm 邀请'));
+      }
+    } finally {
+      if (mounted) setState(() => _openingInvite = false);
+    }
+  }
+
+  Future<void> _exportInvite(BuildContext context) async {
+    setState(() => _openingInvite = true);
+    try {
+      final saved = await writeDormInvite(context, cloud);
+      if (saved && context.mounted) notify(context, '已保存 .dorm 邀请');
+    } catch (error) {
+      if (context.mounted) {
+        notify(context, errorText(error, fallback: '无法保存 .dorm 邀请'));
+      }
+    } finally {
+      if (mounted) setState(() => _openingInvite = false);
+    }
+  }
+
+  Future<void> _edit(BuildContext context, {ImportedDormInvite? invite}) async {
     final publicKey = await _deviceKey.then(
       (key) => key,
       onError: (Object _) => null,
@@ -234,8 +287,11 @@ class _CloudPageState extends State<CloudPage> {
     if (!context.mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (_) =>
-          _CloudEditor(cloud: cloud, hasDeviceKey: publicKey != null),
+      builder: (_) => _CloudEditor(
+        cloud: cloud,
+        hasDeviceKey: publicKey != null,
+        invite: invite,
+      ),
     );
   }
 
@@ -257,10 +313,15 @@ class _CloudPageState extends State<CloudPage> {
 }
 
 class _CloudEditor extends StatefulWidget {
-  const _CloudEditor({required this.cloud, required this.hasDeviceKey});
+  const _CloudEditor({
+    required this.cloud,
+    required this.hasDeviceKey,
+    this.invite,
+  });
 
   final CloudSync cloud;
   final bool hasDeviceKey;
+  final ImportedDormInvite? invite;
 
   @override
   State<_CloudEditor> createState() => _CloudEditorState();
@@ -268,15 +329,16 @@ class _CloudEditor extends StatefulWidget {
 
 class _CloudEditorState extends State<_CloudEditor> {
   late final _address = TextEditingController(
-    text: widget.cloud.settings?.repository,
+    text: widget.invite?.repository ?? widget.cloud.settings?.repository,
   );
   late final _operator = TextEditingController(
     text: widget.cloud.settings?.operator,
   );
   late final _email = TextEditingController(text: widget.cloud.settings?.email);
   final _passphrase = TextEditingController();
-  late bool _useDeviceKey =
-      widget.cloud.settings?.useDeviceKey ?? widget.hasDeviceKey;
+  late bool _useDeviceKey = widget.invite == null
+      ? widget.cloud.settings?.useDeviceKey ?? widget.hasDeviceKey
+      : widget.invite?.key == null && widget.hasDeviceKey;
   String? _key;
   String? _error;
   bool _saving = false;
@@ -317,12 +379,24 @@ class _CloudEditorState extends State<_CloudEditor> {
         email: _email.text,
         useDeviceKey: _useDeviceKey,
       );
-      final key = _useDeviceKey || _key == null
+      final key = _useDeviceKey
           ? null
-          : CloudKey(_key!, _passphrase.text);
+          : widget.invite?.key ??
+                (_key == null ? null : CloudKey(_key!, _passphrase.text));
       if (!_useDeviceKey && key == null && _passphrase.text.isNotEmpty) {
         setState(() => _error = '更改口令时请同时粘贴私钥');
         return;
+      }
+      final currentRepository = widget.cloud.settings?.repository;
+      if (currentRepository != null &&
+          currentRepository != settings.repository) {
+        final accepted = await confirm(
+          context,
+          '切换同步仓库',
+          '当前本机数据将用于与新仓库同步。若新仓库为空，DormOS 会上传当前账本、排班和物资。',
+          action: '切换并同步',
+        );
+        if (!mounted || !accepted) return;
       }
       await widget.cloud.configure(settings, key);
       if (mounted) Navigator.pop(context);
@@ -355,6 +429,7 @@ class _CloudEditorState extends State<_CloudEditor> {
           TextField(
             controller: _address,
             enabled: !_saving,
+            readOnly: widget.invite != null,
             onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(
               labelText: 'GitHub 仓库地址',
@@ -389,7 +464,9 @@ class _CloudEditorState extends State<_CloudEditor> {
                       _error = null;
                     }),
             ),
-          if (!_useDeviceKey) ...[
+          if (!_useDeviceKey && widget.invite?.key != null)
+            const Text('已解锁邀请中的 SSH 私钥')
+          else if (!_useDeviceKey) ...[
             OutlinedButton.icon(
               onPressed: _saving ? null : _paste,
               icon: const Icon(Icons.key_outlined),
@@ -409,7 +486,12 @@ class _CloudEditorState extends State<_CloudEditor> {
             ),
           ],
           const SizedBox(height: 10),
-          const Text('请使用私有仓库。操作者名称及邮箱将写入提交记录。'),
+          if (widget.invite != null &&
+              widget.invite?.key == null &&
+              !widget.hasDeviceKey)
+            const Text('此邀请仅提供仓库地址。你可以粘贴私钥，也可以返回生成设备密钥。')
+          else
+            const Text('操作者名称及邮箱将写入提交记录。'),
           if (_error case final error?)
             Padding(
               padding: const EdgeInsets.only(top: 10),
