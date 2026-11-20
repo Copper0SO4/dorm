@@ -48,6 +48,7 @@ void main() {
     expect(find.byType(NavigationRail), findsOneWidget);
     expect(find.text('Dorm'), findsOneWidget);
     expect(find.text('DormOS'), findsNothing);
+    expect(find.text("Dorm Organizes Roomates' Matters"), findsOneWidget);
     await tester.tap(find.text('新建账单'));
     await tester.pumpAndSettle();
     final fields = find.byType(TextFormField);

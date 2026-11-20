@@ -92,7 +92,7 @@ class _DormAppState extends State<DormApp> {
     valueListenable: _mode,
     builder: (context, mode, _) => MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: dormName,
+      title: dormFullName,
       theme: dormTheme(Brightness.light),
       darkTheme: dormTheme(Brightness.dark),
       themeMode: mode,
@@ -113,7 +113,12 @@ class _DormAppState extends State<DormApp> {
           );
           return Scaffold(
             appBar: AppBar(
-              title: desktop ? const Text('寝室工作台') : const _Brand(),
+              title: Text(
+                dormFullName,
+                maxLines: desktop ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+                style: desktop ? null : theme.textTheme.titleMedium,
+              ),
               actions: [
                 SettingsAction(controller: widget.controller, themeMode: _mode),
                 const SizedBox(width: 12),

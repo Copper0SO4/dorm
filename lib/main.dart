@@ -80,7 +80,7 @@ class _DormBootstrapState extends State<DormBootstrap>
       if (snapshot.hasData) return DormApp(controller: snapshot.data!);
       return MaterialApp(
         debugShowCheckedModeBanner: false,
-        title: dormName,
+        title: dormFullName,
         theme: dormTheme(Brightness.light),
         darkTheme: dormTheme(Brightness.dark),
         home: Scaffold(
