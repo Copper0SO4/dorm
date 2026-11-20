@@ -44,3 +44,14 @@ const schema = [
   ) STRICT''',
   'CREATE INDEX shifts_day ON shifts(day)',
 ];
+
+const mattersSchema = '''CREATE TABLE matters (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 80),
+  note TEXT NOT NULL CHECK(length(note) <= 600),
+  owner_id INTEGER REFERENCES members(id), due_day TEXT CHECK(due_day IS NULL OR length(due_day)=10),
+  urgent INTEGER NOT NULL DEFAULT 0 CHECK(urgent IN (0,1)),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','doing','done')),
+  created_at TEXT NOT NULL, completed_at TEXT,
+  archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+  CHECK ((status = 'done') = (completed_at IS NOT NULL))
+) STRICT''';

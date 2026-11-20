@@ -1,5 +1,7 @@
+import 'matters.dart';
 import 'models.dart';
 import 'schedule.dart';
+import 'settlement.dart';
 
 abstract interface class DormRepository {
   List<Member> members();
@@ -11,6 +13,19 @@ abstract interface class DormRepository {
   List<Balance> balances();
   int addBill(BillDraft draft);
   void recordTransfer(int billId, int memberId, int amount);
+  List<SettlementPair> openSettlements();
+  List<SettlementBatch> settlementHistory();
+  void recordSettlement(
+    int debtorId,
+    int payerId,
+    Map<int, int> expected,
+    int amount,
+  );
+
+  List<Matter> matters();
+  int saveMatter(MatterDraft draft, {int? id});
+  void setMatterStatus(int id, MatterStatus status);
+  void archiveMatter(int id, bool archived);
 
   List<Chore> chores();
   void addChore(String title, Cadence cadence, DateTime start);

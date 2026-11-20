@@ -5,6 +5,7 @@ import '../domain/models.dart';
 import 'chores_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
+import 'matters_page.dart';
 import 'settings_page.dart';
 import 'supplies_page.dart';
 
@@ -80,6 +81,12 @@ class _DormAppState extends State<DormApp> {
       icon: Icons.inventory_2_outlined,
       selected: Icons.inventory_2_rounded,
     ),
+    (
+      label: '寝室事务',
+      short: '事务',
+      icon: Icons.view_kanban_outlined,
+      selected: Icons.view_kanban_rounded,
+    ),
   ];
 
   @override
@@ -113,7 +120,8 @@ class _DormAppState extends State<DormApp> {
             child: switch (_selected) {
               0 => LedgerPage(controller: widget.controller),
               1 => ChoresPage(controller: widget.controller),
-              _ => SuppliesPage(controller: widget.controller),
+              2 => SuppliesPage(controller: widget.controller),
+              _ => MattersPage(controller: widget.controller),
             },
           );
           return Scaffold(

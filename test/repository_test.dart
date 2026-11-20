@@ -5,6 +5,7 @@ import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/domain/ledger_export.dart';
+import 'package:dormos/domain/matters.dart';
 import 'package:dormos/domain/models.dart';
 import 'package:dormos/domain/schedule.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -283,6 +284,100 @@ void main() {
     expect(
       settlementSummary(repo.billDetail(id)),
       '=SUM(1,2) "饮料" · 甲垫付 ¥13.00\n乙 → 甲 ¥5.50',
+    );
+  });
+
+  test(
+    'records one settlement across selected bills and rejects stale balances',
+    () {
+      final first = repo.addBill(
+        const BillDraft(
+          title: '第一单',
+          sharedAmount: 1000,
+          payerId: 1,
+          participantIds: [2],
+        ),
+      );
+      final second = repo.addBill(
+        const BillDraft(
+          title: '第二单',
+          sharedAmount: 600,
+          payerId: 1,
+          participantIds: [2],
+        ),
+      );
+      final reverse = repo.addBill(
+        const BillDraft(
+          title: '反向垫付',
+          sharedAmount: 500,
+          payerId: 2,
+          participantIds: [1],
+        ),
+      );
+      expect(repo.openSettlements(), hasLength(2));
+
+      repo.recordSettlement(2, 1, {first: 1000, second: 600}, 1200);
+      final saved = repo.settlementHistory().single;
+      expect((saved.debtor, saved.payer), ('乙', '甲'));
+      expect(saved.allocations.map((line) => (line.billId, line.amount)), [
+        (first, 1000),
+        (second, 200),
+      ]);
+      expect(repo.billDetail(first).bill.outstanding, 0);
+      expect(repo.billDetail(second).bill.outstanding, 400);
+      expect(repo.billDetail(reverse).bill.outstanding, 500);
+      expect(
+        () => repo.recordSettlement(2, 1, {second: 600}, 200),
+        throwsA(isA<InputException>()),
+      );
+      expect(
+        () => repo.recordSettlement(2, 1, {second: 400}, 401),
+        throwsA(isA<InputException>()),
+      );
+      expect(repo.billDetail(second).transfers, hasLength(1));
+      expect(repo.settlementHistory(), hasLength(1));
+    },
+  );
+
+  test('matters preserve ownership, dates and completion across archive and reopen', () {
+    final draft = (
+      title: '报修台灯',
+      note: '先联系宿管',
+      ownerId: 1,
+      due: DateTime(2026, 4, 2),
+      urgent: true,
+    );
+    final id = repo.saveMatter(draft);
+    final open = repo.matters().single;
+    expect(
+      (open.status, open.owner, open.dueDay),
+      (MatterStatus.open, '甲', '2026-04-02'),
+    );
+    repo.setMatterStatus(id, MatterStatus.doing);
+    expect(repo.matters().single.status, MatterStatus.doing);
+    repo.setMatterStatus(id, MatterStatus.done);
+    final completed = repo.matters().single.completedAt;
+    expect(completed, isNotNull);
+    repo.archiveMatter(id, true);
+    expect(repo.matters().single.archived, isTrue);
+    expect(
+      () => repo.setMatterStatus(id, MatterStatus.open),
+      throwsA(isA<InputException>()),
+    );
+    repo.archiveMatter(id, false);
+    expect(repo.matters().single.completedAt, completed);
+    repo.setMatterStatus(id, MatterStatus.open);
+    expect(repo.matters().single.completedAt, isNull);
+    repo.setMemberActive(2, false);
+    expect(
+      () => repo.saveMatter((
+        title: '另一项',
+        note: '',
+        ownerId: 2,
+        due: null,
+        urgent: false,
+      )),
+      throwsA(isA<InputException>()),
     );
   });
 

@@ -9,6 +9,7 @@ import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
+import 'package:dormos/domain/matters.dart';
 import 'package:dormos/domain/models.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
@@ -153,6 +154,9 @@ void main() {
       before.cloud.rememberBase(base);
       before.close();
       final raw = sqlite3.open(path);
+      raw.execute('DROP TABLE matters');
+      raw.execute('DROP INDEX transfers_batch');
+      raw.execute('ALTER TABLE transfers DROP COLUMN batch_id');
       raw.execute('ALTER TABLE shares DROP COLUMN personal_amount');
       raw.execute('ALTER TABLE cloud_settings DROP COLUMN use_device_key');
       raw.execute('PRAGMA user_version = 2');
@@ -406,6 +410,27 @@ void main() {
       800,
     );
     expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 2);
+
+    final charge = a.openSettlements().single.charges.single;
+    a.recordSettlement(borrowerId, payerId, {
+      charge.billId: charge.amount,
+    }, 200);
+    final matter = a.saveMatter((
+      title: '联系宿管',
+      note: '处理公共照明',
+      ownerId: borrowerId,
+      due: DateTime(2026, 12, 10),
+      urgent: true,
+    ));
+    a.setMatterStatus(matter, MatterStatus.doing);
+    await syncA.sync();
+    expect(syncA.error, isNull);
+    await restarted.sync();
+    expect(restarted.error, isNull);
+    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 3);
+    expect(reopened.matters().single.owner, '独立成员甲');
+    expect(reopened.matters().single.status, MatterStatus.doing);
+    expect(reopened.settlementHistory().single.allocations.single.amount, 200);
 
     final openedA = SqliteDormRepository.open('${root.path}/a.sqlite');
     addTearDown(openedA.close);

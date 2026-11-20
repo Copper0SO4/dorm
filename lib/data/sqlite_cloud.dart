@@ -7,20 +7,23 @@ class _SqliteCloudStore implements CloudStore {
   Database get _db => repository._db;
 
   static void migrate(Database db) {
-    for (final table in cloudTables.where((table) => table.hasSyncId)) {
-      final name = table.name;
-      db.execute('ALTER TABLE $name ADD COLUMN sync_id TEXT');
-      db.execute('UPDATE $name SET sync_id = lower(hex(randomblob(16)))');
-      db.execute('CREATE UNIQUE INDEX ${name}_sync_id ON $name(sync_id)');
-      db.execute('''CREATE TRIGGER ${name}_assign_sync_id AFTER INSERT ON $name
-        WHEN NEW.sync_id IS NULL BEGIN
-          UPDATE $name SET sync_id = lower(hex(randomblob(16))) WHERE id = NEW.id;
-        END''');
+    for (final table in cloudTables) {
+      if (table.hasSyncId && table.inFormat(2)) addSyncIds(db, table.name);
     }
     db.execute('''CREATE TABLE cloud_settings (
       id INTEGER PRIMARY KEY CHECK(id = 1), repository TEXT NOT NULL,
       operator TEXT NOT NULL, email TEXT NOT NULL, base TEXT
     ) STRICT''');
+  }
+
+  static void addSyncIds(Database db, String name) {
+    db.execute('ALTER TABLE $name ADD COLUMN sync_id TEXT');
+    db.execute('UPDATE $name SET sync_id = lower(hex(randomblob(16)))');
+    db.execute('CREATE UNIQUE INDEX ${name}_sync_id ON $name(sync_id)');
+    db.execute('''CREATE TRIGGER ${name}_assign_sync_id AFTER INSERT ON $name
+      WHEN NEW.sync_id IS NULL BEGIN
+        UPDATE $name SET sync_id = lower(hex(randomblob(16))) WHERE id = NEW.id;
+      END''');
   }
 
   @override
@@ -166,7 +169,7 @@ class _SqliteCloudStore implements CloudStore {
               if (value != null &&
                   (column.endsWith('_at') ||
                       column == 'day' ||
-                      column == 'next_day') &&
+                      column.endsWith('_day')) &&
                   (value is! String || DateTime.tryParse(value) == null)) {
                 throw InputException('${table.label}的日期格式不正确');
               }
@@ -184,6 +187,14 @@ class _SqliteCloudStore implements CloudStore {
       GROUP BY b.id HAVING COALESCE(SUM(s.amount), 0) != b.total LIMIT 1''',
     ).isNotEmpty) {
       throw const InputException('合并后的账单金额与分摊合计不一致');
+    }
+    if (_db.select(
+      '''SELECT t.batch_id FROM transfers t JOIN bills b ON b.id=t.bill_id
+      WHERE t.batch_id IS NOT NULL GROUP BY t.batch_id HAVING
+        COUNT(DISTINCT t.member_id) != 1 OR COUNT(DISTINCT b.payer_id) != 1 OR
+        COUNT(DISTINCT t.created_at) != 1 OR COUNT(DISTINCT t.bill_id) != COUNT(*) LIMIT 1''',
+    ).isNotEmpty) {
+      throw const InputException('合并后的批量结算记录不完整或关联不一致');
     }
     if (_db
             .select('SELECT 1 FROM obligations WHERE outstanding < 0 LIMIT 1')

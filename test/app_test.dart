@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/domain/models.dart';
+import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:material_ui/material_ui.dart';
@@ -151,6 +152,77 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('卫生纸'), findsOneWidget);
     expect(find.text('外卖'), findsNothing);
+  });
+
+  testWidgets('opens the matters board and completes an assigned matter', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('小黎');
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('事务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('新建事务'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextFormField, '事务标题'), '报告漏水');
+    await tester.tap(find.byType(DropdownButtonFormField<int>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('小黎').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(repo.matters().single.owner, '小黎');
+    await tester.tap(find.text('报告漏水'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<MatterStatus>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('已完成').last);
+    await tester.pumpAndSettle();
+    expect(repo.matters().single.status, MatterStatus.done);
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('已完成 · 1'));
+    await tester.pumpAndSettle();
+    expect(find.text('报告漏水'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('records and displays one transfer for two bills', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 850));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('小周');
+    repo.saveMember('小林');
+    for (final title in ['纸巾', '豆浆']) {
+      repo.addBill(
+        BillDraft(
+          title: title,
+          sharedAmount: 500,
+          payerId: 1,
+          participantIds: [2],
+        ),
+      );
+    }
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('结算中心'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('小林 → 小周'));
+    await tester.pumpAndSettle();
+    expect(find.text('登记 ¥10.00'), findsOneWidget);
+    await tester.tap(find.text('确认登记'));
+    await tester.pumpAndSettle();
+    expect(repo.bills().every((bill) => bill.outstanding == 0), isTrue);
+    await tester.tap(find.text('结算记录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('小林 → 小周 · ¥10.00'));
+    await tester.pumpAndSettle();
+    expect(find.text('纸巾'), findsOneWidget);
+    expect(find.text('豆浆'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('narrow screen uses bottom navigation and toggles dark theme', (

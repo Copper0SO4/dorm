@@ -291,7 +291,7 @@ class _DataSettingsState extends State<_DataSettings> {
         ListTile(
           leading: const Icon(Icons.save_outlined),
           title: const Text('创建本地备份'),
-          subtitle: const Text('备份成员、账单、排班及物资'),
+          subtitle: const Text('备份成员、账单、寝室事务、排班及物资'),
           trailing: const Icon(Icons.download_outlined),
           onTap: _saving
               ? null

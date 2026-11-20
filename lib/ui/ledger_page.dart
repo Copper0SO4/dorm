@@ -7,6 +7,7 @@ import '../domain/models.dart';
 import 'common.dart';
 import 'data_exports.dart';
 import 'members_dialog.dart';
+import 'settlement_page.dart';
 
 class LedgerPage extends StatefulWidget {
   const LedgerPage({super.key, required this.controller});
@@ -137,6 +138,15 @@ class _LedgerPageState extends State<LedgerPage> {
                 onPressed: () => showMembers(context, controller),
                 icon: const Icon(Icons.group_outlined),
                 label: const Text('寝室成员'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => SettlementPage(controller: controller),
+                  ),
+                ),
+                icon: const Icon(Icons.swap_horiz),
+                label: const Text('结算中心'),
               ),
               FilledButton.icon(
                 onPressed: () => editBill(context, controller),

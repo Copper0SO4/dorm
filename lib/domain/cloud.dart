@@ -63,6 +63,7 @@ class CloudTable {
     this.label,
     this.columns, {
     this.references = const {},
+    this.nullableReferences = const {},
     this.keyColumns = const [],
   });
 
@@ -70,13 +71,23 @@ class CloudTable {
   final String label;
   final List<String> columns;
   final Map<String, String> references;
+  final Set<String> nullableReferences;
   final List<String> keyColumns;
 
   bool get hasSyncId => keyColumns.isEmpty;
 
-  List<String> wireColumns(int format) => format == 1 && name == 'shares'
-      ? const ['bill_id', 'member_id', 'amount']
-      : columns;
+  bool inFormat(int format) => name != 'matters' || format >= 3;
+
+  List<String> wireColumns(int format) => switch (name) {
+    'shares' when format == 1 => const ['bill_id', 'member_id', 'amount'],
+    'transfers' when format < 3 => const [
+      'bill_id',
+      'member_id',
+      'amount',
+      'created_at',
+    ],
+    _ => columns,
+  };
   String keyOf(Map<String, Object?> row) =>
       keyColumns.map((column) => row[column]).join('/');
 }
@@ -97,6 +108,7 @@ const cloudTables = [
     '账单',
     ['title', 'total', 'payer_id', 'created_at', 'supply_id', 'supply_name'],
     references: {'payer_id': 'members', 'supply_id': 'supplies'},
+    nullableReferences: {'supply_id'},
   ),
   CloudTable(
     'shares',
@@ -108,7 +120,7 @@ const cloudTables = [
   CloudTable(
     'transfers',
     '转账',
-    ['bill_id', 'member_id', 'amount', 'created_at'],
+    ['bill_id', 'member_id', 'amount', 'created_at', 'batch_id'],
     references: {'bill_id': 'bills', 'member_id': 'members'},
   ),
   CloudTable(
@@ -116,6 +128,7 @@ const cloudTables = [
     '卫生任务',
     ['title', 'cadence', 'next_day', 'last_member_id', 'active'],
     references: {'last_member_id': 'members'},
+    nullableReferences: {'last_member_id'},
   ),
   CloudTable(
     'shifts',
@@ -123,6 +136,23 @@ const cloudTables = [
     ['task_id', 'day', 'member_id', 'completed_at'],
     references: {'task_id': 'chores', 'member_id': 'members'},
     keyColumns: ['task_id', 'day'],
+  ),
+  CloudTable(
+    'matters',
+    '寝室事务',
+    [
+      'title',
+      'note',
+      'owner_id',
+      'due_day',
+      'urgent',
+      'status',
+      'created_at',
+      'completed_at',
+      'archived',
+    ],
+    references: {'owner_id': 'members'},
+    nullableReferences: {'owner_id'},
   ),
 ];
 
@@ -155,16 +185,17 @@ class CloudSnapshot {
       throw const InputException('云端文件格式不受支持');
     }
     final format = value['format'];
-    if (format is! int || (format != 1 && format != 2)) {
+    if (format is! int || (format < 1 || format > 3)) {
       throw const InputException('云端文件版本不受支持，请检查 Dorm 更新');
     }
     final rawTables = value['tables'] as Map<String, dynamic>;
-    if (rawTables.length != cloudTables.length) {
+    final wireTables = cloudTables.where((table) => table.inFormat(format));
+    if (rawTables.length != wireTables.length) {
       throw const InputException('云端文件表结构不完整');
     }
     final tables = <String, CloudRows>{};
     final syncId = RegExp(r'^[a-f0-9]{32}$');
-    for (final table in cloudTables) {
+    for (final table in wireTables) {
       final rows = rawTables[table.name];
       final columns = table.wireColumns(format);
       if (rows is! Map<String, dynamic>) {
@@ -186,8 +217,7 @@ class CloudSnapshot {
         }
         for (final column in table.references.keys) {
           final value = row[column];
-          if (value == null &&
-              (column == 'supply_id' || column == 'last_member_id')) {
+          if (value == null && table.nullableReferences.contains(column)) {
             continue;
           }
           if (value is! String || !syncId.hasMatch(value)) {
@@ -195,16 +225,18 @@ class CloudSnapshot {
           }
         }
         for (final column in table.columns.where(
-          (column) => column == 'day' || column == 'next_day',
+          (column) => column == 'day' || column.endsWith('_day'),
         )) {
           final value = row[column];
+          if (value == null && column == 'due_day') continue;
           if (value is! String ||
               !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value) ||
-              DateTime.tryParse(value) == null) {
+              DateTime.tryParse(value)?.toIso8601String().startsWith(value) !=
+                  true) {
             throw InputException('云端${table.label}的日期格式不正确');
           }
         }
-        if (format == 2 && table.name == 'shares') {
+        if (format >= 2 && table.name == 'shares') {
           final amount = row['amount'];
           final personal = row['personal_amount'];
           if (amount is! int ||
@@ -212,6 +244,12 @@ class CloudSnapshot {
               personal < 0 ||
               personal > amount) {
             throw const InputException('云端账单的个人费用无效');
+          }
+        }
+        final batch = row['batch_id'];
+        if (table.name == 'transfers' && batch != null) {
+          if (batch is! String || !syncId.hasMatch(batch)) {
+            throw const InputException('云端批量结算标识无效');
           }
         }
         decoded[entry.key] = row;
@@ -226,22 +264,25 @@ class CloudSnapshot {
   late final String encoded = _encode();
 
   String _encode() {
-    final shares = tables['shares']!;
-    if (shares.values.any((row) => row['personal_amount'] != 0)) {
-      return jsonEncode({'format': 2, 'tables': tables});
-    }
-    // Ordinary bills retain the original wire format for older clients.
+    final hasNewRecords =
+        tables['matters']!.isNotEmpty ||
+        tables['transfers']!.values.any((row) => row['batch_id'] != null);
+    final hasPersonal = tables['shares']!.values.any(
+      (row) => row['personal_amount'] != 0,
+    );
+    final format = hasNewRecords ? 3 : (hasPersonal ? 2 : 1);
     return jsonEncode({
-      'format': 1,
+      'format': format,
       'tables': {
-        ...tables,
-        'shares': {
-          for (final entry in shares.entries)
-            entry.key: {
-              for (final column in const ['bill_id', 'member_id', 'amount'])
-                column: entry.value[column],
+        for (final table in cloudTables)
+          if (table.inFormat(format))
+            table.name: {
+              for (final entry in tables[table.name]!.entries)
+                entry.key: {
+                  for (final column in table.wireColumns(format))
+                    column: entry.value[column],
+                },
             },
-        },
       },
     });
   }

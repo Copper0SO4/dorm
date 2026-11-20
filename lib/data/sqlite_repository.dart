@@ -2,9 +2,11 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import '../domain/matters.dart';
 import '../domain/models.dart';
 import '../domain/repository.dart';
 import '../domain/schedule.dart';
+import '../domain/settlement.dart';
 import 'schema.dart';
 
 part 'sqlite_cloud.dart';
@@ -25,7 +27,7 @@ class SqliteDormRepository implements DormRepository {
           for (final statement in schema) {
             repo._db.execute(statement);
           }
-        } else if (version < 0 || version > 4) {
+        } else if (version < 0 || version > 5) {
           throw const InputException('数据库版本较新，请升级 Dorm 后重试');
         }
         if (version == 0 || version == 1) {
@@ -42,7 +44,18 @@ class SqliteDormRepository implements DormRepository {
             'ALTER TABLE shares ADD COLUMN personal_amount '
             'INTEGER NOT NULL DEFAULT 0 CHECK(personal_amount BETWEEN 0 AND amount)',
           );
-          repo._db.execute('PRAGMA user_version = 4');
+        }
+        if (version < 5) {
+          repo._db.execute(
+            "ALTER TABLE transfers ADD COLUMN batch_id TEXT "
+            "CHECK(batch_id IS NULL OR (length(batch_id)=32 AND batch_id NOT GLOB '*[^a-f0-9]*'))",
+          );
+          repo._db.execute(
+            'CREATE INDEX transfers_batch ON transfers(batch_id) WHERE batch_id IS NOT NULL',
+          );
+          repo._db.execute(mattersSchema);
+          _SqliteCloudStore.addSyncIds(repo._db, 'matters');
+          repo._db.execute('PRAGMA user_version = 5');
         }
         repo._db.execute(
           'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
@@ -312,6 +325,187 @@ class SqliteDormRepository implements DormRepository {
         [billId, memberId, amount, _timestamp()],
       );
     });
+  }
+
+  static const _openCharges = '''
+    SELECT b.id AS bill_id, b.title, b.created_at, o.outstanding AS amount,
+      o.member_id AS debtor_id, debtor.name AS debtor, o.payer_id, payer.name AS payer
+    FROM obligations o
+    JOIN bills b ON b.id = o.bill_id
+    JOIN members debtor ON debtor.id = o.member_id
+    JOIN members payer ON payer.id = o.payer_id
+    WHERE o.outstanding > 0''';
+
+  OpenCharge _charge(Row row) => (
+    billId: row['bill_id'] as int,
+    title: row['title'] as String,
+    createdAt: row['created_at'] as String,
+    amount: row['amount'] as int,
+  );
+
+  @override
+  List<SettlementPair> openSettlements() {
+    final pairs = <(int, int), SettlementPair>{};
+    for (final row in _db.select(
+      '$_openCharges ORDER BY debtor.name, payer.name, b.created_at, b.id',
+    )) {
+      final direction = (row['debtor_id'] as int, row['payer_id'] as int);
+      final pair = pairs.putIfAbsent(
+        direction,
+        () => (
+          debtorId: direction.$1,
+          debtor: row['debtor'] as String,
+          payerId: direction.$2,
+          payer: row['payer'] as String,
+          charges: [],
+        ),
+      );
+      pair.charges.add(_charge(row));
+    }
+    return pairs.values.toList();
+  }
+
+  @override
+  void recordSettlement(
+    int debtorId,
+    int payerId,
+    Map<int, int> expected,
+    int amount,
+  ) => _transaction(() {
+    if (expected.isEmpty) throw const InputException('至少选择一笔待结清账单');
+    final selected = [
+      for (final row in _db.select(
+        '$_openCharges AND o.member_id=? AND o.payer_id=? ORDER BY b.created_at,b.id',
+        [debtorId, payerId],
+      ))
+        if (expected.containsKey(row['bill_id'])) _charge(row),
+    ];
+    if (selected.length != expected.length ||
+        selected.any((bill) => expected[bill.billId] != bill.amount)) {
+      throw const InputException('账单余额已经变化，请关闭并重新选择待结清账单');
+    }
+    final allocations = allocateSettlement(selected, amount);
+    final batch = _db
+        .select('SELECT lower(hex(randomblob(16))) AS id')
+        .single['id'];
+    final time = _timestamp();
+    for (final allocation in allocations.entries) {
+      _db.execute(
+        'INSERT INTO transfers (bill_id,member_id,amount,created_at,batch_id) VALUES (?,?,?,?,?)',
+        [allocation.key, debtorId, allocation.value, time, batch],
+      );
+    }
+  });
+
+  @override
+  List<SettlementBatch> settlementHistory() {
+    final batches = <String, SettlementBatch>{};
+    for (final row in _db.select('''
+      SELECT t.batch_id, t.bill_id, t.amount, t.created_at, b.title,
+        debtor.name AS debtor, payer.name AS payer
+      FROM transfers t JOIN bills b ON t.bill_id=b.id
+      JOIN members debtor ON t.member_id=debtor.id
+      JOIN members payer ON b.payer_id=payer.id
+      WHERE t.batch_id IS NOT NULL ORDER BY t.created_at DESC, t.batch_id, b.created_at, b.id
+    ''')) {
+      final id = row['batch_id'] as String;
+      final batch = batches.putIfAbsent(
+        id,
+        () => (
+          id: id,
+          debtor: row['debtor'] as String,
+          payer: row['payer'] as String,
+          createdAt: row['created_at'] as String,
+          allocations: [],
+        ),
+      );
+      batch.allocations.add(_charge(row));
+    }
+    return batches.values.toList();
+  }
+
+  @override
+  List<Matter> matters() => [
+    for (final row in _db.select('''
+      SELECT t.*, m.name AS owner FROM matters t LEFT JOIN members m ON t.owner_id=m.id
+      ORDER BY t.archived, t.urgent DESC, t.due_day IS NULL, t.due_day, t.created_at DESC, t.id DESC
+    '''))
+      (
+        id: row['id'] as int,
+        title: row['title'] as String,
+        note: row['note'] as String,
+        ownerId: row['owner_id'] as int?,
+        owner: row['owner'] as String?,
+        dueDay: row['due_day'] as String?,
+        urgent: row['urgent'] == 1,
+        status: MatterStatus.values.byName(row['status'] as String),
+        createdAt: row['created_at'] as String,
+        completedAt: row['completed_at'] as String?,
+        archived: row['archived'] == 1,
+      ),
+  ];
+
+  @override
+  int saveMatter(MatterDraft draft, {int? id}) => _transaction(() {
+    final title = _required(draft.title, '事务标题');
+    final note = draft.note.trim();
+    if (note.runes.length > 600) throw const InputException('事务说明最多 600 字');
+    final previous = id == null
+        ? null
+        : _requireRow(
+            'SELECT owner_id FROM matters WHERE id=? AND archived=0',
+            [id],
+            '事务已归档或不存在',
+          );
+    final owner = draft.ownerId;
+    if (owner != null && owner != previous?['owner_id']) {
+      _requireActiveMember(owner);
+    }
+    final due = draft.due;
+    if (due != null && (due.year < 1900 || due.year > 9999)) {
+      throw const InputException('请选择有效的截止日期');
+    }
+    final values = [
+      title,
+      note,
+      owner,
+      due == null ? null : dayKey(due),
+      draft.urgent ? 1 : 0,
+    ];
+    if (id == null) {
+      _db.execute(
+        'INSERT INTO matters (title,note,owner_id,due_day,urgent,created_at) VALUES (?,?,?,?,?,?)',
+        [...values, _timestamp()],
+      );
+      return _db.lastInsertRowId;
+    }
+    _db.execute(
+      'UPDATE matters SET title=?,note=?,owner_id=?,due_day=?,urgent=? WHERE id=?',
+      [...values, id],
+    );
+    return id;
+  });
+
+  @override
+  void setMatterStatus(int id, MatterStatus status) {
+    _db.execute(
+      '''
+      UPDATE matters SET status=?, completed_at=
+        CASE WHEN ?='done' THEN COALESCE(completed_at, ?) ELSE NULL END
+      WHERE id=? AND archived=0
+    ''',
+      [status.name, status.name, _timestamp(), id],
+    );
+    _requireUpdate('事务已归档或不存在');
+  }
+
+  @override
+  void archiveMatter(int id, bool archived) {
+    _db.execute('UPDATE matters SET archived=? WHERE id=?', [
+      archived ? 1 : 0,
+      id,
+    ]);
+    _requireUpdate('事务不存在');
   }
 
   @override
