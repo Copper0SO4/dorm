@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import 'cloud_proxy.dart';
 import 'dorm_invite.dart';
 import 'github_transport.dart';
 import 'ssh_vault.dart';
@@ -46,6 +47,19 @@ class CloudSync extends ChangeNotifier {
   String? get error => _error;
   CloudConflict? get conflict => _conflict;
   DateTime? get lastSynced => _lastSynced;
+
+  Future<CloudProxy?> readProxy() => _vault.readProxy();
+
+  Future<void> saveProxy(CloudProxy? proxy) async {
+    await _vault.saveProxy(proxy);
+    if (_disposed || settings == null) return;
+    // An in-flight pull and push keep using the same route.
+    if (_busy) {
+      _repeat = true;
+    } else {
+      unawaited(sync());
+    }
+  }
 
   Future<String?> devicePublicKey() async =>
       (await _vault.readDevice())?.publicKey;
@@ -132,10 +146,11 @@ class CloudSync extends ChangeNotifier {
     _setBusy();
     try {
       final key = await _key(current);
+      final proxy = await readProxy();
       for (var attempt = 0; attempt < 2; attempt++) {
         try {
           if (_disposed) return;
-          await _synchronize(current, key);
+          await _synchronize(current, key, proxy);
           return;
         } on CloudRace {
           if (attempt == 1) throw const InputException('云端在同步时又有更新，稍后将重新拉取');
@@ -148,8 +163,12 @@ class CloudSync extends ChangeNotifier {
     }
   }
 
-  Future<void> _synchronize(CloudSettings current, CloudKey key) async {
-    final remote = await _transport.pull(current, key);
+  Future<void> _synchronize(
+    CloudSettings current,
+    CloudKey key,
+    CloudProxy? proxy,
+  ) async {
+    final remote = await _transport.pull(current, key, proxy: proxy);
     if (_disposed) return;
     final local = _store.snapshot();
     final base = _store.base;
@@ -162,7 +181,7 @@ class CloudSync extends ChangeNotifier {
         );
         return;
       }
-      await _upload(current, key, local, null);
+      await _upload(current, key, local, null, proxy);
       return;
     }
     if (local.sameAs(remote.data)) {
@@ -204,7 +223,7 @@ class CloudSync extends ChangeNotifier {
     if (merged.sameAs(remote.data)) {
       _remember(remote.data);
     } else {
-      await _upload(current, key, merged, remote.revision);
+      await _upload(current, key, merged, remote.revision, proxy);
     }
   }
 
@@ -226,6 +245,7 @@ class CloudSync extends ChangeNotifier {
     _setBusy();
     try {
       final key = await _key(current);
+      final proxy = await readProxy();
       if (_disposed) return;
       final local = _store.snapshot();
       if (!local.sameAs(decision.local)) {
@@ -238,7 +258,7 @@ class CloudSync extends ChangeNotifier {
       if (decision.remote != null && chosen.sameAs(remoteData)) {
         _remember(remoteData);
       } else {
-        await _upload(current, key, chosen, decision.remote?.revision);
+        await _upload(current, key, chosen, decision.remote?.revision, proxy);
       }
     } on CloudRace {
       _repeat = true;
@@ -281,8 +301,9 @@ class CloudSync extends ChangeNotifier {
     CloudKey key,
     CloudSnapshot data,
     String? revision,
+    CloudProxy? proxy,
   ) async {
-    await _transport.push(current, key, data, revision);
+    await _transport.push(current, key, data, revision, proxy: proxy);
     if (!_disposed) _remember(data);
   }
 

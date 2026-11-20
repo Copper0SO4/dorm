@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dormos/data/cloud_proxy.dart';
 import 'package:dormos/data/cloud_sync.dart';
 import 'package:dormos/data/github_transport.dart';
 import 'package:dormos/data/schema.dart';
@@ -79,6 +80,44 @@ void main() {
     );
     expect(find.text('粘贴 SSH 私钥'), findsNothing);
   });
+
+  testWidgets(
+    'proxy settings can be configured before connecting a repository',
+    (tester) async {
+      final root = Directory.systemTemp.createTempSync('dormos-proxy-widget-');
+      addTearDown(() => root.delete(recursive: true));
+      final repo = SqliteDormRepository.open(':memory:');
+      addTearDown(repo.close);
+      final vault = _WidgetVault(root);
+      final sync = CloudSync(repo.cloud, vault, GitHubTransport(root));
+      final controller = DormController(repo, cloud: sync);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(DormApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('GitHub 云同步'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('代理设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('云同步代理'), findsOneWidget);
+      await tester.tap(find.text('启用代理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<CloudProxyKind>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('SOCKS5').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, '代理主机'),
+        '127.0.0.1',
+      );
+      await tester.enterText(find.widgetWithText(TextField, '代理端口'), '7891');
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(sync.settings, isNull);
+      expect((await vault.readProxy())?.kind, CloudProxyKind.socks5);
+      expect((await vault.readProxy())?.port, 7891);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test(
     'migrates a v2 cloud configuration with its existing sync baseline',
@@ -389,6 +428,15 @@ class _WidgetVault extends SshVault {
 
   static String get publicKey => _syntheticKey().publicKey;
   CloudKey? _deviceKey;
+  CloudProxy? _proxy;
+
+  @override
+  Future<CloudProxy?> readProxy() async => _proxy;
+
+  @override
+  Future<void> saveProxy(CloudProxy? proxy) async {
+    _proxy = proxy;
+  }
 
   @override
   Future<CloudKey?> readDevice() async => _deviceKey;

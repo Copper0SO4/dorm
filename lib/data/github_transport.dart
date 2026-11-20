@@ -6,18 +6,24 @@ import 'package:git2dart/git2dart.dart' as git;
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import 'cloud_proxy.dart';
 import 'ssh_vault.dart';
 
 typedef RemoteCloud = ({String revision, String author, CloudSnapshot data});
 
 abstract interface class CloudTransport {
-  Future<RemoteCloud?> pull(CloudSettings settings, CloudKey key);
+  Future<RemoteCloud?> pull(
+    CloudSettings settings,
+    CloudKey key, {
+    CloudProxy? proxy,
+  });
   Future<void> push(
     CloudSettings settings,
     CloudKey key,
     CloudSnapshot data,
-    String? expectedRevision,
-  );
+    String? expectedRevision, {
+    CloudProxy? proxy,
+  });
 }
 
 class CloudRace implements Exception {
@@ -37,57 +43,56 @@ class GitHubTransport implements CloudTransport {
       localTestRemote?.uri.toString() ??
       settings.repository.replaceFirst(
         'git@github.com:',
-        'ssh://git@ssh.github.com:443/',
+        'ssh://git@$githubSshHost:$githubSshPort/',
       );
 
   @override
-  Future<RemoteCloud?> pull(CloudSettings settings, CloudKey key) {
-    final path = _path(settings);
-    final url = _url(settings);
-    final isLocal = localTestRemote != null;
-    return Isolate.run(
-      () => _withRemote(path, url, key, isLocal, (repo, remote, callbacks) {
-        if (_head(remote, callbacks) == null) return null;
-        remote.fetch(refspecs: ['+$_branch:$_incoming'], callbacks: callbacks);
-        final oid = git.Reference.nameToId(repo: repo, refName: _incoming);
+  Future<RemoteCloud?> pull(
+    CloudSettings settings,
+    CloudKey key, {
+    CloudProxy? proxy,
+  }) {
+    return _run(settings, key, proxy, (repo, remote, callbacks) {
+      if (_head(remote, callbacks) == null) return null;
+      remote.fetch(refspecs: ['+$_branch:$_incoming'], callbacks: callbacks);
+      final oid = git.Reference.nameToId(repo: repo, refName: _incoming);
+      try {
+        final commit = git.Commit.lookup(repo: repo, oid: oid);
         try {
-          final commit = git.Commit.lookup(repo: repo, oid: oid);
+          final tree = commit.tree;
           try {
-            final tree = commit.tree;
+            final entry = tree[cloudFileName];
+            if (tree.length != 1 || entry.filemode != git.GitFilemode.blob) {
+              throw const InputException('云端数据分支包含意外的文件');
+            }
+            final blobId = entry.oid;
             try {
-              final entry = tree[cloudFileName];
-              if (tree.length != 1 || entry.filemode != git.GitFilemode.blob) {
-                throw const InputException('云端数据分支包含意外的文件');
-              }
-              final blobId = entry.oid;
+              final blob = git.Blob.lookup(repo: repo, oid: blobId);
               try {
-                final blob = git.Blob.lookup(repo: repo, oid: blobId);
-                try {
-                  if (blob.size > maxCloudBytes) {
-                    throw const InputException('云端快照超过 8 MB，无法读取');
-                  }
-                  return (
-                    revision: oid.sha,
-                    author: commit.author.name,
-                    data: CloudSnapshot.decode(utf8.decode(blob.contentBytes)),
-                  );
-                } finally {
-                  blob.free();
+                if (blob.size > maxCloudBytes) {
+                  throw const InputException('云端快照超过 8 MB，无法读取');
                 }
+                return (
+                  revision: oid.sha,
+                  author: commit.author.name,
+                  data: CloudSnapshot.decode(utf8.decode(blob.contentBytes)),
+                );
               } finally {
-                blobId.free();
+                blob.free();
               }
             } finally {
-              tree.free();
+              blobId.free();
             }
           } finally {
-            commit.free();
+            tree.free();
           }
         } finally {
-          oid.free();
+          commit.free();
         }
-      }),
-    );
+      } finally {
+        oid.free();
+      }
+    });
   }
 
   @override
@@ -95,69 +100,105 @@ class GitHubTransport implements CloudTransport {
     CloudSettings settings,
     CloudKey key,
     CloudSnapshot data,
-    String? expectedRevision,
-  ) {
+    String? expectedRevision, {
+    CloudProxy? proxy,
+  }) {
     final path = _path(settings);
-    final url = _url(settings);
-    final isLocal = localTestRemote != null;
     final encoded = data.encoded;
     final operator = settings.operator;
     final email = settings.commitEmail;
-    return Isolate.run(
-      () => _withRemote(path, url, key, isLocal, (repo, remote, callbacks) {
-        if (_head(remote, callbacks) != expectedRevision) {
-          throw const CloudRace();
-        }
-        final bytes = utf8.encode(encoded);
-        if (bytes.length > maxCloudBytes) {
-          throw const InputException('本地快照超过 8 MB，无法上传');
-        }
-        final stage = Directory(path).createTempSync('snapshot-');
+    return _run(settings, key, proxy, (repo, remote, callbacks) {
+      if (_head(remote, callbacks) != expectedRevision) {
+        throw const CloudRace();
+      }
+      final bytes = utf8.encode(encoded);
+      if (bytes.length > maxCloudBytes) {
+        throw const InputException('本地快照超过 8 MB，无法上传');
+      }
+      final stage = Directory(path).createTempSync('snapshot-');
+      try {
+        final file = File(
+          '${stage.path}${Platform.pathSeparator}$cloudFileName',
+        )..writeAsBytesSync(bytes);
+        final blob = git.Blob.createFromDisk(repo: repo, path: file.path);
         try {
-          final file = File(
-            '${stage.path}${Platform.pathSeparator}$cloudFileName',
-          )..writeAsBytesSync(bytes);
-          final blob = git.Blob.createFromDisk(repo: repo, path: file.path);
+          final builder = git.TreeBuilder(repo: repo);
           try {
-            final builder = git.TreeBuilder(repo: repo);
+            builder.add(
+              filename: cloudFileName,
+              oid: blob,
+              filemode: git.GitFilemode.blob,
+            );
+            final treeId = builder.write();
             try {
-              builder.add(
-                filename: cloudFileName,
-                oid: blob,
-                filemode: git.GitFilemode.blob,
-              );
-              final treeId = builder.write();
+              final tree = git.Tree.lookup(repo: repo, oid: treeId);
               try {
-                final tree = git.Tree.lookup(repo: repo, oid: treeId);
-                try {
-                  _publish(
-                    repo,
-                    remote,
-                    callbacks,
-                    tree,
-                    operator,
-                    email,
-                    expectedRevision,
-                  );
-                } finally {
-                  tree.free();
-                }
+                _publish(
+                  repo,
+                  remote,
+                  callbacks,
+                  tree,
+                  operator,
+                  email,
+                  expectedRevision,
+                );
               } finally {
-                treeId.free();
+                tree.free();
               }
             } finally {
-              builder.free();
+              treeId.free();
             }
           } finally {
-            blob.free();
+            builder.free();
           }
         } finally {
-          stage.deleteSync(recursive: true);
+          blob.free();
         }
-      }),
-    );
+      } finally {
+        stage.deleteSync(recursive: true);
+      }
+    });
+  }
+
+  Future<T> _run<T>(
+    CloudSettings settings,
+    CloudKey key,
+    CloudProxy? proxy,
+    _RemoteAction<T> action,
+  ) async {
+    final path = _path(settings);
+    final url = _url(settings);
+    final isLocal = localTestRemote != null;
+    if (proxy == null || isLocal) {
+      return _runRemote(path, url, key, isLocal, null, action);
+    }
+    final tunnel = await GitHubProxyTunnel.open(proxy);
+    try {
+      return await _runRemote(path, url, key, false, tunnel.port, action);
+    } catch (error) {
+      if (tunnel.failure case final failure?) throw failure;
+      rethrow;
+    } finally {
+      await tunnel.close();
+    }
   }
 }
+
+typedef _RemoteAction<T> = T Function(
+  git.Repository,
+  git.Remote,
+  git.Callbacks,
+);
+
+Future<T> _runRemote<T>(
+  String path,
+  String url,
+  CloudKey key,
+  bool isLocal,
+  int? tunnelPort,
+  _RemoteAction<T> action,
+) =>
+    Isolate.run(() => _withRemote(path, url, key, isLocal, tunnelPort, action));
 
 const _branch = 'refs/heads/$cloudBranch';
 const _incoming = 'refs/remotes/origin/$cloudBranch';
@@ -172,8 +213,11 @@ T _withRemote<T>(
   String url,
   CloudKey key,
   bool isLocal,
-  T Function(git.Repository, git.Remote, git.Callbacks) action,
+  int? tunnelPort,
+  _RemoteAction<T> action,
 ) {
+  final expectedHost = tunnelPort == null ? githubSshHost : '127.0.0.1';
+  final expectedPort = tunnelPort ?? githubSshPort;
   var rejectedHost = false;
   String? rejection;
   final callbacks = isLocal
@@ -188,9 +232,9 @@ T _withRemote<T>(
           certificateCheck: (certificate, host, {required valid}) {
             final fingerprint = certificate.hostkey?.sha256;
             final accepted =
-                (host == 'ssh.github.com' ||
-                    host == 'ssh.github.com:443' ||
-                    host == '[ssh.github.com]:443') &&
+                (host == expectedHost ||
+                    host == '$expectedHost:$expectedPort' ||
+                    host == '[$expectedHost]:$expectedPort') &&
                 fingerprint != null &&
                 _githubFingerprints.contains(
                   base64.encode(fingerprint).replaceAll('=', ''),
@@ -218,6 +262,13 @@ T _withRemote<T>(
             );
       try {
         if (remote.url != url) throw const InputException('本地 Git 缓存的仓库地址不匹配');
+        if (tunnelPort != null) {
+          final forwarded = Uri.parse(url)
+              .replace(host: expectedHost, port: tunnelPort)
+              .toString();
+          remote.url = forwarded;
+          remote.pushUrl = forwarded;
+        }
         final result = action(repo, remote, callbacks);
         if (rejection case final message?) {
           if (_raceMessage(message)) throw const CloudRace();

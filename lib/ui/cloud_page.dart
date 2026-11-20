@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import '../data/cloud_sync.dart';
 import '../data/ssh_vault.dart';
 import '../domain/cloud.dart';
+import 'cloud_proxy_dialog.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
 
@@ -67,6 +68,11 @@ class _CloudPageState extends State<CloudPage> {
               spacing: 8,
               runSpacing: 8,
               children: [
+                OutlinedButton.icon(
+                  onPressed: () => editCloudProxy(context, cloud),
+                  icon: const Icon(Icons.settings_ethernet_outlined),
+                  label: const Text('代理设置'),
+                ),
                 OutlinedButton.icon(
                   onPressed: _openingInvite || cloud.busy
                       ? null

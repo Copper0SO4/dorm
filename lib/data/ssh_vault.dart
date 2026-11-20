@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:cryptography/cryptography.dart' show Ed25519;
 
 import '../domain/ledger.dart';
+import 'cloud_proxy.dart';
 
 class CloudKey {
   factory CloudKey(String text, String passphrase) {
@@ -142,7 +143,36 @@ class SshVault {
   File get _deviceFile =>
       File('${_directory.path}${Platform.pathSeparator}device-key.json');
 
+  File get _proxyFile =>
+      File('${_directory.path}${Platform.pathSeparator}proxy.json');
+
   Future<CloudKey?> readDevice() => _read(_deviceFile);
+
+  Future<CloudProxy?> readProxy() async {
+    final json = await _readJson(_proxyFile);
+    if (json == null) return null;
+    return CloudProxy(
+      kind: CloudProxyKind.values.byName(json['kind'] as String),
+      host: json['host'] as String,
+      port: json['port'] as int,
+      username: json['username'] as String,
+      password: json['password'] as String,
+    );
+  }
+
+  Future<void> saveProxy(CloudProxy? proxy) async {
+    if (proxy == null) {
+      if (await _proxyFile.exists()) await _proxyFile.delete();
+      return;
+    }
+    await _save(_proxyFile, {
+      'kind': proxy.kind.name,
+      'host': proxy.host,
+      'port': proxy.port,
+      'username': proxy.username,
+      'password': proxy.password,
+    });
+  }
 
   Future<CloudKey> generateDevice() async {
     final pending = _generation ??= _generateDevice();
@@ -163,7 +193,7 @@ class SshVault {
       final existing = await readDevice();
       if (existing != null) return existing;
       final key = await CloudKey.generate();
-      await _save(_deviceFile, key);
+      await _saveKey(_deviceFile, key);
       return key;
     } finally {
       await lock.close();
@@ -177,15 +207,24 @@ class SshVault {
   Future<CloudKey?> read(String repository) => _read(_file(repository));
 
   Future<CloudKey?> _read(File file) async {
+    final json = await _readJson(file);
+    return json == null
+        ? null
+        : CloudKey(json['key'] as String, json['passphrase'] as String);
+  }
+
+  Future<Map<String, dynamic>?> _readJson(File file) async {
     if (!await file.exists()) return null;
-    final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    return CloudKey(json['key'] as String, json['passphrase'] as String);
+    return jsonDecode(await file.readAsString()) as Map<String, dynamic>;
   }
 
   Future<void> save(String repository, CloudKey key) =>
-      _save(_file(repository), key);
+      _saveKey(_file(repository), key);
 
-  Future<void> _save(File file, CloudKey key) async {
+  Future<void> _saveKey(File file, CloudKey key) =>
+      _save(file, {'key': key.privateKey, 'passphrase': key.passphrase});
+
+  Future<void> _save(File file, Map<String, Object?> payload) async {
     await _directory.create(recursive: true);
     if (Platform.isWindows) {
       final user = await Process.run('whoami.exe', [
@@ -198,7 +237,7 @@ class SshVault {
           .firstMatch(user.stdout.toString())
           ?.group(0);
       if (user.exitCode != 0 || sid == null) {
-        throw const InputException('无法确定当前 Windows 用户，私钥未保存');
+        throw const InputException('无法确定当前 Windows 用户，凭据未保存');
       }
       final acl = await Process.run('icacls.exe', [
         _directory.path,
@@ -206,23 +245,20 @@ class SshVault {
         '/grant:r',
         '*$sid:(OI)(CI)F',
       ]);
-      if (acl.exitCode != 0) throw const InputException('无法限制私钥目录权限，私钥未保存');
+      if (acl.exitCode != 0) throw const InputException('无法限制凭据目录权限，设置未保存');
     } else if (!Platform.isAndroid && !Platform.isIOS) {
       final permissions = await Process.run('chmod', ['700', _directory.path]);
       if (permissions.exitCode != 0) {
-        throw const InputException('无法限制私钥目录权限，私钥未保存');
+        throw const InputException('无法限制凭据目录权限，设置未保存');
       }
     }
     final temp = File('${file.path}.tmp');
     try {
-      await temp.writeAsString(
-        jsonEncode({'key': key.privateKey, 'passphrase': key.passphrase}),
-        flush: true,
-      );
+      await temp.writeAsString(jsonEncode(payload), flush: true);
       if (!Platform.isWindows && !Platform.isAndroid && !Platform.isIOS) {
         final permissions = await Process.run('chmod', ['600', temp.path]);
         if (permissions.exitCode != 0) {
-          throw const InputException('无法限制私钥文件权限，私钥未保存');
+          throw const InputException('无法限制凭据文件权限，设置未保存');
         }
       }
       await temp.rename(file.path);
