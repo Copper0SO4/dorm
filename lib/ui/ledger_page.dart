@@ -71,10 +71,10 @@ class _LedgerPageState extends State<LedgerPage> {
   }
 
   Widget _historyTools(List<Bill> visible, int total) => Padding(
-    padding: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.only(bottom: panelGap),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 10,
+      spacing: 8,
       children: [
         TextField(
           controller: _search,
@@ -177,7 +177,7 @@ class _LedgerPageState extends State<LedgerPage> {
             billCount: bills.length,
           ),
           Padding(
-            padding: const EdgeInsets.only(top: 22, bottom: 14),
+            padding: const EdgeInsets.only(top: sectionGap, bottom: panelGap),
             child: Align(
               alignment: Alignment.centerLeft,
               child: SegmentedButton<bool>(

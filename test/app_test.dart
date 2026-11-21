@@ -99,6 +99,22 @@ void main() {
     expect(find.text('第 2 组'), findsOneWidget);
     expect(names.evaluate().length, 4);
     expect(find.text('复制分组'), findsOneWidget);
+    final tools = find.byType(ToolsPage);
+    final tabs = tester.getRect(
+      find.descendant(
+        of: tools,
+        matching: find.byWidgetPredicate((widget) => widget is SegmentedButton),
+      ),
+    );
+    final controls = tester.getRect(
+      find.descendant(of: tools, matching: find.byType(Card)).first,
+    );
+    final board = tester.getRect(find.byType(GroupBoard));
+    expect(controls.left, tabs.left);
+    expect(controls.right, tabs.right);
+    expect(controls.top - tabs.bottom, greaterThanOrEqualTo(panelGap));
+    expect(board.top, controls.top);
+    expect(board.left - controls.right, panelGap);
     await tester.tap(find.text('骰子与硬币'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('掷骰子'));
@@ -182,6 +198,36 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('分组结果'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ledger heading leaves room for actions at all widths', (
+    tester,
+  ) async {
+    repo.saveMember('小林');
+    await tester.binding.setSurfaceSize(const Size(360, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(DormApp(controller: controller));
+    for (final width in [360.0, 980.0, 1280.0]) {
+      await tester.binding.setSurfaceSize(Size(width, 800));
+      await tester.pumpAndSettle();
+      final title = tester.getRect(
+        find.descendant(
+          of: find.byType(PageHeading),
+          matching: find.text('公共账本'),
+        ),
+      );
+      final description = tester.getRect(find.text('查看公共费用、个人费用和转账进度。'));
+      final button = tester.getRect(find.widgetWithText(FilledButton, '新建账单'));
+      expect(title.left, description.left);
+      expect(description.top - title.bottom, 4);
+      expect(button.right, lessThan(width));
+      if (width < 1000) {
+        expect(button.top, greaterThanOrEqualTo(description.bottom + 12));
+      } else {
+        expect(button.left, greaterThan(description.right));
+      }
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('first bill continues directly after adding a roommate', (

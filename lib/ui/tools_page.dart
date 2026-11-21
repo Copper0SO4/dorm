@@ -17,6 +17,7 @@ class ToolsPage extends StatefulWidget {
 }
 
 class _ToolsPageState extends State<ToolsPage> {
+  static const _panelWidth = 416.0;
   var _selected = _Tool.draw;
 
   @override
@@ -30,11 +31,16 @@ class _ToolsPageState extends State<ToolsPage> {
       return PageBody(
         storageKey: 'dorm-tools',
         children: [
-          Text('寝室工具箱', style: Theme.of(context).textTheme.headlineMedium),
+          Text(
+            '寝室工具箱',
+            style: Theme.of(context).textTheme.headlineMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: panelGap),
           Align(
             alignment: Alignment.centerLeft,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 560),
+              constraints: const BoxConstraints(maxWidth: _panelWidth),
               child: SizedBox(
                 width: double.infinity,
                 child: SegmentedButton<_Tool>(
@@ -51,18 +57,27 @@ class _ToolsPageState extends State<ToolsPage> {
               ),
             ),
           ),
+          const SizedBox(height: panelGap),
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Visibility(
                 visible: _selected == _Tool.draw,
                 maintainState: true,
-                child: DrawCard(mode: DrawMode.draw, members: members),
+                child: DrawCard(
+                  mode: DrawMode.draw,
+                  members: members,
+                  panelWidth: _panelWidth,
+                ),
               ),
               Visibility(
                 visible: _selected == _Tool.teams,
                 maintainState: true,
-                child: DrawCard(mode: DrawMode.teams, members: members),
+                child: DrawCard(
+                  mode: DrawMode.teams,
+                  members: members,
+                  panelWidth: _panelWidth,
+                ),
               ),
               Visibility(
                 visible: _selected == _Tool.roll,
@@ -70,7 +85,7 @@ class _ToolsPageState extends State<ToolsPage> {
                 child: Align(
                   alignment: Alignment.topLeft,
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 560),
+                    constraints: const BoxConstraints(maxWidth: _panelWidth),
                     child: const QuickRollCard(showTitle: false),
                   ),
                 ),

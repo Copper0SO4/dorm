@@ -96,6 +96,9 @@ Future<bool> confirm(
     ) ??
     false;
 
+const panelGap = 16.0;
+const sectionGap = 20.0;
+
 class PageBody extends StatelessWidget {
   const PageBody({super.key, required this.children, required this.storageKey});
 
@@ -103,20 +106,29 @@ class PageBody extends StatelessWidget {
   final String storageKey;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    key: PageStorageKey(storageKey),
-    padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
-    children: [
-      Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1180),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: children,
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final inset = switch (constraints.maxWidth) {
+        >= 1000 => const EdgeInsets.fromLTRB(32, 24, 32, 32),
+        >= 600 => const EdgeInsets.fromLTRB(24, 20, 24, 28),
+        _ => const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      };
+      return ListView(
+        key: PageStorageKey(storageKey),
+        padding: inset,
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1180),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: children,
+              ),
+            ),
           ),
-        ),
-      ),
-    ],
+        ],
+      );
+    },
   );
 }
 
@@ -144,35 +156,45 @@ class PageHeading extends StatelessWidget {
             fontWeight: FontWeight.w800,
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Text(
           description,
           style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
         ),
       ],
     );
-    final buttons = Wrap(spacing: 8, runSpacing: 8, children: actions);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.only(bottom: sectionGap),
       child: LayoutBuilder(
-        builder: (context, constraints) => constraints.maxWidth >= 650
-            ? Row(
-                children: [
-                  Expanded(child: copy),
-                  const SizedBox(width: 16),
-                  buttons,
-                ],
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  copy,
-                  if (actions.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    buttons,
-                  ],
-                ],
+        builder: (context, constraints) {
+          if (actions.isEmpty) return copy;
+          final wide = constraints.maxWidth >= 760;
+          final buttons = Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: wide ? WrapAlignment.end : WrapAlignment.start,
+            children: actions,
+          );
+          if (!wide) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 12,
+              children: [copy, buttons],
+            );
+          }
+          return Row(
+            spacing: sectionGap,
+            children: [
+              Expanded(child: copy),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: constraints.maxWidth * .60,
+                ),
+                child: buttons,
               ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -186,7 +208,7 @@ class SectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(0, 24, 0, 12),
+    padding: const EdgeInsets.fromLTRB(0, sectionGap, 0, 12),
     child: Row(
       children: [
         Expanded(
@@ -219,7 +241,7 @@ class EmptyPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
+      padding: const EdgeInsets.symmetric(horizontal: panelGap, vertical: 24),
       child: Column(
         children: [
           IconTile(icon),
@@ -328,7 +350,7 @@ class _EditorDialogState extends State<EditorDialog> {
 Widget fieldColumn(List<Widget> children) => Column(
   mainAxisSize: MainAxisSize.min,
   crossAxisAlignment: CrossAxisAlignment.stretch,
-  spacing: 14,
+  spacing: 16,
   children: children,
 );
 

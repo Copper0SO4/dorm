@@ -56,7 +56,7 @@ class GroupBoard extends StatelessWidget {
               ),
             LayoutBuilder(
               builder: (context, constraints) {
-                const gap = 10.0;
+                const gap = 12.0;
                 final columns = constraints.maxWidth >= 540
                     ? 3
                     : constraints.maxWidth >= 276
@@ -123,8 +123,8 @@ class _Group extends StatelessWidget {
     final (surface, foreground) = palette[index % palette.length];
     final ready = time > index;
     return Container(
-      constraints: const BoxConstraints(minHeight: 92),
-      padding: const EdgeInsets.all(10),
+      constraints: const BoxConstraints(minHeight: 84),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: surface,
         borderRadius: BorderRadius.circular(14),

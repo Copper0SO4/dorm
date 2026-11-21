@@ -96,7 +96,7 @@ class _MattersPageState extends State<MattersPage> {
 
   Widget _board(BuildContext context, Map<MatterStatus, List<Matter>> lanes) {
     return Row(
-      spacing: 12,
+      spacing: panelGap,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final status in MatterStatus.values)

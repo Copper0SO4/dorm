@@ -10,10 +10,16 @@ import 'draw_ceremony.dart';
 import 'group_board.dart';
 
 class DrawCard extends StatefulWidget {
-  const DrawCard({super.key, required this.mode, required this.members});
+  const DrawCard({
+    super.key,
+    required this.mode,
+    required this.members,
+    required this.panelWidth,
+  });
 
   final DrawMode mode;
   final List<String> members;
+  final double panelWidth;
 
   @override
   State<DrawCard> createState() => _DrawCardState();
@@ -258,28 +264,33 @@ class _DrawCardState extends State<DrawCard>
     return LayoutBuilder(
       builder: (context, constraints) {
         final content = _output(context);
-        final width = constraints.maxWidth >= 720
-            ? 380.0
-            : constraints.maxWidth;
-        final form = Align(
-          alignment: Alignment.topLeft,
-          child: SizedBox(width: width, child: controls),
+        final form = SizedBox(
+          width: min(widget.panelWidth, constraints.maxWidth),
+          child: controls,
         );
-        if (content == null) return form;
-        if (constraints.maxWidth >= 720) {
+        if (content == null) {
+          return Align(alignment: Alignment.topLeft, child: form);
+        }
+        if (constraints.maxWidth >= widget.panelWidth + panelGap + 300) {
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            spacing: 14,
+            spacing: panelGap,
             children: [
               form,
               Expanded(child: content),
             ],
           );
         }
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          spacing: 12,
-          children: [form, content],
+        return Align(
+          alignment: Alignment.topLeft,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: widget.panelWidth),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: panelGap,
+              children: [form, content],
+            ),
+          ),
         );
       },
     );

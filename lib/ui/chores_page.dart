@@ -197,7 +197,7 @@ class _ChoresPageState extends State<ChoresPage> {
           builder: (context, constraints) => constraints.maxWidth >= 825
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  spacing: 18,
+                  spacing: panelGap,
                   children: [
                     Expanded(child: calendar),
                     Expanded(child: timeline),
@@ -205,7 +205,7 @@ class _ChoresPageState extends State<ChoresPage> {
                 )
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  spacing: 22,
+                  spacing: sectionGap,
                   children: [calendar, timeline],
                 ),
         ),

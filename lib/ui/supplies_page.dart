@@ -75,7 +75,7 @@ class _SuppliesPageState extends State<SuppliesPage> {
           else ...[
             Card(
               child: Padding(
-                padding: const EdgeInsets.all(15),
+                padding: const EdgeInsets.all(panelGap),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   spacing: 12,
@@ -135,11 +135,11 @@ class _SuppliesPageState extends State<SuppliesPage> {
               LayoutBuilder(
                 builder: (context, constraints) {
                   final width = constraints.maxWidth >= 700
-                      ? (constraints.maxWidth - 14) / 2
+                      ? (constraints.maxWidth - panelGap) / 2
                       : constraints.maxWidth;
                   return Wrap(
-                    spacing: 14,
-                    runSpacing: 14,
+                    spacing: panelGap,
+                    runSpacing: panelGap,
                     children: [
                       for (final item in filtered)
                         SizedBox(
