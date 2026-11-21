@@ -57,11 +57,12 @@ class GroupBoard extends StatelessWidget {
             LayoutBuilder(
               builder: (context, constraints) {
                 const gap = 12.0;
-                final columns = constraints.maxWidth >= 540
+                final maxColumns = constraints.maxWidth >= 540
                     ? 3
                     : constraints.maxWidth >= 276
                     ? 2
                     : 1;
+                final columns = groups.length.clamp(1, maxColumns);
                 final width =
                     (constraints.maxWidth - (columns - 1) * gap) / columns;
                 return Wrap(
