@@ -8,6 +8,8 @@ import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:dormos/ui/tools/dice_scene.dart';
+import 'package:dormos/ui/tools/draw_ceremony.dart';
+import 'package:dormos/ui/tools/group_board.dart';
 import 'package:dormos/ui/tools_page.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,6 +50,8 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     repo.saveMember('甲');
     repo.saveMember('乙');
+    repo.saveMember('丙');
+    repo.saveMember('丁');
     await tester.pumpWidget(DormApp(controller: controller));
     await tester.pumpAndSettle();
     await tester.tap(find.text('寝室工具箱'));
@@ -63,19 +67,40 @@ void main() {
     await tester.pump(const Duration(milliseconds: 360));
     expect(find.text('揭晓结果'), findsOneWidget);
     expect(find.text('抽签结果'), findsNothing);
-    expect(
-      tester.widget<TextField>(find.widgetWithText(TextField, '候选名单')).enabled,
-      isFalse,
+    expect(find.byType(TextFormField), findsNothing);
+    final edit = find.ancestor(
+      of: find.text('编辑名单'),
+      matching: find.byWidgetPredicate((widget) => widget is TextButton),
     );
+    expect(tester.widget<TextButton>(edit).onPressed, isNull);
     await tester.pumpAndSettle();
     expect(find.text('抽签结果'), findsOneWidget);
     expect(find.byType(Chip), findsOneWidget);
     await tester.tap(find.text('随机分组'));
     await tester.pumpAndSettle();
+    expect(find.text('每组 2 人'), findsOneWidget);
     await tester.tap(find.text('开始分组'));
+    await tester.pump();
+    expect(find.byType(DrawCeremony), findsNothing);
+    expect(find.text('正在分配成员'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 260));
+    final partial = tester.widget<GroupBoard>(find.byType(GroupBoard));
+    expect(partial.progress, inExclusiveRange(0, 1));
+    expect(find.text('复制分组'), findsNothing);
+    final names = find.descendant(
+      of: find.byType(GroupBoard),
+      matching: find.byWidgetPredicate(
+        (item) => item is Text && ['甲', '乙', '丙', '丁'].contains(item.data),
+      ),
+    );
+    expect(names.evaluate().length, inExclusiveRange(0, 4));
     await tester.pumpAndSettle();
     expect(find.text('第 1 组'), findsOneWidget);
     expect(find.text('第 2 组'), findsOneWidget);
+    expect(names.evaluate().length, 4);
+    expect(find.text('复制分组'), findsOneWidget);
+    await tester.tap(find.text('骰子与硬币'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('掷骰子'));
     await tester.pump();
     expect(find.text('骰子滚动中…'), findsOneWidget);
@@ -118,9 +143,17 @@ void main() {
     );
     await tester.tap(find.text('随机分组'));
     await tester.pump();
+    expect(find.text('至少需要 2 名成员，可以编辑名单添加。'), findsOneWidget);
+    await tester.tap(find.text('编辑名单'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), '甲\n乙\n乙');
+    await tester.tap(find.text('使用名单'));
+    await tester.pumpAndSettle();
+    expect(find.text('每组 1 人'), findsOneWidget);
     await tester.tap(find.text('开始分组'));
     await tester.pump();
-    expect(find.text('随机分组至少需要 2 个不同的候选项'), findsOneWidget);
+    expect(find.text('分组结果'), findsOneWidget);
+    expect(find.text('正在分配成员'), findsNothing);
     await tester.tap(find.text('抽签'));
     await tester.pump();
     await tester.tap(find.text('开始抽签'));
@@ -136,13 +169,40 @@ void main() {
     expect(points, findsOneWidget);
     final recorded = tester.widget<Text>(points).data!;
     expect(find.text('骰子滚动中…'), findsNothing);
-    await tester.tap(find.text('抽签与分组'));
+    await tester.tap(find.text('抽签'));
     await tester.pump();
     expect(find.text('抽签结果'), findsOneWidget);
     await tester.binding.setSurfaceSize(const Size(1280, 900));
     await tester.pumpAndSettle();
-    expect(find.text(recorded), findsOneWidget);
     expect(find.text('抽签结果'), findsOneWidget);
+    await tester.tap(find.text('骰子与硬币'));
+    await tester.pumpAndSettle();
+    expect(find.text(recorded), findsOneWidget);
+    await tester.tap(find.text('随机分组'));
+    await tester.pumpAndSettle();
+    expect(find.text('分组结果'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('first bill continues directly after adding a roommate', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('添加室友并记账'));
+    await tester.pumpAndSettle();
+    expect(find.text('继续记账'), findsNothing);
+    await tester.tap(find.text('添加成员'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextFormField, '姓名'), '小林');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('继续记账'));
+    await tester.pumpAndSettle();
+    expect(find.text('写入总账'), findsOneWidget);
+    expect(repo.members().single.name, '小林');
     expect(tester.takeException(), isNull);
   });
 

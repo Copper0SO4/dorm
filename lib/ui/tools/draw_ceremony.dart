@@ -7,12 +7,10 @@ class DrawCeremony extends StatelessWidget {
     super.key,
     required this.progress,
     required this.resultLabel,
-    required this.grouped,
   });
 
   final double progress;
   final String resultLabel;
-  final bool grouped;
 
   double _between(double start, double end) =>
       ((progress - start) / (end - start)).clamp(0.0, 1.0);
@@ -27,10 +25,10 @@ class DrawCeremony extends StatelessWidget {
     final stage = progress < .45
         ? '洗签中'
         : !flipped
-        ? (grouped ? '确定分组' : '抽出签牌')
+        ? '抽出签牌'
         : '揭晓结果';
     return Semantics(
-      label: grouped ? '正在分组' : '正在抽签',
+      label: '正在抽签',
       excludeSemantics: true,
       liveRegion: true,
       child: ClipRRect(

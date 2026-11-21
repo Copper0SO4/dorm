@@ -140,11 +140,12 @@ class _LedgerPageState extends State<LedgerPage> {
             '公共账本',
             '查看公共费用、个人费用和转账进度。',
             actions: [
-              OutlinedButton.icon(
-                onPressed: () => showMembers(context, controller),
-                icon: const Icon(Icons.group_outlined),
-                label: const Text('寝室成员'),
-              ),
+              if (haveMembers)
+                OutlinedButton.icon(
+                  onPressed: () => showMembers(context, controller),
+                  icon: const Icon(Icons.group_outlined),
+                  label: const Text('寝室成员'),
+                ),
               OutlinedButton.icon(
                 onPressed: () => Navigator.of(context).push<void>(
                   MaterialPageRoute(
@@ -165,8 +166,8 @@ class _LedgerPageState extends State<LedgerPage> {
               ),
               FilledButton.icon(
                 onPressed: () => editBill(context, controller),
-                icon: const Icon(Icons.add),
-                label: const Text('新建账单'),
+                icon: Icon(haveMembers ? Icons.add : Icons.person_add_alt_1),
+                label: Text(haveMembers ? '新建账单' : '添加室友并记账'),
               ),
             ],
           ),
@@ -199,13 +200,13 @@ class _LedgerPageState extends State<LedgerPage> {
               detail: haveMembers
                   ? '记下第一笔共同开销，Dorm 会算出各成员的分摊。'
                   : '先添加寝室成员，再开始记录共同开销。',
-              action: TextButton.icon(
-                onPressed: haveMembers
-                    ? () => editBill(context, controller)
-                    : () => showMembers(context, controller),
-                icon: const Icon(Icons.arrow_forward),
-                label: Text(haveMembers ? '记录开销' : '管理成员'),
-              ),
+              action: haveMembers
+                  ? TextButton.icon(
+                      onPressed: () => editBill(context, controller),
+                      icon: const Icon(Icons.arrow_forward),
+                      label: const Text('记录开销'),
+                    )
+                  : null,
             )
           else ...[
             _historyTools(visible, bills.length),
@@ -511,14 +512,18 @@ Future<void> editBill(
   Supply? supply,
   bool markSupplyOrdered = false,
 }) async {
-  final members = controller.repository
-      .members()
-      .where((member) => member.active)
-      .toList();
+  List<Member> activeMembers() =>
+      controller.repository.members().where((member) => member.active).toList();
+  var members = activeMembers();
   if (members.isEmpty) {
-    notify(context, '请先在公共账本或卫生排班中添加寝室成员。');
-    await showMembers(context, controller);
-    return;
+    final proceed = await showMembers(
+      context,
+      controller,
+      continueToBill: true,
+    );
+    if (proceed != true || !context.mounted) return;
+    members = activeMembers();
+    if (members.isEmpty) return;
   }
   var title = supply == null ? '' : '采购 ${supply.name}';
   if (title.runes.length > 80) {

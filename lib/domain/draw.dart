@@ -11,12 +11,7 @@ List<String> _uniqueEntries(Iterable<String> entries) => {
     if (entry.trim().isNotEmpty) entry.trim(),
 }.toList();
 
-List<List<String>> makeDraw(
-  List<String> entries,
-  int count,
-  DrawMode mode,
-  Random random,
-) {
+List<String> validateDrawEntries(Iterable<String> entries) {
   final options = _uniqueEntries(entries);
   if (options.isEmpty || options.length > 100) {
     throw const InputException('请输入 1 至 100 个不同选项');
@@ -24,6 +19,16 @@ List<List<String>> makeDraw(
   if (options.any((entry) => entry.runes.length > 60)) {
     throw const InputException('每个选项最多 60 个字符');
   }
+  return options;
+}
+
+List<List<String>> makeDraw(
+  List<String> entries,
+  int count,
+  DrawMode mode,
+  Random random,
+) {
+  final options = validateDrawEntries(entries);
   final minimum = mode == DrawMode.draw ? 1 : 2;
   if (options.length < minimum) {
     throw const InputException('随机分组至少需要 2 个不同的候选项');
