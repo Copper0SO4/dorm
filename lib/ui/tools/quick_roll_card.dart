@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'dice_scene.dart';
+
 enum _Roll { dice, coin }
 
 class QuickRollCard extends StatefulWidget {
@@ -16,13 +18,13 @@ class QuickRollCard extends StatefulWidget {
 class _QuickRollCardState extends State<QuickRollCard>
     with SingleTickerProviderStateMixin {
   final _random = Random.secure();
-  late final _motion = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 620),
-  )..addStatusListener(_finish);
+  late final _motion = AnimationController(vsync: this)
+    ..addStatusListener(_finish);
   var _kind = _Roll.dice;
   int? _next;
   int? _result;
+  var _startingFace = 5;
+  var _lastFace = 5;
 
   @override
   void dispose() {
@@ -46,10 +48,17 @@ class _QuickRollCardState extends State<QuickRollCard>
     final animate = !MediaQuery.disableAnimationsOf(context);
     setState(() {
       _kind = kind;
+      if (kind == _Roll.dice) {
+        _startingFace = _lastFace;
+        _lastFace = outcome;
+      }
       _result = animate ? null : outcome;
       _next = animate ? outcome : null;
     });
-    if (animate) _motion.forward(from: 0);
+    if (animate) {
+      _motion.duration = Duration(milliseconds: kind == _Roll.dice ? 970 : 620);
+      _motion.forward(from: 0);
+    }
   }
 
   String get _caption {
@@ -84,7 +93,7 @@ class _QuickRollCardState extends State<QuickRollCard>
               child: Column(
                 children: [
                   SizedBox(
-                    height: 130,
+                    height: 170,
                     child: Center(
                       child: ExcludeSemantics(
                         child: AnimatedBuilder(
@@ -137,31 +146,7 @@ class _QuickRollCardState extends State<QuickRollCard>
     final colors = theme.colorScheme;
     final steps = (turn * 13).floor();
     if (_kind == _Roll.dice) {
-      final points = rolling ? steps % 6 + 1 : _result ?? 5;
-      return Transform.translate(
-        offset: Offset(0, -hop),
-        child: Transform.rotate(
-          angle: rolling ? turn * 4 * pi : 0,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(19),
-              border: Border.all(color: colors.outlineVariant),
-              boxShadow: [
-                BoxShadow(
-                  color: colors.shadow.withValues(alpha: .17),
-                  blurRadius: 12,
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: SizedBox.square(
-              dimension: 76,
-              child: CustomPaint(painter: _DicePips(points, colors.primary)),
-            ),
-          ),
-        ),
-      );
+      return DiceScene(from: _startingFace, points: _lastFace, progress: time);
     }
 
     final face = rolling ? steps % 2 : _result ?? 0;
@@ -189,50 +174,4 @@ class _QuickRollCardState extends State<QuickRollCard>
       ),
     );
   }
-}
-
-class _DicePips extends CustomPainter {
-  const _DicePips(this.points, this.color);
-
-  final int points;
-  final Color color;
-
-  static const _topLeft = Offset(.27, .27);
-  static const _topRight = Offset(.73, .27);
-  static const _middleLeft = Offset(.27, .50);
-  static const _center = Offset(.50, .50);
-  static const _middleRight = Offset(.73, .50);
-  static const _bottomLeft = Offset(.27, .73);
-  static const _bottomRight = Offset(.73, .73);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final pips = switch (points) {
-      1 => [_center],
-      2 => [_topLeft, _bottomRight],
-      3 => [_topLeft, _center, _bottomRight],
-      4 => [_topLeft, _topRight, _bottomLeft, _bottomRight],
-      5 => [_topLeft, _topRight, _center, _bottomLeft, _bottomRight],
-      _ => [
-        _topLeft,
-        _topRight,
-        _middleLeft,
-        _middleRight,
-        _bottomLeft,
-        _bottomRight,
-      ],
-    };
-    final ink = Paint()..color = color;
-    for (final pip in pips) {
-      canvas.drawCircle(
-        Offset(pip.dx * size.width, pip.dy * size.height),
-        5,
-        ink,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_DicePips oldDelegate) =>
-      oldDelegate.points != points || oldDelegate.color != color;
 }

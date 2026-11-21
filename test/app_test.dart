@@ -7,6 +7,7 @@ import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
+import 'package:dormos/ui/tools/dice_scene.dart';
 import 'package:dormos/ui/tools_page.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -54,6 +55,13 @@ void main() {
     await tester.tap(find.text('开始抽签'));
     await tester.pump();
     expect(find.text('抽签中…'), findsOneWidget);
+    expect(find.text('洗签中'), findsOneWidget);
+    expect(find.text('抽签结果'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(find.text('抽出签牌'), findsOneWidget);
+    expect(find.text('复制结果'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 360));
+    expect(find.text('揭晓结果'), findsOneWidget);
     expect(find.text('抽签结果'), findsNothing);
     expect(
       tester.widget<TextField>(find.widgetWithText(TextField, '候选名单')).enabled,
@@ -78,8 +86,15 @@ void main() {
       matching: find.byWidgetPredicate((widget) => widget is FilledButton),
     );
     expect(tester.widget<FilledButton>(coin).onPressed, isNull);
+    await tester.pump(const Duration(milliseconds: 320));
+    final rolling = tester.widget<DiceScene>(find.byType(DiceScene));
+    expect(rolling.progress, inExclusiveRange(0, 1));
     await tester.pumpAndSettle();
     expect(points, findsOneWidget);
+    final settled = tester.widget<DiceScene>(find.byType(DiceScene));
+    expect(settled.progress, 1);
+    expect(settled.points, rolling.points);
+    expect(tester.widget<Text>(points).data, '${settled.points} 点');
     await tester.tap(find.text('抛硬币'));
     await tester.pumpAndSettle();
     expect(find.textContaining(RegExp(r'^(正面|反面)$')), findsOneWidget);

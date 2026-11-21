@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../domain/draw.dart';
 import '../../domain/ledger.dart';
 import '../common.dart';
+import 'draw_ceremony.dart';
 
 class DrawCard extends StatefulWidget {
   const DrawCard({
@@ -31,7 +32,6 @@ class _DrawCardState extends State<DrawCard>
   var _mode = DrawMode.draw;
   List<List<String>>? _pending;
   List<List<String>>? _result;
-  List<String> _preview = const [];
   String? _error;
 
   @override
@@ -47,7 +47,6 @@ class _DrawCardState extends State<DrawCard>
     setState(() {
       _result = _pending;
       _pending = null;
-      _preview = const [];
     });
   }
 
@@ -83,10 +82,9 @@ class _DrawCardState extends State<DrawCard>
         _error = null;
         _result = null;
         _pending = result;
-        _preview = candidates;
       });
       _motion.duration = Duration(
-        milliseconds: _mode == DrawMode.draw ? 720 : 460,
+        milliseconds: _mode == DrawMode.draw ? 1400 : 1120,
       );
       _motion.forward(from: 0);
     } on InputException catch (error) {
@@ -212,46 +210,21 @@ class _DrawCardState extends State<DrawCard>
                   style: TextStyle(color: theme.colorScheme.error),
                 ),
               ),
-            if (busy) _shuffling(context, grouped),
+            if (_pending case final pending?)
+              AnimatedBuilder(
+                animation: _motion,
+                builder: (context, _) => DrawCeremony(
+                  progress: _motion.value,
+                  grouped: grouped,
+                  resultLabel: grouped
+                      ? '${pending.length} 组'
+                      : pending.single.length == 1
+                      ? pending.single.single
+                      : '${pending.single.length} 项入选',
+                ),
+              ),
             if (_result case final result?) _results(context, grouped, result),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _shuffling(BuildContext context, bool grouped) {
-    final theme = Theme.of(context);
-    return Semantics(
-      label: grouped ? '正在分组' : '正在洗签',
-      liveRegion: true,
-      excludeSemantics: true,
-      child: _panel(
-        theme,
-        AnimatedBuilder(
-          animation: _motion,
-          builder: (context, _) {
-            final progress = Curves.easeOutCubic.transform(_motion.value);
-            final step = (progress * 21).floor();
-            final candidate = _preview[step % _preview.length];
-            return Row(
-              spacing: 12,
-              children: [
-                Transform.rotate(
-                  angle: sin(_motion.value * 5 * pi) * (1 - progress) * .6,
-                  child: const Icon(Icons.shuffle_rounded),
-                ),
-                Expanded(
-                  child: Text(
-                    grouped ? '正在打乱 ${_preview.length} 个候选项' : candidate,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleMedium,
-                  ),
-                ),
-              ],
-            );
-          },
         ),
       ),
     );
