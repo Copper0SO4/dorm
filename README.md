@@ -153,11 +153,11 @@ Flutter 3.50 的 Android runner 使用 Gradle 9.5.0 和 API 36，最低设备版
 ```bash
 flutter doctor -v
 flutter pub get --enforce-lockfile
-flutter build apk --release --target-platform android-arm64
-unzip -Z1 build/app/outputs/flutter-apk/app-release.apk | grep '^lib/'
+flutter build apk --release --target-platform android-arm64 --split-per-abi
+unzip -Z1 build/app/outputs/flutter-apk/app-arm64-v8a-release.apk | grep '^lib/'
 ```
 
-所有 `lib/` 下的 ABI 应为 `arm64-v8a`。Debug 构建面向调试，Release 构建采用发布优化，正式发布还需要专用签名或由 Google Play 管理应用签名。用开发签名签出的 Release APK 可用于内部安装验证。签名配置和密钥须保存在仓库外。构建及 ABI 检查与真机安装、启动和交互测试分别记录。
+仅指定 Android ARM64 时，按 ABI 打包会生成一份 APK，版本号沿用已发布 ARM64 版本的规则，可按版本号升级。所有 `lib/` 下的 ABI 应为 `arm64-v8a`。Debug 构建面向调试，Release 构建采用发布优化，正式发布还需要专用签名或由 Google Play 管理应用签名。用开发签名签出的 Release APK 可用于内部安装验证。签名配置和密钥须保存在仓库外。构建及 ABI 检查与真机安装、启动和交互测试分别记录。
 
 ## 项目结构与数据
 
