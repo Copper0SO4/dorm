@@ -20,4 +20,24 @@ void main() {
       throwsA(isA<InputException>()),
     );
   });
+
+  test(
+    'deduplicates raw inputs and gives a meaningful low-count group error',
+    () {
+      expect(
+        makeDraw([' 甲', '甲 ', '乙', ''], 2, DrawMode.draw, Random(2)).single,
+        unorderedEquals(['甲', '乙']),
+      );
+      expect(
+        () => makeDraw([' 甲', '甲 '], 2, DrawMode.teams, Random(2)),
+        throwsA(
+          isA<InputException>().having(
+            (error) => error.message,
+            'message',
+            '随机分组至少需要 2 个不同的候选项',
+          ),
+        ),
+      );
+    },
+  );
 }

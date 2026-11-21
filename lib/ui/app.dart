@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../app_identity.dart';
 import '../domain/models.dart';
+import '../domain/preferences.dart';
 import 'chores_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
@@ -60,37 +61,37 @@ class DormApp extends StatefulWidget {
 
 class _DormAppState extends State<DormApp> {
   late final _mode = ValueNotifier(widget.controller.repository.appearanceMode);
-  late int _selected =
-      widget.controller.repository.preferences.startupPage.index;
+  late StartupPage _selected =
+      widget.controller.repository.preferences.startupPage;
   final _storage = PageStorageBucket();
 
   static const _destinations = [
     (
-      label: '公共账本',
+      page: StartupPage.ledger,
       short: '账本',
       icon: Icons.receipt_long_outlined,
       selected: Icons.receipt_long_rounded,
     ),
     (
-      label: '卫生排班',
+      page: StartupPage.chores,
       short: '排班',
       icon: Icons.calendar_month_outlined,
       selected: Icons.calendar_month_rounded,
     ),
     (
-      label: '公共物资',
+      page: StartupPage.supplies,
       short: '物资',
       icon: Icons.inventory_2_outlined,
       selected: Icons.inventory_2_rounded,
     ),
     (
-      label: '寝室事务',
+      page: StartupPage.matters,
       short: '事务',
       icon: Icons.view_kanban_outlined,
       selected: Icons.view_kanban_rounded,
     ),
     (
-      label: '寝室工具箱',
+      page: StartupPage.tools,
       short: '工具',
       icon: Icons.casino_outlined,
       selected: Icons.casino_rounded,
@@ -126,11 +127,13 @@ class _DormAppState extends State<DormApp> {
           final page = PageStorage(
             bucket: _storage,
             child: switch (_selected) {
-              0 => LedgerPage(controller: widget.controller),
-              1 => ChoresPage(controller: widget.controller),
-              2 => SuppliesPage(controller: widget.controller),
-              3 => MattersPage(controller: widget.controller),
-              _ => ToolsPage(controller: widget.controller),
+              StartupPage.ledger => LedgerPage(controller: widget.controller),
+              StartupPage.chores => ChoresPage(controller: widget.controller),
+              StartupPage.supplies => SuppliesPage(
+                controller: widget.controller,
+              ),
+              StartupPage.matters => MattersPage(controller: widget.controller),
+              StartupPage.tools => ToolsPage(controller: widget.controller),
             },
           );
           return Scaffold(
@@ -173,12 +176,14 @@ class _DormAppState extends State<DormApp> {
                           NavigationRailDestination(
                             icon: Icon(item.icon),
                             selectedIcon: Icon(item.selected),
-                            label: Text(item.label),
+                            label: Text(item.page.label),
                           ),
                       ],
-                      selectedIndex: _selected,
+                      selectedIndex: _destinations.indexWhere(
+                        (item) => item.page == _selected,
+                      ),
                       onDestinationSelected: (index) =>
-                          setState(() => _selected = index),
+                          setState(() => _selected = _destinations[index].page),
                     ),
                     const VerticalDivider(width: 1),
                   ],
@@ -189,9 +194,11 @@ class _DormAppState extends State<DormApp> {
             bottomNavigationBar: desktop
                 ? null
                 : NavigationBar(
-                    selectedIndex: _selected,
+                    selectedIndex: _destinations.indexWhere(
+                      (item) => item.page == _selected,
+                    ),
                     onDestinationSelected: (index) =>
-                        setState(() => _selected = index),
+                        setState(() => _selected = _destinations[index].page),
                     destinations: [
                       for (final item in _destinations)
                         NavigationDestination(

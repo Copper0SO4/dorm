@@ -7,6 +7,7 @@ import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
+import 'package:dormos/ui/tools_page.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -51,6 +52,13 @@ void main() {
     await tester.tap(find.text('寝室工具箱'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('开始抽签'));
+    await tester.pump();
+    expect(find.text('抽签中…'), findsOneWidget);
+    expect(find.text('抽签结果'), findsNothing);
+    expect(
+      tester.widget<TextField>(find.widgetWithText(TextField, '候选名单')).enabled,
+      isFalse,
+    );
     await tester.pumpAndSettle();
     expect(find.text('抽签结果'), findsOneWidget);
     expect(find.byType(Chip), findsOneWidget);
@@ -60,9 +68,66 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('第 1 组'), findsOneWidget);
     expect(find.text('第 2 组'), findsOneWidget);
+    await tester.tap(find.text('掷骰子'));
+    await tester.pump();
+    expect(find.text('骰子滚动中…'), findsOneWidget);
+    final points = find.textContaining(RegExp(r'^[1-6] 点$'));
+    expect(points, findsNothing);
+    final coin = find.ancestor(
+      of: find.text('抛硬币'),
+      matching: find.byWidgetPredicate((widget) => widget is FilledButton),
+    );
+    expect(tester.widget<FilledButton>(coin).onPressed, isNull);
+    await tester.pumpAndSettle();
+    expect(points, findsOneWidget);
     await tester.tap(find.text('抛硬币'));
     await tester.pumpAndSettle();
     expect(find.textContaining(RegExp(r'^(正面|反面)$')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('compact tools keep results and honor reduced animation', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(360, 770));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('甲');
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
+        home: Scaffold(body: ToolsPage(controller: controller)),
+      ),
+    );
+    await tester.tap(find.text('随机分组'));
+    await tester.pump();
+    await tester.tap(find.text('开始分组'));
+    await tester.pump();
+    expect(find.text('随机分组至少需要 2 个不同的候选项'), findsOneWidget);
+    await tester.tap(find.text('抽签'));
+    await tester.pump();
+    await tester.tap(find.text('开始抽签'));
+    await tester.pump();
+    expect(find.text('抽签结果'), findsOneWidget);
+    expect(find.text('抽签中…'), findsNothing);
+
+    await tester.tap(find.text('骰子与硬币'));
+    await tester.pump();
+    await tester.tap(find.text('掷骰子'));
+    await tester.pump();
+    final points = find.textContaining(RegExp(r'^[1-6] 点$'));
+    expect(points, findsOneWidget);
+    final recorded = tester.widget<Text>(points).data!;
+    expect(find.text('骰子滚动中…'), findsNothing);
+    await tester.tap(find.text('抽签与分组'));
+    await tester.pump();
+    expect(find.text('抽签结果'), findsOneWidget);
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    await tester.pumpAndSettle();
+    expect(find.text(recorded), findsOneWidget);
+    expect(find.text('抽签结果'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
