@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#102c30">
+  <title>Dorm 斗地主</title>
+  <link rel="stylesheet" href="/cards.css">
+  <script src="/cards.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><div><p>Dorm</p><h1>斗地主</h1></div><button id="audio" aria-pressed="false">关闭音效</button></header>
+    <section id="content" aria-live="polite"></section>
+    <form id="chat" class="chat" hidden>
+      <label class="sr" for="message">牌桌消息</label>
+      <input id="message" maxlength="120" placeholder="发条消息" autocomplete="off">
+      <button type="submit">发送</button>
+    </form>
+    <p id="notice" class="notice" role="status" hidden></p>
+  </main>
+  <dialog id="dialog"></dialog>
+</body>
+</html>

@@ -6,6 +6,7 @@ import 'package:git2dart/git2dart.dart' as git;
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import '../game/card_mailbox.dart';
 import 'cloud_proxy.dart';
 import 'ssh_vault.dart';
 
@@ -31,7 +32,33 @@ class CloudRace implements Exception {
 }
 
 class GitHubTransport implements CloudTransport {
-  GitHubTransport(this.directory, {this.localTestRemote, this.deviceCode});
+  GitHubTransport(this.directory, {this.localTestRemote, this.deviceCode})
+    : _cardMode = false;
+  GitHubTransport._cards(this.directory, this.localTestRemote, this.deviceCode)
+    : _cardMode = true;
+
+  final bool _cardMode;
+  String get _branch =>
+      _cardMode ? 'refs/heads/dormos-card-rooms' : 'refs/heads/$cloudBranch';
+  String get _incoming => _cardMode
+      ? 'refs/remotes/origin/dormos-card-rooms'
+      : 'refs/remotes/origin/$cloudBranch';
+  String get _file => _cardMode ? 'card-rooms.json' : cloudFileName;
+
+  CardMailbox cardMailbox(
+    CloudSettings settings,
+    Future<CloudKey> Function() key,
+    Future<CloudProxy?> Function() proxy,
+  ) => _GitCardMailbox(
+    GitHubTransport._cards(
+      Directory('${directory.path}-cards'),
+      localTestRemote,
+      deviceCode,
+    ),
+    settings,
+    key,
+    proxy,
+  );
 
   final Directory directory;
   final Directory? localTestRemote;
@@ -52,17 +79,35 @@ class GitHubTransport implements CloudTransport {
     CloudSettings settings,
     CloudKey key, {
     CloudProxy? proxy,
-  }) {
+  }) async {
+    final result = await _pullRaw(settings, key, proxy);
+    return result == null
+        ? null
+        : (
+            revision: result.revision,
+            author: result.author,
+            data: CloudSnapshot.decode(result.body),
+          );
+  }
+
+  Future<({String revision, String author, String body})?> _pullRaw(
+    CloudSettings settings,
+    CloudKey key,
+    CloudProxy? proxy,
+  ) {
+    final branch = _branch;
+    final incoming = _incoming;
+    final fileName = _file;
     return _run(settings, key, proxy, (repo, remote, callbacks) {
-      if (_head(remote, callbacks) == null) return null;
-      remote.fetch(refspecs: ['+$_branch:$_incoming'], callbacks: callbacks);
-      final oid = git.Reference.nameToId(repo: repo, refName: _incoming);
+      if (_head(remote, callbacks, branch) == null) return null;
+      remote.fetch(refspecs: ['+$branch:$incoming'], callbacks: callbacks);
+      final oid = git.Reference.nameToId(repo: repo, refName: incoming);
       try {
         final commit = git.Commit.lookup(repo: repo, oid: oid);
         try {
           final tree = commit.tree;
           try {
-            final entry = tree[cloudFileName];
+            final entry = tree[fileName];
             if (tree.length != 1 || entry.filemode != git.GitFilemode.blob) {
               throw const InputException('云端数据分支包含意外的文件');
             }
@@ -76,7 +121,7 @@ class GitHubTransport implements CloudTransport {
                 return (
                   revision: oid.sha,
                   author: commit.author.name,
-                  data: CloudSnapshot.decode(utf8.decode(blob.contentBytes)),
+                  body: utf8.decode(blob.contentBytes),
                 );
               } finally {
                 blob.free();
@@ -103,16 +148,27 @@ class GitHubTransport implements CloudTransport {
     CloudSnapshot data,
     String? expectedRevision, {
     CloudProxy? proxy,
-  }) {
+  }) => _pushRaw(settings, key, data.encoded, expectedRevision, proxy);
+
+  Future<void> _pushRaw(
+    CloudSettings settings,
+    CloudKey key,
+    String encoded,
+    String? expectedRevision,
+    CloudProxy? proxy,
+  ) {
     final path = _path(settings);
-    final encoded = data.encoded;
+    final branch = _branch;
+    final fileName = _file;
     final operator = settings.operator;
     final email = settings.commitEmail;
-    final message = deviceCode == null
+    final message = _cardMode
+        ? 'Update Dorm card rooms'
+        : deviceCode == null
         ? 'Sync Dorm data'
         : 'Sync Dorm data\n\nDorm-Device: $deviceCode';
     return _run(settings, key, proxy, (repo, remote, callbacks) {
-      if (_head(remote, callbacks) != expectedRevision) {
+      if (_head(remote, callbacks, branch) != expectedRevision) {
         throw const CloudRace();
       }
       final bytes = utf8.encode(encoded);
@@ -121,15 +177,14 @@ class GitHubTransport implements CloudTransport {
       }
       final stage = Directory(path).createTempSync('snapshot-');
       try {
-        final file = File(
-          '${stage.path}${Platform.pathSeparator}$cloudFileName',
-        )..writeAsBytesSync(bytes);
+        final file = File('${stage.path}${Platform.pathSeparator}$fileName')
+          ..writeAsBytesSync(bytes);
         final blob = git.Blob.createFromDisk(repo: repo, path: file.path);
         try {
           final builder = git.TreeBuilder(repo: repo);
           try {
             builder.add(
-              filename: cloudFileName,
+              filename: fileName,
               oid: blob,
               filemode: git.GitFilemode.blob,
             );
@@ -146,6 +201,7 @@ class GitHubTransport implements CloudTransport {
                   email,
                   expectedRevision,
                   message,
+                  branch,
                 );
               } finally {
                 tree.free();
@@ -205,8 +261,6 @@ Future<T> _runRemote<T>(
 ) =>
     Isolate.run(() => _withRemote(path, url, key, isLocal, tunnelPort, action));
 
-const _branch = 'refs/heads/$cloudBranch';
-const _incoming = 'refs/remotes/origin/$cloudBranch';
 const _githubFingerprints = {
   '+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU', // Ed25519
   'p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM', // ECDSA
@@ -263,7 +317,7 @@ T _withRemote<T>(
               repo: repo,
               name: 'origin',
               url: url,
-              fetch: '+$_branch:$_incoming',
+              fetch: '+refs/heads/*:refs/remotes/origin/*',
             );
       try {
         if (remote.url != url) throw const InputException('本地 Git 缓存的仓库地址不匹配');
@@ -307,11 +361,11 @@ bool _raceMessage(String message) => RegExp(
   caseSensitive: false,
 ).hasMatch(message);
 
-String? _head(git.Remote remote, git.Callbacks callbacks) {
+String? _head(git.Remote remote, git.Callbacks callbacks, String branch) {
   final references = remote.ls(callbacks: callbacks);
   try {
     return references
-        .where((reference) => reference.name == _branch)
+        .where((reference) => reference.name == branch)
         .firstOrNull
         ?.oid
         .sha;
@@ -332,6 +386,7 @@ void _publish(
   String email,
   String? expectedRevision,
   String message,
+  String branch,
 ) {
   final parentId = expectedRevision == null
       ? null
@@ -356,7 +411,7 @@ void _publish(
         );
         commit.free();
         try {
-          remote.push(refspecs: ['$outgoing:$_branch'], callbacks: callbacks);
+          remote.push(refspecs: ['$outgoing:$branch'], callbacks: callbacks);
         } finally {
           git.Reference.delete(repo: repo, name: outgoing);
         }
@@ -368,5 +423,39 @@ void _publish(
     }
   } finally {
     parentId?.free();
+  }
+}
+
+class _GitCardMailbox implements CardMailbox {
+  _GitCardMailbox(this.transport, this.settings, this.key, this.proxy);
+
+  final GitHubTransport transport;
+  final CloudSettings settings;
+  final Future<CloudKey> Function() key;
+  final Future<CloudProxy?> Function() proxy;
+
+  @override
+  Future<CardMailboxRead?> pull() async {
+    final value = await transport._pullRaw(
+      settings,
+      await key(),
+      await proxy(),
+    );
+    return value == null ? null : (revision: value.revision, body: value.body);
+  }
+
+  @override
+  Future<void> push(String body, String? revision) async {
+    try {
+      await transport._pushRaw(
+        settings,
+        await key(),
+        body,
+        revision,
+        await proxy(),
+      );
+    } on CloudRace {
+      throw const CardMailboxRace();
+    }
   }
 }

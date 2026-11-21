@@ -120,7 +120,8 @@ class DeviceCode extends StatelessWidget {
 }
 
 class AuditHistory extends StatelessWidget {
-  const AuditHistory(this.entries, {super.key});
+  const AuditHistory(this.entries, {super.key, this.deviceOnly = false});
+  final bool deviceOnly;
   final List<AuditEntry> entries;
 
   @override
@@ -144,7 +145,9 @@ class AuditHistory extends StatelessWidget {
                 spacing: 4,
                 children: [
                   Text(
-                    '${entry.action.label} · ${entry.memberName ?? '未认领设备'}',
+                    deviceOnly
+                        ? '${entry.action.label} · 操作设备'
+                        : '${entry.action.label} · ${entry.memberName ?? '未认领设备'}',
                     style: theme.textTheme.titleSmall,
                   ),
                   Text(

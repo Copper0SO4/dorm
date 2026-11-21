@@ -870,7 +870,7 @@ Future<void> showBill(
                     trailing: Text(formatCents(transfer.amount)),
                   ),
               const SectionHeading('账单修改记录'),
-              AuditHistory(detail.activity),
+              AuditHistory(detail.activity, deviceOnly: true),
             ],
           ),
         ),

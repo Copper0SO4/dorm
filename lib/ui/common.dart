@@ -7,6 +7,7 @@ import '../data/lan_server.dart';
 import '../domain/ledger.dart';
 import '../domain/preferences.dart';
 import '../domain/repository.dart';
+import '../game/card_session.dart';
 
 class DormController extends ChangeNotifier {
   DormController(this.repository, {this.cloud}) {
@@ -16,6 +17,8 @@ class DormController extends ChangeNotifier {
   final DormRepository repository;
   final CloudSync? cloud;
   DormLanServer? _lan;
+  CardSession? _cards;
+  CardSession get cards => _cards ??= CardSession(() => cloud?.cardMailbox);
   DormLanServer get lan =>
       _lan ??= DormLanServer(LanApi(repository, write), rootBundle.loadString);
 
@@ -32,6 +35,7 @@ class DormController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _cards?.dispose();
     _lan?.dispose();
     cloud?.dispose();
     super.dispose();

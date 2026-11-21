@@ -5,6 +5,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../domain/ledger.dart';
+import '../game/card_network.dart';
+import '../game/card_rooms.dart';
+import '../game/cards.dart';
 import 'lan_api.dart';
 
 const _files = {
@@ -13,10 +16,23 @@ const _files = {
   '/dorm.js': (file: 'dorm.js', type: 'javascript'),
 };
 
-class DormLanServer extends ChangeNotifier {
-  DormLanServer(this._api, this._loadAsset);
+const _cardFiles = {
+  '/': (file: 'cards.html', type: 'html'),
+  '/cards': (file: 'cards.html', type: 'html'),
+  '/cards.css': (file: 'cards.css', type: 'css'),
+  '/cards.js': (file: 'cards.js', type: 'javascript'),
+};
 
-  final LanApi _api;
+class DormLanServer extends ChangeNotifier {
+  DormLanServer(this._api, this._loadAsset) : _cards = null;
+
+  DormLanServer.cards(this._cards, this._loadAsset) : _api = null;
+
+  final LanApi? _api;
+  final CardRooms? _cards;
+  final _discovery = CardDiscovery();
+  Map<String, ({String file, String type})> get _routes =>
+      _cards == null ? _files : _cardFiles;
   final Future<String> Function(String) _loadAsset;
   _LanShare? _share;
   bool _starting = false;
@@ -34,7 +50,7 @@ class DormLanServer extends ChangeNotifier {
     notifyListeners();
     try {
       final assets = <String, String>{};
-      for (final entry in _files.entries) {
+      for (final entry in _routes.entries) {
         assets[entry.key] = await _loadAsset('assets/lan/${entry.value.file}');
       }
       final interfaces = await NetworkInterface.list(
@@ -68,6 +84,14 @@ class DormLanServer extends ChangeNotifier {
           ],
         },
       );
+      if (_cards case final cards?) {
+        try {
+          await _discovery.start(boundPort, cards.publicRooms);
+        } on SocketException {
+          // Direct links still work when discovery is unavailable.
+        }
+      }
+      if (!identical(_share, share)) return;
       listener.listen(
         (request) => unawaited(_serve(share, request)),
         onError: (Object _) {
@@ -86,6 +110,7 @@ class DormLanServer extends ChangeNotifier {
     final share = _share;
     if (share == null) return;
     _share = null;
+    _discovery.stop();
     await share.server.close(force: true);
     if (!_disposed) notifyListeners();
   }
@@ -144,7 +169,7 @@ class DormLanServer extends ChangeNotifier {
       return;
     }
     final path = request.uri.path;
-    final file = _files[path];
+    final file = _routes[path];
     if (request.method == 'GET' && file != null) {
       response.headers.contentType = ContentType(
         'text',
@@ -169,8 +194,15 @@ class DormLanServer extends ChangeNotifier {
       }
     }
     final route = request.uri.pathSegments.skip(1).toList();
+    if (_cards case final cards?) {
+      final data = request.method == 'POST'
+          ? await _body(request).timeout(const Duration(seconds: 8))
+          : <String, dynamic>{};
+      if (identical(_share, share)) _serveCards(cards, request, route, data);
+      return;
+    }
     if (request.method == 'GET') {
-      final result = _api.read(route, request.uri.queryParameters);
+      final result = _api!.read(route, request.uri.queryParameters);
       if (result == null) {
         _error(response, HttpStatus.notFound, '接口不存在');
       } else {
@@ -180,7 +212,7 @@ class DormLanServer extends ChangeNotifier {
       final body = await _body(request).timeout(const Duration(seconds: 8));
       if (!identical(_share, share)) {
         _error(response, HttpStatus.serviceUnavailable, '服务器已停止');
-      } else if (!_api.mutate(route, body)) {
+      } else if (!_api!.mutate(route, body)) {
         _error(response, HttpStatus.notFound, '接口不存在');
       } else {
         _json(response, HttpStatus.ok, {'ok': true});
@@ -188,6 +220,64 @@ class DormLanServer extends ChangeNotifier {
     } else {
       response.headers.set(HttpHeaders.allowHeader, 'GET, POST');
       _error(response, HttpStatus.methodNotAllowed, '请求方法不支持');
+    }
+  }
+
+  void _serveCards(
+    CardRooms cards,
+    HttpRequest request,
+    List<String> route,
+    RoomJson body,
+  ) {
+    final response = request.response;
+    final token = request.headers.value('X-Dorm-Seat') ?? '';
+    switch ((request.method, route)) {
+      case ('GET', ['cards']):
+        _json(response, HttpStatus.ok, {'rooms': cards.publicRooms()});
+      case ('POST', ['cards', 'create']):
+        final rules = body['rules'];
+        if (rules is! RoomJson) throw const InputException('请填写房间规则');
+        final seat = cards.create(
+          CardRules.fromJson(rules),
+          name: body['name'] as String?,
+          scope: 'lan',
+        );
+        _json(response, HttpStatus.ok, {
+          'room': seat.room,
+          'token': seat.token,
+        });
+      case ('POST', ['cards', final room, 'join']):
+        final seat = cards.join(
+          room,
+          name: body['name'] as String?,
+          scope: 'lan',
+        );
+        _json(response, HttpStatus.ok, {
+          'room': seat.room,
+          'token': seat.token,
+        });
+      case ('GET', ['cards', final room, 'state']):
+        cards.requireScope(room, 'lan');
+        final since = int.tryParse(request.uri.queryParameters['since'] ?? '');
+        _json(
+          response,
+          HttpStatus.ok,
+          cards.state((room: room, token: token), since: since),
+        );
+      case ('POST', ['cards', final room, 'options']):
+        cards.requireScope(room, 'lan');
+        _json(response, HttpStatus.ok, {
+          'options': cards.options((room: room, token: token), body),
+        });
+      case ('POST', ['cards', final room, final action]):
+        cards.requireScope(room, 'lan');
+        _json(
+          response,
+          HttpStatus.ok,
+          cards.action((room: room, token: token), action, body),
+        );
+      default:
+        _error(response, HttpStatus.notFound, '牌桌接口不存在');
     }
   }
 

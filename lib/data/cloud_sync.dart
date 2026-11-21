@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../domain/cloud.dart';
 import '../domain/ledger.dart';
+import '../game/card_mailbox.dart';
 import 'cloud_proxy.dart';
 import 'dorm_invite.dart';
 import 'github_transport.dart';
@@ -47,6 +48,18 @@ class CloudSync extends ChangeNotifier {
   String? get error => _error;
   CloudConflict? get conflict => _conflict;
   DateTime? get lastSynced => _lastSynced;
+
+  CardMailbox? get cardMailbox {
+    final current = settings;
+    final transport = _transport;
+    if (current == null || transport is! GitHubTransport) return null;
+    return transport.cardMailbox(current, () {
+      if (_disposed || settings?.repository != current.repository) {
+        throw const InputException('GitHub 仓库已更改，请重新进入在线大厅');
+      }
+      return _key(current);
+    }, readProxy);
+  }
 
   Future<CloudProxy?> readProxy() => _vault.readProxy();
 

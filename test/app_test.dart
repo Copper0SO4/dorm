@@ -323,7 +323,7 @@ void main() {
       376,
     );
     expect(find.text('账单修改记录'), findsOneWidget);
-    expect(find.text('编辑 · 张小林'), findsOneWidget);
+    expect(find.text('编辑 · 操作设备'), findsOneWidget);
     expect(
       tester.widget<DeviceCode>(find.byType(DeviceCode).first).code,
       repo.identity.deviceCode,

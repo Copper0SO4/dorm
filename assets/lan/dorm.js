@@ -254,7 +254,7 @@ async function billDetails(id) {
       : node('p', {class: 'quiet'}, '还没有登记转账'),
     node('h3', {}, '账单修改记录'),
     activity.length ? node('ul', {}, activity.map(entry => node('li', {},
-      node('div', {}, entry.action + ' · ' + (entry.member ?? '未认领设备') + ' · ' + time(entry.createdAt)),
+      node('div', {}, entry.action + ' · 操作设备 · ' + time(entry.createdAt)),
       node('div', {}, entry.detail),
       node('code', {}, entry.deviceCode))))
       : node('p', {class: 'quiet'}, '暂无设备修改记录。'),

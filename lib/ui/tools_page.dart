@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../domain/draw.dart';
 import 'common.dart';
+import 'cards_page.dart';
 import 'tools/draw_card.dart';
 import 'tools/quick_roll_card.dart';
 
@@ -35,6 +36,20 @@ class _ToolsPageState extends State<ToolsPage> {
             '寝室工具箱',
             style: Theme.of(context).textTheme.headlineMedium
                 ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: panelGap),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.style_outlined),
+              title: const Text('斗地主'),
+              subtitle: const Text('本机、局域网与 GitHub 在线房间'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push<void>(
+                MaterialPageRoute(
+                  builder: (_) => CardsPage(controller: widget.controller),
+                ),
+              ),
+            ),
           ),
           const SizedBox(height: panelGap),
           Align(
