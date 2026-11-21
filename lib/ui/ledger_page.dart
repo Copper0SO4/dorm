@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show mapEquals, setEquals;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -575,6 +576,8 @@ Future<void> editBill(
       entry.key: parseCents(entry.value) ?? 0,
   };
 
+  final originalParticipants = Set<int>.of(participants);
+  final originalPersonal = personalAmounts();
   final saved = await showDialog<bool>(
     context: context,
     builder: (context) => EditorDialog(
@@ -589,7 +592,21 @@ Future<void> editBill(
           ({int total, Map<int, int> shares})? preview;
           if (sharedAmount() case final cents?) {
             try {
-              preview = allocateBill(cents, participants, personal);
+              if (existing != null &&
+                  cents == existingShared &&
+                  setEquals(participants, originalParticipants) &&
+                  mapEquals(personal, originalPersonal)) {
+                // A synced bill may use a different local order for ties.
+                preview = (
+                  total: existing.bill.total,
+                  shares: {
+                    for (final share in existing.shares)
+                      share.memberId: share.amount,
+                  },
+                );
+              } else {
+                preview = allocateBill(cents, participants, personal);
+              }
             } on InputException {
               // Incomplete amounts are validated when the form is saved.
             }

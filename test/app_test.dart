@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:dormos/domain/cloud.dart';
+
 import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
 import 'package:dormos/domain/models.dart';
@@ -263,11 +265,23 @@ void main() {
     final bill = repo.addBill(
       const BillDraft(
         title: '公共洗衣液',
-        sharedAmount: 750,
+        sharedAmount: 751,
         payerId: 1,
-        participantIds: [2],
+        participantIds: [1, 2],
       ),
     );
+    final snapshot = repo.cloud.snapshot();
+    final imported = CloudSnapshot({
+      ...snapshot.tables,
+      'shares': {
+        for (final entry in snapshot.tables['shares']!.entries)
+          entry.key: {
+            ...entry.value,
+            'amount': 751 - (entry.value['amount'] as int),
+          },
+      },
+    });
+    repo.cloud.accept(imported, imported);
     await tester.pumpWidget(DormApp(controller: controller));
     await tester.pumpAndSettle();
     await tester.tap(find.text('我'));
@@ -294,11 +308,20 @@ void main() {
     await tester.pumpAndSettle();
     final label = find.widgetWithText(TextFormField, '账单名称');
     final amount = find.widgetWithText(TextFormField, '公共费用（元）');
-    expect(tester.widget<TextFormField>(amount).initialValue, '7.50');
+    expect(tester.widget<TextFormField>(amount).initialValue, '7.51');
+    expect(find.text('王小周承担 ¥3.76 · 转给 张小林'), findsOneWidget);
     await tester.enterText(label, '洗衣液补货');
     await tester.tap(find.text('保存账单修改'));
     await tester.pumpAndSettle();
     expect(repo.billDetail(bill).bill.title, '洗衣液补货');
+    expect(
+      repo
+          .billDetail(bill)
+          .shares
+          .singleWhere((share) => share.memberId == 2)
+          .amount,
+      376,
+    );
     expect(find.text('账单修改记录'), findsOneWidget);
     expect(find.text('编辑 · 张小林'), findsOneWidget);
     expect(
