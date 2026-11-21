@@ -6,7 +6,7 @@ import '../domain/identity.dart';
 import '../domain/ledger.dart';
 import 'card_rooms.dart';
 
-const _discoveryPort = 46627;
+const _discoveryPorts = [43897, 42137, 46627];
 const _protocol = 'DormCards/1';
 final _group = InternetAddress('239.255.77.42');
 
@@ -17,12 +17,21 @@ class CardDiscovery {
 
   Future<void> start(int port, List<RoomJson> Function() rooms) async {
     if (_listener != null) return;
-    final socket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      _discoveryPort,
-      reuseAddress: true,
-    );
-    _listener = socket;
+    RawDatagramSocket? listener;
+    for (final candidate in _discoveryPorts) {
+      try {
+        listener = await RawDatagramSocket.bind(
+          InternetAddress.anyIPv4,
+          candidate,
+          reuseAddress: true,
+        );
+        break;
+      } on SocketException {
+        // A reserved or occupied port does not prevent discovery on another.
+      }
+    }
+    if (listener == null) throw const SocketException('无法绑定斗地主搜房端口');
+    final socket = _listener = listener;
     final networks = await NetworkInterface.list(
       type: InternetAddressType.IPv4,
     );
@@ -115,7 +124,9 @@ class CardDiscovery {
           _group,
         ]) {
           try {
-            socket.send(query, address, _discoveryPort);
+            for (final candidate in _discoveryPorts) {
+              socket.send(query, address, candidate);
+            }
           } on SocketException {
             // Other routes remain available.
           }

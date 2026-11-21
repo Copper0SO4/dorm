@@ -11,6 +11,7 @@ import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
 import 'package:dormos/ui/member_identity.dart';
 import 'package:dormos/ui/tools/dice_scene.dart';
+import 'package:dormos/ui/tools/draw_card.dart';
 import 'package:dormos/ui/tools/draw_ceremony.dart';
 import 'package:dormos/ui/tools/group_board.dart';
 import 'package:dormos/ui/tools_page.dart';
@@ -110,7 +111,9 @@ void main() {
       ),
     );
     final controls = tester.getRect(
-      find.descendant(of: tools, matching: find.byType(Card)).first,
+      find
+          .descendant(of: find.byType(DrawCard), matching: find.byType(Card))
+          .first,
     );
     final board = tester.getRect(find.byType(GroupBoard));
     expect(controls.left, tabs.left);
