@@ -1,8 +1,13 @@
+import 'dart:io';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/qr_image.dart';
+import '../domain/lan_link.dart';
+import 'camera_qr.dart';
 import 'common.dart';
 import 'save_document.dart';
 
@@ -48,6 +53,25 @@ class _LanSettingsState extends State<LanSettings> {
       if (mounted) notify(context, '已复制$label');
     } catch (_) {
       if (mounted) notify(context, '无法复制$label');
+    }
+  }
+
+  Future<void> _join() async {
+    final link = await scanWithCamera<Uri>(
+      context,
+      title: '扫描局域网二维码',
+      instruction: '把室友访问地址的二维码放在取景框内。',
+      read: readLanQrLink,
+    );
+    if (link == null || !mounted) return;
+    try {
+      final opened = await launchUrl(
+        link,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) notify(context, '无法打开浏览器，请检查浏览器是否可用');
+    } catch (error) {
+      if (mounted) notify(context, errorText(error, fallback: '无法打开局域网工作台'));
     }
   }
 
@@ -147,6 +171,16 @@ class _LanSettingsState extends State<LanSettings> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         spacing: 12,
         children: [
+          if (Platform.isAndroid)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.qr_code_scanner_rounded),
+                title: const Text('扫码加入工作台'),
+                subtitle: const Text('扫描室友的局域网二维码，在浏览器打开。'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _join,
+              ),
+            ),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),

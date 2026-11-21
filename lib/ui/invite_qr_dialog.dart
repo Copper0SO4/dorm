@@ -10,32 +10,54 @@ import '../data/dorm_invite.dart';
 import '../data/invite_qr.dart';
 import '../data/qr_image.dart';
 import '../domain/ledger.dart';
+import 'camera_qr.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
 import 'save_document.dart';
 
-enum _ImportMethod { image, clipboard }
+enum _ImportMethod { camera, image, clipboard }
 
 Future<ImportedDormInvite?> importInviteQr(BuildContext context) async {
   final method = await showDialog<_ImportMethod>(
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('导入邀请二维码'),
-      content: const Text('选择二维码截图，或粘贴扫码工具读出的文本。含密钥的邀请还需要输入邀请码。'),
+      content: Text(
+        Platform.isAndroid
+            ? '可以用摄像头扫码，也可以导入二维码截图。含密钥的邀请需要输入邀请码。'
+            : '选择二维码截图，或粘贴扫码工具读出的文本。含密钥的邀请需要输入邀请码。',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, _ImportMethod.clipboard),
           child: const Text('粘贴扫码文本'),
         ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, _ImportMethod.image),
-          child: const Text('选择二维码图片'),
-        ),
+        if (Platform.isAndroid) ...[
+          TextButton(
+            onPressed: () => Navigator.pop(context, _ImportMethod.image),
+            child: const Text('选择二维码图片'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, _ImportMethod.camera),
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+            label: const Text('摄像头扫码'),
+          ),
+        ] else
+          FilledButton(
+            onPressed: () => Navigator.pop(context, _ImportMethod.image),
+            child: const Text('选择二维码图片'),
+          ),
       ],
     ),
   );
   if (method == null || !context.mounted) return null;
   final invite = switch (method) {
+    _ImportMethod.camera => await scanWithCamera<DormInvite>(
+      context,
+      title: '扫描仓库邀请',
+      instruction: '把 Dorm 仓库邀请二维码放在取景框内。',
+      read: readInviteQrText,
+    ),
     _ImportMethod.clipboard => readInviteQrText(
       (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '',
     ),
