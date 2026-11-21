@@ -5,6 +5,7 @@ import '../data/cloud_proxy.dart';
 import '../data/cloud_sync.dart';
 import '../data/ssh_vault.dart';
 import '../domain/cloud.dart';
+import '../domain/ledger.dart';
 import 'cloud_proxy_dialog.dart';
 import 'common.dart';
 import 'dorm_invite_dialog.dart';
@@ -722,6 +723,8 @@ class _CloudConflictPageState extends State<CloudConflictPage> {
     if (row == null) return '已删除';
     const fields = {
       'name': '名称',
+      'avatar': '头像',
+      'shared': '参与公共分摊',
       'title': '标题',
       'active': '启用',
       'category': '分类',
@@ -751,9 +754,11 @@ class _CloudConflictPageState extends State<CloudConflictPage> {
       'day': '日期',
       'completed_at': '完成时间',
     };
-    return row.entries
+    final summary = row.entries
+        .where((entry) => entry.key != 'edit_version')
         .map((entry) {
           final value = entry.value;
+          if (entry.key == 'avatar') return value == null ? '默认头像' : '自定义头像';
           final target = conflict.table.references[entry.key];
           final reference = target == null
               ? null
@@ -763,5 +768,12 @@ class _CloudConflictPageState extends State<CloudConflictPage> {
           return '${fields[entry.key] ?? entry.key} $display';
         })
         .join(' · ');
+    if (conflict.table.name != 'bills') return summary;
+    final shares = [
+      for (final share in snapshot.tables['shares']!.values)
+        if (share['bill_id'] == conflict.key)
+          "${snapshot.tables['members']![share['member_id']]?['name'] ?? '成员'} ${formatCents(share['amount'] as int)}",
+    ];
+    return '$summary\n分摊 ${shares.join('、')}';
   }
 }

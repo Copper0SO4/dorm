@@ -31,10 +31,11 @@ class CloudRace implements Exception {
 }
 
 class GitHubTransport implements CloudTransport {
-  GitHubTransport(this.directory, {this.localTestRemote});
+  GitHubTransport(this.directory, {this.localTestRemote, this.deviceCode});
 
   final Directory directory;
   final Directory? localTestRemote;
+  final String? deviceCode;
 
   String _path(CloudSettings settings) =>
       '${directory.path}${Platform.pathSeparator}${cloudRepositoryId(settings.repository)}';
@@ -107,6 +108,9 @@ class GitHubTransport implements CloudTransport {
     final encoded = data.encoded;
     final operator = settings.operator;
     final email = settings.commitEmail;
+    final message = deviceCode == null
+        ? 'Sync Dorm data'
+        : 'Sync Dorm data\n\nDorm-Device: $deviceCode';
     return _run(settings, key, proxy, (repo, remote, callbacks) {
       if (_head(remote, callbacks) != expectedRevision) {
         throw const CloudRace();
@@ -141,6 +145,7 @@ class GitHubTransport implements CloudTransport {
                   operator,
                   email,
                   expectedRevision,
+                  message,
                 );
               } finally {
                 tree.free();
@@ -326,6 +331,7 @@ void _publish(
   String operator,
   String email,
   String? expectedRevision,
+  String message,
 ) {
   final parentId = expectedRevision == null
       ? null
@@ -344,7 +350,7 @@ void _publish(
           updateRef: outgoing,
           author: signature,
           committer: signature,
-          message: 'Sync Dorm data',
+          message: message,
           tree: tree,
           parents: [?parent],
         );

@@ -1,3 +1,4 @@
+import '../domain/identity.dart';
 import '../domain/ledger.dart';
 import '../domain/matters.dart';
 import '../domain/models.dart';
@@ -49,8 +50,17 @@ class LanApi {
 
   bool mutate(List<String> route, Map<String, dynamic> body) {
     final data = _Input(body);
+    String browserDevice() {
+      final code = body['browserDevice'];
+      if (code == null) return newIdentityCode();
+      if (code is! String || !isIdentityCode(code)) {
+        throw const InputException('浏览器设备码无效');
+      }
+      return code;
+    }
+
     switch (route) {
-      case ['ledger']:
+      case ['ledger'] || ['ledger', 'edit']:
         final participants = body['participants'];
         final personal = body['personal'];
         if (participants is! List ||
@@ -72,15 +82,34 @@ class LanApi {
           supplyId: supplyId,
           markSupplyOrdered: supplyId != null,
         );
-        write(() => repository.addBill(draft));
+        if (route.length == 1) {
+          write(
+            () => repository.addBill(draft, browserDevice: browserDevice()),
+          );
+        } else {
+          write(
+            () => repository.updateBill(
+              data.id('id'),
+              draft,
+              expectedVersion: data.text('version'),
+              browserDevice: browserDevice(),
+            ),
+          );
+        }
       case ['ledger', 'delete']:
-        write(() => repository.deleteBill(data.id('id')));
+        write(
+          () => repository.deleteBill(
+            data.id('id'),
+            browserDevice: browserDevice(),
+          ),
+        );
       case ['transfers']:
         write(
           () => repository.recordTransfer(
             data.id('billId'),
             data.id('memberId'),
             data.money('amount'),
+            browserDevice: browserDevice(),
           ),
         );
       case ['chores', 'generate']:
@@ -168,6 +197,18 @@ class LanApi {
     final detail = repository.billDetail(id);
     return {
       'bill': _bill(detail.bill),
+      'version': detail.version,
+      'participants': detail.participants,
+      'activity': [
+        for (final entry in detail.activity)
+          {
+            'deviceCode': entry.deviceCode,
+            'member': entry.memberName,
+            'action': entry.action.label,
+            'createdAt': entry.date,
+            'detail': entry.detail,
+          },
+      ],
       'shares': [
         for (final share in detail.shares)
           {

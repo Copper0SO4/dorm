@@ -126,7 +126,7 @@ class CloudSync extends ChangeNotifier {
   }
 
   void changed() {
-    if (_disposed || settings == null || _conflict != null) return;
+    if (_disposed || settings == null) return;
     if (_busy) {
       _repeat = true;
       return;
@@ -139,7 +139,7 @@ class CloudSync extends ChangeNotifier {
   }
 
   Future<void> sync() async {
-    if (_disposed || _busy || _conflict != null) return;
+    if (_disposed || _busy) return;
     final current = settings;
     if (current == null) return;
     _debounce?.cancel();
@@ -168,11 +168,15 @@ class CloudSync extends ChangeNotifier {
     CloudKey key,
     CloudProxy? proxy,
   ) async {
-    final remote = await _transport.pull(current, key, proxy: proxy);
+    var remote = await _transport.pull(current, key, proxy: proxy);
     if (_disposed) return;
-    final local = _store.snapshot();
+    var local = _store.snapshot();
     final base = _store.base;
     if (remote == null) {
+      if (_conflict case final pending?
+          when pending.remote == null && pending.local.sameAs(local)) {
+        return;
+      }
       if (base != null && !base.isEmpty) {
         _conflict = CloudConflict(
           local: local,
@@ -182,13 +186,46 @@ class CloudSync extends ChangeNotifier {
         return;
       }
       await _upload(current, key, local, null, proxy);
+      _conflict = null;
+      return;
+    }
+    // Claim conflicts are withdrawn even if business changes need manual review.
+    final localClaims = local.withClaimConflicts(remote.data);
+    final remoteClaims = remote.data.withClaimConflicts(local);
+    if (!localClaims.sameAs(local)) {
+      _apply(local, localClaims, base);
+      local = localClaims;
+    }
+    if (!remoteClaims.sameAs(remote.data)) {
+      await _transport.push(
+        current,
+        key,
+        remoteClaims,
+        remote.revision,
+        proxy: proxy,
+      );
+      if (_disposed) return;
+      remote = await _transport.pull(current, key, proxy: proxy);
+      if (_disposed) return;
+      if (remote == null || !remote.data.sameAs(remoteClaims)) {
+        throw const CloudRace();
+      }
+      local = _store.snapshot();
+    }
+    if (_conflict case final pending?
+        when pending.remote?.revision == remote.revision &&
+            pending.local.sameAs(local)) {
       return;
     }
     if (local.sameAs(remote.data)) {
+      _conflict = null;
       _remember(remote.data);
       return;
     }
-    if (base == null && !local.isEmpty && !remote.data.isEmpty) {
+    if (base == null &&
+        local.hasBusinessData &&
+        remote.data.hasBusinessData &&
+        !local.sameBusinessData(remote.data)) {
       _conflict = CloudConflict(
         local: local,
         remote: remote,
@@ -220,6 +257,7 @@ class CloudSync extends ChangeNotifier {
       );
       return;
     }
+    _conflict = null;
     if (merged.sameAs(remote.data)) {
       _remember(remote.data);
     } else {
@@ -236,8 +274,14 @@ class CloudSync extends ChangeNotifier {
     if (decision == null || current == null || _busy) return;
     final remoteData = decision.remote?.data ?? CloudSnapshot({});
     final chosen = switch (entire) {
-      CloudSide.local => decision.local,
-      CloudSide.remote => remoteData,
+      CloudSide.local => decision.local.withIdentityHistory(
+        decision.local,
+        remoteData,
+      ),
+      CloudSide.remote => remoteData.withIdentityHistory(
+        decision.local,
+        remoteData,
+      ),
       null =>
         decision.merge?.resolve(choices) ??
             (throw const InputException('请选择一个完整版本')),
@@ -287,9 +331,9 @@ class CloudSync extends ChangeNotifier {
     return key ?? (throw const InputException('SSH 私钥未找到，请重新配置'));
   }
 
-  void _apply(CloudSnapshot local, CloudSnapshot merged, CloudSnapshot base) {
+  void _apply(CloudSnapshot local, CloudSnapshot merged, CloudSnapshot? base) {
     if (local.sameAs(merged)) {
-      _store.rememberBase(base);
+      if (base != null) _store.rememberBase(base);
     } else {
       _store.accept(merged, base);
       onDataChanged?.call();

@@ -73,6 +73,52 @@ void main() {
   }
 
   test(
+    'browser bill edits preserve the browser device code in the audit log',
+    () async {
+      const clientCode = 'd7a33e5d731d4a3aa05b45e1da54c819';
+      final fields = <String, Object?>{
+        'title': '局域网原始账单',
+        'shared': '5',
+        'payerId': 1,
+        'participants': [2],
+        'personal': <String, Object?>{},
+        'browserDevice': clientCode,
+      };
+      expect(
+        (await request(
+          '/api/ledger',
+          data: fields,
+          origin: address.origin,
+        )).status,
+        200,
+      );
+      final bill = repository.bills().single;
+      final response = await request('/api/ledger/${bill.id}');
+      final original = jsonDecode(response.text) as Map;
+      final update = await request(
+        '/api/ledger/edit',
+        origin: address.origin,
+        data: {
+          ...fields,
+          'title': '局域网修改账单',
+          'id': bill.id,
+          'version': original['version'],
+        },
+      );
+      expect(update.status, 200, reason: update.text);
+      final result = repository.billDetail(bill.id);
+      expect(result.bill.title, '局域网修改账单');
+      expect(result.activity.map((entry) => entry.deviceCode).toSet(), {
+        clientCode,
+      });
+      expect(
+        result.activity.every((entry) => entry.memberName == null),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'opens the workspace without an access code and guards other sites',
     () async {
       final link = server.addresses.singleWhere(

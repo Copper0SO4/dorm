@@ -55,3 +55,22 @@ const mattersSchema = '''CREATE TABLE matters (
   archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
   CHECK ((status = 'done') = (completed_at IS NOT NULL))
 ) STRICT''';
+
+const identitySchema = [
+  'ALTER TABLE members ADD COLUMN avatar TEXT CHECK(avatar IS NULL OR length(avatar) <= 52000)',
+  'ALTER TABLE bills ADD COLUMN edit_version TEXT',
+  'ALTER TABLE shares ADD COLUMN shared INTEGER CHECK(shared IN (0, 1))',
+  '''CREATE TABLE identity_claims (
+    id INTEGER PRIMARY KEY, member_key TEXT NOT NULL, device_code TEXT NOT NULL,
+    state INTEGER NOT NULL CHECK(state IN (0, 1, 2)), created_at TEXT NOT NULL
+  ) STRICT''',
+  'CREATE UNIQUE INDEX active_member_claim ON identity_claims(member_key) WHERE state=0',
+  'CREATE UNIQUE INDEX active_device_claim ON identity_claims(device_code) WHERE state=0',
+  'CREATE INDEX claim_device_history ON identity_claims(device_code, created_at)',
+  '''CREATE TABLE audit_entries (
+    id INTEGER PRIMARY KEY, target_kind TEXT NOT NULL CHECK(target_kind IN ('member', 'bill')),
+    target_key TEXT NOT NULL, device_code TEXT NOT NULL, claim_key TEXT,
+    action TEXT NOT NULL, created_at TEXT NOT NULL, detail TEXT NOT NULL
+  ) STRICT''',
+  'CREATE INDEX audit_target ON audit_entries(target_kind, target_key, created_at)',
+];

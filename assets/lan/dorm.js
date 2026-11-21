@@ -15,6 +15,19 @@ const filters = {query: '', unpaid: false, page: 0, day: '', archived: false};
 let current = 'ledger';
 let renderId = 0;
 let toastTimer;
+let browserDevice;
+
+function deviceCode() {
+  if (browserDevice) return browserDevice;
+  try {
+    const saved = localStorage.getItem('dorm-browser-device');
+    if (/^[a-f0-9]{32}$/.test(saved)) return browserDevice = saved;
+  } catch (_) {}
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  browserDevice = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  try { localStorage.setItem('dorm-browser-device', browserDevice); } catch (_) {}
+  return browserDevice;
+}
 
 function node(tag, attributes = {}, ...children) {
   const element = document.createElement(tag);
@@ -56,7 +69,7 @@ async function request(path, data) {
     response = await fetch(path, {
       method: data === undefined ? 'GET' : 'POST',
       headers: data === undefined ? {} : {'Content-Type': 'application/json'},
-      body: data === undefined ? undefined : JSON.stringify(data),
+      body: data === undefined ? undefined : JSON.stringify({...data, browserDevice: deviceCode()}),
       cache: 'no-store',
     });
   } catch (_) {
@@ -187,21 +200,34 @@ function ledgerView(data) {
       button('下一页', data.hasNext ? async () => { filters.page++; await render(); } : null)) : null);
 }
 
-async function newBill(supply, selectAll = true) {
-  const members = (await request('/api/members')).filter(member => member.active);
+async function newBill(supply, selectAll = true, existing = null) {
+  const previous = existing?.bill;
+  const shares = new Map((existing?.shares ?? []).map(share => [share.id, share]));
+  const participants = new Set(existing?.participants ?? []);
+  const members = (await request('/api/members')).filter(
+    member => member.active || member.id === previous?.payerId || shares.has(member.id));
   if (!members.length) throw new Error('请先在 Dorm 中添加寝室成员');
   const amount = {inputmode: 'decimal', maxlength: 10, placeholder: '0.00'};
-  editor(supply ? '记录采购账单' : '新建账单', [
-    label('账单名称', input('title', supply ? '采购 ' + supply.name : '', {required: true, maxlength: 80})),
-    label('公共费用（元）', input('shared', '', amount)),
-    label('付款人', select('payerId', members.map(m => [m.id, m.name]), members[0].id)),
+  const shared = previous ? previous.total - previous.personal : 0;
+  const payerLocked = Boolean(existing?.transfers.length);
+  editor(previous ? '编辑账单' : supply ? '记录采购账单' : '新建账单', [
+    label('账单名称', input('title', previous?.title ?? (supply ? '采购 ' + supply.name : ''), {required: true, maxlength: 80})),
+    label('公共费用（元）', input('shared', shared ? (shared / 100).toFixed(2) : '', amount)),
+    payerLocked
+      ? node('p', {}, previous.payer + ' 垫付 · 已有实际转账')
+      : label('付款人', select('payerId', members.map(m => [m.id, m.name]), previous?.payerId ?? members[0].id)),
     node('div', {}, node('p', {}, '均摊成员'),
       node('div', {class: 'form-grid'}, members.map(m =>
-        label(m.name, input('participants', m.id, {type: 'checkbox', checked: selectAll}))))),
-    node('details', {}, node('summary', {}, '个人费用（按成员填写）'),
-      node('div', {class: 'form-grid'}, members.map(m => label(m.name, input('fee:' + m.id, '', amount))))),
-  ], '保存账单', (form) => request('/api/ledger', {
-    title: form.get('title'), shared: form.get('shared').trim(), payerId: Number(form.get('payerId')),
+        label(m.name, input('participants', m.id, {type: 'checkbox', checked: previous ? participants.has(m.id) : selectAll}))))),
+    node('details', {open: previous?.personal > 0}, node('summary', {}, '个人费用（按成员填写）'),
+      node('div', {class: 'form-grid'}, members.map(m => {
+        const fee = shares.get(m.id)?.personal;
+        return label(m.name, input('fee:' + m.id, fee ? (fee / 100).toFixed(2) : '', amount));
+      }))),
+  ], '保存账单', (form) => request(previous ? '/api/ledger/edit' : '/api/ledger', {
+    id: previous?.id, version: existing?.version,
+    title: form.get('title'), shared: form.get('shared').trim(),
+    payerId: payerLocked ? previous.payerId : Number(form.get('payerId')),
     participants: form.getAll('participants').map(Number),
     personal: Object.fromEntries(members.map(m => [m.id, form.get('fee:' + m.id).trim()]).filter(([, value]) => value)),
     supplyId: supply?.id ?? null,
@@ -209,7 +235,8 @@ async function newBill(supply, selectAll = true) {
 }
 
 async function billDetails(id) {
-  const {bill, shares, transfers} = await request('/api/ledger/' + id);
+  const detail = await request('/api/ledger/' + id);
+  const {bill, shares, transfers, activity} = detail;
   openDialog(bill.title, [node('div', {class: 'stack'},
     node('p', {}, bill.payer + ' 垫付 ' + money(bill.total) + ' · 待结清 ' + money(bill.outstanding)),
     node('h3', {}, '成员分摊'),
@@ -225,7 +252,15 @@ async function billDetails(id) {
     transfers.length ? node('ul', {}, transfers.map(item =>
       node('li', {}, item.member + ' · ' + money(item.amount) + ' · ' + time(item.createdAt))))
       : node('p', {class: 'quiet'}, '还没有登记转账'),
-    node('div', {class: 'actions'}, button('删除账单', () => deleteBill(bill), 'danger-outline')),
+    node('h3', {}, '账单修改记录'),
+    activity.length ? node('ul', {}, activity.map(entry => node('li', {},
+      node('div', {}, entry.action + ' · ' + (entry.member ?? '未认领设备') + ' · ' + time(entry.createdAt)),
+      node('div', {}, entry.detail),
+      node('code', {}, entry.deviceCode))))
+      : node('p', {class: 'quiet'}, '暂无设备修改记录。'),
+    node('div', {class: 'actions'},
+      button('编辑账单', () => newBill(null, true, detail)),
+      button('删除账单', () => deleteBill(bill), 'danger-outline')),
   )]);
 }
 

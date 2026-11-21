@@ -1,3 +1,4 @@
+import 'identity.dart';
 import 'matters.dart';
 import 'models.dart';
 import 'preferences.dart';
@@ -6,15 +7,36 @@ import 'settlement.dart';
 
 abstract interface class DormRepository {
   List<Member> members();
-  void saveMember(String name, {int? id});
+  MyIdentity get identity;
+  void claimMember(int id);
+  void releaseMember();
+  List<AuditEntry> memberActivity(int id);
+  void saveMember(
+    String name, {
+    int? id,
+    String? avatar,
+    bool clearAvatar = false,
+    String? expectedIdentityCode,
+  });
   void setMemberActive(int id, bool active);
 
   List<Bill> bills({int? supplyId});
   BillDetail billDetail(int id);
   List<Balance> balances();
-  int addBill(BillDraft draft);
-  void deleteBill(int id);
-  void recordTransfer(int billId, int memberId, int amount);
+  int addBill(BillDraft draft, {String? browserDevice});
+  void updateBill(
+    int id,
+    BillDraft draft, {
+    required String expectedVersion,
+    String? browserDevice,
+  });
+  void deleteBill(int id, {String? browserDevice});
+  void recordTransfer(
+    int billId,
+    int memberId,
+    int amount, {
+    String? browserDevice,
+  });
   List<SettlementPair> openSettlements();
   List<SettlementBatch> settlementHistory();
   void recordSettlement(

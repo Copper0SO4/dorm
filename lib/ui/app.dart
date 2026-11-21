@@ -6,6 +6,7 @@ import '../domain/preferences.dart';
 import 'chores_page.dart';
 import 'common.dart';
 import 'ledger_page.dart';
+import 'me_page.dart';
 import 'matters_page.dart';
 import 'settings_page.dart';
 import 'supplies_page.dart';
@@ -98,6 +99,10 @@ class _DormAppState extends State<DormApp> {
     ),
   ];
 
+  void _showMe(BuildContext context) => Navigator.of(context).push<void>(
+    MaterialPageRoute(builder: (_) => MePage(controller: widget.controller)),
+  );
+
   @override
   void dispose() {
     _mode.dispose();
@@ -145,6 +150,18 @@ class _DormAppState extends State<DormApp> {
                 style: desktop ? null : theme.textTheme.titleMedium,
               ),
               actions: [
+                if (desktop)
+                  TextButton.icon(
+                    onPressed: () => _showMe(context),
+                    icon: const Icon(Icons.account_circle_outlined),
+                    label: const Text('我'),
+                  )
+                else
+                  IconButton(
+                    tooltip: '我',
+                    icon: const Icon(Icons.account_circle_outlined),
+                    onPressed: () => _showMe(context),
+                  ),
                 SettingsAction(controller: widget.controller, themeMode: _mode),
                 const SizedBox(width: 12),
               ],

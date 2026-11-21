@@ -8,6 +8,7 @@ import '../domain/preferences.dart';
 import 'common.dart';
 import 'data_exports.dart';
 import 'members_dialog.dart';
+import 'member_identity.dart';
 import 'settlement_page.dart';
 import 'spending_page.dart';
 
@@ -511,10 +512,19 @@ Future<void> editBill(
   DormController controller, {
   Supply? supply,
   bool markSupplyOrdered = false,
+  BillDetail? existing,
 }) async {
-  List<Member> activeMembers() =>
-      controller.repository.members().where((member) => member.active).toList();
-  var members = activeMembers();
+  final retained = {
+    if (existing != null) ...[
+      existing.bill.payerId,
+      ...existing.shares.map((share) => share.memberId),
+    ],
+  };
+  List<Member> eligibleMembers() => controller.repository
+      .members()
+      .where((member) => member.active || retained.contains(member.id))
+      .toList();
+  var members = eligibleMembers();
   if (members.isEmpty) {
     final proceed = await showMembers(
       context,
@@ -522,20 +532,42 @@ Future<void> editBill(
       continueToBill: true,
     );
     if (proceed != true || !context.mounted) return;
-    members = activeMembers();
+    members = eligibleMembers();
     if (members.isEmpty) return;
   }
-  var title = supply == null ? '' : '采购 ${supply.name}';
+  var title =
+      existing?.bill.title ?? (supply == null ? '' : '采购 ${supply.name}');
   if (title.runes.length > 80) {
     title = String.fromCharCodes(title.runes.take(80));
   }
-  var amount = '';
-  var payer = members.first.id;
-  final participants = controller.repository.preferences.selectAllParticipants
-      ? members.map((member) => member.id).toSet()
-      : <int>{};
-  final personalInputs = <int, String>{};
-  var showPersonal = false;
+  final existingShared = existing == null
+      ? 0
+      : existing.bill.total - existing.bill.personalAmount;
+  var amount = existingShared == 0
+      ? ''
+      : formatCents(existingShared).substring(1);
+  final initialAmount = amount;
+  final identity = controller.repository.identity;
+  var payer =
+      existing?.bill.payerId ??
+      members
+          .where((member) => member.id == identity.memberId)
+          .firstOrNull
+          ?.id ??
+      members.first.id;
+  final participants = existing != null
+      ? existing.participants.toSet()
+      : (controller.repository.preferences.selectAllParticipants
+            ? members.map((member) => member.id).toSet()
+            : <int>{});
+  final personalInputs = <int, String>{
+    if (existing != null)
+      for (final share in existing.shares)
+        if (share.personalAmount > 0)
+          share.memberId: formatCents(share.personalAmount).substring(1),
+  };
+  var showPersonal = personalInputs.isNotEmpty;
+  final hasTransfers = existing?.transfers.isNotEmpty ?? false;
 
   int? sharedAmount() => amount.trim().isEmpty ? 0 : parseCents(amount);
   Map<int, int> personalAmounts() => {
@@ -546,8 +578,8 @@ Future<void> editBill(
   final saved = await showDialog<bool>(
     context: context,
     builder: (context) => EditorDialog(
-      title: supply == null ? '新建账单' : '记录采购账单',
-      action: '写入总账',
+      title: existing != null ? '编辑账单' : (supply == null ? '新建账单' : '记录采购账单'),
+      action: existing == null ? '写入总账' : '保存账单修改',
       fields: StatefulBuilder(
         builder: (context, update) {
           final personal = personalAmounts();
@@ -563,17 +595,22 @@ Future<void> editBill(
             }
           }
           return fieldColumn([
-            if (supply != null) Text('关联物资 · ${supply.name}'),
+            if ((existing?.bill.supplyName ?? supply?.name)
+                case final supplyName?)
+              Text('关联物资 · $supplyName'),
             textField('账单名称', title, (value) => title = value, autofocus: true),
             _amountField(
               '公共费用（元）',
-              '',
+              initialAmount,
               (value) => update(() => amount = value),
               allowZero: true,
               helperText: '只记个人费用时可留空',
             ),
             DropdownButtonFormField<int>(
-              decoration: const InputDecoration(labelText: '付款人'),
+              decoration: InputDecoration(
+                labelText: '付款人',
+                helperText: hasTransfers ? '已有实际转账，付款人保持不变' : null,
+              ),
               initialValue: payer,
               isExpanded: true,
               items: [
@@ -583,7 +620,9 @@ Future<void> editBill(
                     child: Text(person.name, overflow: TextOverflow.ellipsis),
                   ),
               ],
-              onChanged: (value) => update(() => payer = value!),
+              onChanged: hasTransfers
+                  ? null
+                  : (value) => update(() => payer = value!),
             ),
             const Text(
               '公共费用参与成员',
@@ -680,22 +719,31 @@ Future<void> editBill(
           ]);
         },
       ),
-      onSave: () => controller.write(
-        () => controller.repository.addBill(
-          BillDraft(
-            title: title,
-            sharedAmount: sharedAmount()!,
-            payerId: payer,
-            participantIds: participants.toList(),
-            personalAmounts: personalAmounts(),
-            supplyId: supply?.id,
-            markSupplyOrdered: markSupplyOrdered,
-          ),
-        ),
-      ),
+      onSave: () => controller.write(() {
+        final draft = BillDraft(
+          title: title,
+          sharedAmount: sharedAmount()!,
+          payerId: payer,
+          participantIds: participants.toList(),
+          personalAmounts: personalAmounts(),
+          supplyId: supply?.id,
+          markSupplyOrdered: markSupplyOrdered,
+        );
+        if (existing == null) {
+          controller.repository.addBill(draft);
+        } else {
+          controller.repository.updateBill(
+            existing.bill.id,
+            draft,
+            expectedVersion: existing.version,
+          );
+        }
+      }),
     ),
   );
-  if (saved == true && context.mounted) notify(context, '已写入公共总账');
+  if (saved == true && context.mounted) {
+    notify(context, existing == null ? '已写入公共总账' : '已保存账单修改');
+  }
 }
 
 Widget _amountField(
@@ -804,10 +852,17 @@ Future<void> showBill(
                     subtitle: Text(localTime(context, transfer.createdAt)),
                     trailing: Text(formatCents(transfer.amount)),
                   ),
+              const SectionHeading('账单修改记录'),
+              AuditHistory(detail.activity),
             ],
           ),
         ),
         actions: [
+          TextButton.icon(
+            onPressed: () => editBill(context, controller, existing: detail),
+            icon: const Icon(Icons.edit_outlined),
+            label: const Text('编辑账单'),
+          ),
           TextButton.icon(
             onPressed: () async {
               final accepted = await confirm(

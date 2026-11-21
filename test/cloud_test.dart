@@ -216,10 +216,17 @@ void main() {
       before.cloud.saveSettings(
         CloudSettings(repository: 'test/dorm', operator: '原操作者'),
       );
-      final base = before.cloud.snapshot();
+      final base = CloudSnapshot.decode(
+        _legacySnapshot(before.cloud.snapshot(), 1),
+      );
       before.cloud.rememberBase(base);
       before.close();
       final raw = sqlite3.open(path);
+      raw.execute('DROP TABLE audit_entries');
+      raw.execute('DROP TABLE identity_claims');
+      raw.execute('ALTER TABLE members DROP COLUMN avatar');
+      raw.execute('ALTER TABLE bills DROP COLUMN edit_version');
+      raw.execute('ALTER TABLE shares DROP COLUMN shared');
       raw.execute('DROP TABLE matters');
       raw.execute('ALTER TABLE bills DROP COLUMN deleted');
       raw.execute('DROP INDEX transfers_batch');
@@ -254,13 +261,24 @@ void main() {
       ),
     );
     final base = CloudSnapshot.decode(a.cloud.snapshot().encoded);
-    expect((jsonDecode(base.encoded) as Map)['format'], 1);
+    expect((jsonDecode(base.encoded) as Map)['format'], 5);
+    expect(
+      CloudSnapshot.decode(_legacySnapshot(base, 1)).tables['bills']!.length,
+      1,
+    );
     b.cloud.accept(base, base);
     final debtor = b.members().singleWhere((member) => member.name == '参与人');
     b.recordTransfer(b.bills().single.id, debtor.id, 200);
     a.deleteBill(firstId);
     final deleted = CloudSnapshot.decode(a.cloud.snapshot().encoded);
-    expect((jsonDecode(deleted.encoded) as Map)['format'], 4);
+    expect((jsonDecode(deleted.encoded) as Map)['format'], 5);
+    expect(
+      CloudSnapshot.decode(_legacySnapshot(deleted, 4))
+          .tables['bills']!
+          .values
+          .single['deleted'],
+      1,
+    );
     expect(deleted.tables['bills']!.values.single['deleted'], 1);
     final merge = CloudMerge(b.cloud.snapshot(), deleted, base);
     expect(merge.conflicts, isEmpty);
@@ -484,7 +502,7 @@ void main() {
     expect(reopened.cloud.settings!.operator, '操作者乙');
     expect(reopened.members().map((member) => member.name), contains('重启时拉取'));
 
-    expect((jsonDecode(a.cloud.snapshot().encoded) as Map)['format'], 1);
+    expect((jsonDecode(a.cloud.snapshot().encoded) as Map)['format'], 5);
     final payerId = a
         .members()
         .firstWhere((member) => member.name == '本机乙版本')
@@ -513,7 +531,14 @@ void main() {
       syncedBill.shares.singleWhere((share) => share.personalAmount > 0).amount,
       800,
     );
-    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 2);
+    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 5);
+    expect(
+      CloudSnapshot.decode(_legacySnapshot(reopened.cloud.snapshot(), 2))
+          .tables['shares']!
+          .values
+          .any((row) => row['personal_amount'] == 300),
+      isTrue,
+    );
 
     final charge = a.openSettlements().single.charges.single;
     a.recordSettlement(borrowerId, payerId, {
@@ -531,10 +556,32 @@ void main() {
     expect(syncA.error, isNull);
     await restarted.sync();
     expect(restarted.error, isNull);
-    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 3);
+    expect((jsonDecode(reopened.cloud.snapshot().encoded) as Map)['format'], 5);
+    expect(
+      CloudSnapshot.decode(_legacySnapshot(reopened.cloud.snapshot(), 3))
+          .tables['matters']!
+          .length,
+      1,
+    );
     expect(reopened.matters().single.owner, '独立成员甲');
     expect(reopened.matters().single.status, MatterStatus.doing);
     expect(reopened.settlementHistory().single.allocations.single.amount, 200);
+
+    a.claimMember(a.members().singleWhere((m) => m.name == '重启时拉取').id);
+    reopened.claimMember(
+      reopened.members().singleWhere((m) => m.name == '重启时拉取').id,
+    );
+    await syncA.sync();
+    await restarted.sync();
+    expect(restarted.error, isNull);
+    expect(restarted.conflict, isNull);
+    expect(reopened.identity.conflicted, isTrue);
+    expect(reopened.identity.memberId, isNull);
+    await syncA.sync();
+    expect(syncA.error, isNull);
+    expect(a.identity.conflicted, isTrue);
+    expect(a.identity.memberId, isNull);
+    expect(a.members().every((m) => m.deviceCode == null), isTrue);
 
     final openedA = SqliteDormRepository.open('${root.path}/a.sqlite');
     addTearDown(openedA.close);
@@ -544,6 +591,20 @@ void main() {
     expect(await syncA.devicePublicKey(), keys.first);
   });
 }
+
+String _legacySnapshot(CloudSnapshot snapshot, int format) => jsonEncode({
+  'format': format,
+  'tables': {
+    for (final table in cloudTables.where((table) => table.inFormat(format)))
+      table.name: {
+        for (final entry in snapshot.tables[table.name]!.entries)
+          entry.key: {
+            for (final column in table.wireColumns(format))
+              column: entry.value[column],
+          },
+      },
+  },
+});
 
 // Deliberately not a usable private key. The transport test uses a local bare
 // repository, and this fixture exercises the application's key container parser.

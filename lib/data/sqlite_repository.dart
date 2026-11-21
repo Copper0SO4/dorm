@@ -1,6 +1,7 @@
 import 'package:sqlite3/sqlite3.dart';
 
 import '../domain/cloud.dart';
+import '../domain/identity.dart';
 import '../domain/ledger.dart';
 import '../domain/matters.dart';
 import '../domain/models.dart';
@@ -11,12 +12,13 @@ import '../domain/settlement.dart';
 import 'schema.dart';
 
 part 'sqlite_cloud.dart';
+part 'sqlite_identity.dart';
 
-class SqliteDormRepository implements DormRepository {
-  SqliteDormRepository._(this._db);
+class SqliteDormRepository with _SqliteIdentity implements DormRepository {
+  SqliteDormRepository._(this._db, this._path);
 
   factory SqliteDormRepository.open(String path) {
-    final repo = SqliteDormRepository._(sqlite3.open(path));
+    final repo = SqliteDormRepository._(sqlite3.open(path), path);
     try {
       repo._db.execute('PRAGMA busy_timeout = 2000');
       repo._db.execute('PRAGMA foreign_keys = ON');
@@ -28,9 +30,13 @@ class SqliteDormRepository implements DormRepository {
     }
   }
 
+  @override
   final Database _db;
+  final String _path;
+  @override
+  late final String deviceCode = _installationCode(_path);
 
-  static const _currentSchemaVersion = 6;
+  static const _currentSchemaVersion = 7;
 
   int get _schemaVersion =>
       _db.select('PRAGMA user_version').single['user_version'] as int;
@@ -79,6 +85,13 @@ class SqliteDormRepository implements DormRepository {
           'CHECK(deleted IN (0, 1))',
         );
       }
+      if (version < 7) {
+        for (final statement in identitySchema) {
+          _db.execute(statement);
+        }
+        _SqliteCloudStore.addSyncIds(_db, 'identity_claims');
+        _SqliteCloudStore.addSyncIds(_db, 'audit_entries');
+      }
       _db.execute(
         'CREATE TABLE IF NOT EXISTS local_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
       );
@@ -88,6 +101,7 @@ class SqliteDormRepository implements DormRepository {
 
   CloudStore get cloud => _SqliteCloudStore(this);
 
+  @override
   T _transaction<T>(T Function() body) {
     _db.execute('BEGIN IMMEDIATE');
     try {
@@ -100,6 +114,7 @@ class SqliteDormRepository implements DormRepository {
     }
   }
 
+  @override
   Row _requireRow(String sql, List<Object?> parameters, String message) {
     final rows = _db.select(sql, parameters);
     if (rows.isEmpty) throw InputException(message);
@@ -118,6 +133,7 @@ class SqliteDormRepository implements DormRepository {
     return cleaned;
   }
 
+  @override
   String _timestamp() => DateTime.now().toUtc().toIso8601String();
 
   void _requireActiveMember(int id) {
@@ -128,18 +144,28 @@ class SqliteDormRepository implements DormRepository {
 
   @override
   List<Member> members() => [
-    for (final row in _db.select(
-      'SELECT * FROM members ORDER BY active DESC, id',
-    ))
+    for (final row in _db.select('''SELECT m.*, c.device_code FROM members m
+      LEFT JOIN identity_claims c ON c.member_key=m.sync_id AND c.state=0
+      ORDER BY m.active DESC, m.id'''))
       (
         id: row['id'] as int,
         name: row['name'] as String,
         active: row['active'] == 1,
+        identityCode: row['sync_id'] as String,
+        avatar: row['avatar'] as String?,
+        deviceCode: row['device_code'] as String?,
       ),
   ];
 
   @override
-  void saveMember(String name, {int? id}) {
+  void saveMember(
+    String name, {
+    int? id,
+    String? avatar,
+    bool clearAvatar = false,
+    String? expectedIdentityCode,
+  }) {
+    if (avatar != null) decodeAvatar(avatar);
     final cleaned = _required(name, '成员姓名', 40);
     _transaction(() {
       final duplicates = _db.select(
@@ -148,10 +174,39 @@ class SqliteDormRepository implements DormRepository {
       );
       if (duplicates.isNotEmpty) throw const InputException('这个成员姓名已存在');
       if (id == null) {
-        _db.execute('INSERT INTO members (name) VALUES (?)', [cleaned]);
+        _db.execute('INSERT INTO members (name,avatar) VALUES (?,?)', [
+          cleaned,
+          avatar,
+        ]);
+        _audit(
+          AuditTarget.member,
+          _db.lastInsertRowId,
+          AuditAction.create,
+          '添加成员',
+        );
       } else {
-        _db.execute('UPDATE members SET name = ? WHERE id = ?', [cleaned, id]);
-        _requireUpdate('成员不存在');
+        final old = _requireRow(
+          'SELECT name,avatar,sync_id FROM members WHERE id=?',
+          [id],
+          '成员不存在',
+        );
+        if (expectedIdentityCode != null &&
+            old['sync_id'] != expectedIdentityCode) {
+          throw const InputException('成员记录已变化，请重新打开后编辑');
+        }
+        final nextAvatar = clearAvatar ? null : avatar ?? old['avatar'];
+        final changes = [
+          if (old['name'] != cleaned) '姓名 ${old['name']} → $cleaned',
+          if (old['avatar'] != nextAvatar)
+            (nextAvatar == null ? '恢复默认头像' : '更换头像'),
+        ];
+        if (changes.isEmpty) return;
+        _db.execute('UPDATE members SET name=?,avatar=? WHERE id=?', [
+          cleaned,
+          nextAvatar,
+          id,
+        ]);
+        _audit(AuditTarget.member, id, AuditAction.update, changes.join(' · '));
       }
     });
   }
@@ -159,9 +214,11 @@ class SqliteDormRepository implements DormRepository {
   @override
   void setMemberActive(int id, bool active) {
     _transaction(() {
-      final member = _requireRow('SELECT active FROM members WHERE id = ?', [
-        id,
-      ], '成员不存在');
+      final member = _requireRow(
+        'SELECT active,sync_id FROM members WHERE id = ?',
+        [id],
+        '成员不存在',
+      );
       if (!active &&
           member['active'] == 1 &&
           _db
@@ -173,10 +230,23 @@ class SqliteDormRepository implements DormRepository {
           ).isEmpty) {
         throw const InputException('有启用的卫生任务，至少保留一位在用成员');
       }
+      if ((member['active'] == 1) == active) return;
       _db.execute('UPDATE members SET active = ? WHERE id = ?', [
         active ? 1 : 0,
         id,
       ]);
+      _audit(
+        AuditTarget.member,
+        id,
+        AuditAction.update,
+        active ? '启用成员' : '停用成员',
+      );
+      if (!active) {
+        _db.execute(
+          'UPDATE identity_claims SET state=1 WHERE member_key=? AND state=0',
+          [member['sync_id']],
+        );
+      }
     });
   }
 
@@ -210,9 +280,8 @@ class SqliteDormRepository implements DormRepository {
 
   @override
   BillDetail billDetail(int id) {
-    final bill = _bill(
-      _requireRow('$_billQuery AND b.id = ?', [id], '账单不存在或已删除'),
-    );
+    final row = _requireRow('$_billQuery AND b.id = ?', [id], '账单不存在或已删除');
+    final bill = _bill(row);
     final shares = _db.select(
       '''SELECT s.*, m.name,
       COALESCE((SELECT SUM(t.amount) FROM transfers t WHERE t.bill_id = s.bill_id AND t.member_id = s.member_id), 0) AS paid
@@ -226,6 +295,17 @@ class SqliteDormRepository implements DormRepository {
     );
     return (
       bill: bill,
+      version: _billVersion(row),
+      participants: [
+        for (final share in shares)
+          if (share['shared'] == 1 ||
+              (share['shared'] == null &&
+                  ((share['personal_amount'] as int) == 0 ||
+                      (share['amount'] as int) >
+                          (share['personal_amount'] as int))))
+            share['member_id'] as int,
+      ],
+      activity: _activity(AuditTarget.bill, id),
       shares: [
         for (final row in shares)
           (
@@ -275,7 +355,7 @@ class SqliteDormRepository implements DormRepository {
   }
 
   @override
-  int addBill(BillDraft draft) {
+  int addBill(BillDraft draft, {String? browserDevice}) {
     final title = _required(draft.title, '账单名称');
     final allocation = allocateBill(
       draft.sharedAmount,
@@ -307,17 +387,14 @@ class SqliteDormRepository implements DormRepository {
         ],
       );
       final billId = _db.lastInsertRowId;
-      for (final entry in allocation.shares.entries) {
-        _db.execute(
-          'INSERT INTO shares (bill_id,member_id,amount,personal_amount) VALUES (?,?,?,?)',
-          [
-            billId,
-            entry.key,
-            entry.value,
-            draft.personalAmounts[entry.key] ?? 0,
-          ],
-        );
-      }
+      _writeShares(billId, draft, allocation.shares);
+      _audit(
+        AuditTarget.bill,
+        billId,
+        AuditAction.create,
+        '账单合计 ${formatCents(allocation.total)}',
+        browserDevice: browserDevice,
+      );
       if (supplyId != null) {
         _db.execute(
           "UPDATE supplies SET status = 'ordered' WHERE id = ? AND (status = 'needed' OR ? = 1)",
@@ -328,16 +405,145 @@ class SqliteDormRepository implements DormRepository {
     });
   }
 
+  String _billVersion(Row row) =>
+      "${row['sync_id']}/${row['edit_version'] ?? ''}";
+
+  void _writeShares(int billId, BillDraft draft, Map<int, int> shares) {
+    final participants = draft.participantIds.toSet();
+    for (final entry in shares.entries) {
+      _db.execute(
+        '''
+        INSERT INTO shares (bill_id,member_id,amount,personal_amount,shared)
+        VALUES (?,?,?,?,?) ON CONFLICT(bill_id,member_id) DO UPDATE SET
+        amount=excluded.amount, personal_amount=excluded.personal_amount, shared=excluded.shared''',
+        [
+          billId,
+          entry.key,
+          entry.value,
+          draft.personalAmounts[entry.key] ?? 0,
+          draft.sharedAmount > 0 && participants.contains(entry.key) ? 1 : 0,
+        ],
+      );
+    }
+  }
+
   @override
-  void deleteBill(int id) {
+  void updateBill(
+    int id,
+    BillDraft draft, {
+    required String expectedVersion,
+    String? browserDevice,
+  }) {
+    final title = _required(draft.title, '账单名称');
+    final allocation = allocateBill(
+      draft.sharedAmount,
+      draft.participantIds,
+      draft.personalAmounts,
+    );
+    _transaction(() {
+      final current = billDetail(id);
+      if (current.version != expectedVersion) {
+        throw const InputException('账单已经更新，请重新打开后编辑');
+      }
+      final old = current.bill;
+      final oldShared = old.total - old.personalAmount;
+      final oldParticipants = current.participants.toSet();
+      final newParticipants = draft.sharedAmount == 0
+          ? <int>{}
+          : draft.participantIds.toSet();
+      final oldPersonal = {
+        for (final share in current.shares)
+          if (share.personalAmount != 0) share.memberId: share.personalAmount,
+      };
+      final changedParticipants =
+          oldParticipants.length != newParticipants.length ||
+          !oldParticipants.containsAll(newParticipants);
+      final changedPersonal =
+          oldPersonal.length != draft.personalAmounts.length ||
+          draft.personalAmounts.entries.any(
+            (entry) => oldPersonal[entry.key] != entry.value,
+          );
+      final changedPayer = old.payerId != draft.payerId;
+      final changedShares =
+          oldShared != draft.sharedAmount ||
+          changedParticipants ||
+          changedPersonal;
+      final changes = [
+        if (old.title != title) '名称 ${old.title} → $title',
+        if (changedPayer) '调整付款人',
+        if (oldShared != draft.sharedAmount)
+          '公共费用 ${formatCents(oldShared)} → ${formatCents(draft.sharedAmount)}',
+        if (changedParticipants) '调整公共费用参与成员',
+        if (changedPersonal) '调整个人费用',
+        if (old.total != allocation.total)
+          '合计 ${formatCents(old.total)} → ${formatCents(allocation.total)}',
+      ];
+      if (changes.isEmpty) return;
+
+      if (changedPayer) {
+        _requireActiveMember(draft.payerId);
+        if (current.transfers.isNotEmpty) {
+          throw const InputException('已有实际转账，不能更换付款人');
+        }
+      }
+      if (changedShares) {
+        final oldIds = {for (final share in current.shares) share.memberId};
+        for (final member in allocation.shares.keys.where(
+          (id) => !oldIds.contains(id),
+        )) {
+          _requireActiveMember(member);
+        }
+        for (final share in current.shares.where((share) => share.paid > 0)) {
+          if ((allocation.shares[share.memberId] ?? 0) < share.paid) {
+            throw const InputException('新的分摊低于已转账金额，请保留相应成员和足够的金额');
+          }
+        }
+        _writeShares(id, draft, allocation.shares);
+        for (final member in oldIds.where(
+          (member) => !allocation.shares.containsKey(member),
+        )) {
+          _db.execute('DELETE FROM shares WHERE bill_id=? AND member_id=?', [
+            id,
+            member,
+          ]);
+        }
+      }
+      _db.execute(
+        'UPDATE bills SET title=?,total=?,payer_id=?,edit_version=? WHERE id=?',
+        [title, allocation.total, draft.payerId, newIdentityCode(), id],
+      );
+      _audit(
+        AuditTarget.bill,
+        id,
+        AuditAction.update,
+        changes.join(' · '),
+        browserDevice: browserDevice,
+      );
+    });
+  }
+
+  @override
+  void deleteBill(int id, {String? browserDevice}) => _transaction(() {
     _db.execute('UPDATE bills SET deleted = 1 WHERE id = ? AND deleted = 0', [
       id,
     ]);
     _requireUpdate('账单不存在或已删除');
-  }
+    _audit(
+      AuditTarget.bill,
+      id,
+      AuditAction.remove,
+      '删除账单',
+      browserDevice: browserDevice,
+    );
+  });
 
   @override
-  void recordTransfer(int billId, int memberId, int amount) {
+  void recordTransfer(
+    int billId,
+    int memberId,
+    int amount, {
+    String? browserDevice,
+  }) {
     if (amount <= 0) throw const InputException('转账金额必须大于零');
     _transaction(() {
       final obligation = _requireRow(
@@ -352,6 +558,13 @@ class SqliteDormRepository implements DormRepository {
       _db.execute(
         'INSERT INTO transfers (bill_id,member_id,amount,created_at) VALUES (?,?,?,?)',
         [billId, memberId, amount, _timestamp()],
+      );
+      _audit(
+        AuditTarget.bill,
+        billId,
+        AuditAction.transfer,
+        '实际转账 ${formatCents(amount)}',
+        browserDevice: browserDevice,
       );
     });
   }
@@ -422,6 +635,12 @@ class SqliteDormRepository implements DormRepository {
       _db.execute(
         'INSERT INTO transfers (bill_id,member_id,amount,created_at,batch_id) VALUES (?,?,?,?,?)',
         [allocation.key, debtorId, allocation.value, time, batch],
+      );
+      _audit(
+        AuditTarget.bill,
+        allocation.key,
+        AuditAction.settlement,
+        '入账 ${formatCents(allocation.value)}',
       );
     }
   });

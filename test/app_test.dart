@@ -7,6 +7,7 @@ import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
+import 'package:dormos/ui/member_identity.dart';
 import 'package:dormos/ui/tools/dice_scene.dart';
 import 'package:dormos/ui/tools/draw_ceremony.dart';
 import 'package:dormos/ui/tools/group_board.dart';
@@ -249,6 +250,61 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('写入总账'), findsOneWidget);
     expect(repo.members().single.name, '小林');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('claim my identity, edit a bill and read its device history', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 880));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('张小林');
+    repo.saveMember('王小周');
+    final bill = repo.addBill(
+      const BillDraft(
+        title: '公共洗衣液',
+        sharedAmount: 750,
+        payerId: 1,
+        participantIds: [2],
+      ),
+    );
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我'));
+    await tester.pumpAndSettle();
+    expect(find.text('认领寝室身份'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.widgetWithText(ListTile, '张小林'),
+        matching: find.widgetWithText(FilledButton, '认领'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(repo.identity.memberId, 1);
+    expect(find.text('编辑我的资料'), findsOneWidget);
+    expect(
+      tester.widget<DeviceCode>(find.byType(DeviceCode)).code,
+      repo.identity.deviceCode,
+    );
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('公共洗衣液'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑账单'));
+    await tester.pumpAndSettle();
+    final label = find.widgetWithText(TextFormField, '账单名称');
+    final amount = find.widgetWithText(TextFormField, '公共费用（元）');
+    expect(tester.widget<TextFormField>(amount).initialValue, '7.50');
+    await tester.enterText(label, '洗衣液补货');
+    await tester.tap(find.text('保存账单修改'));
+    await tester.pumpAndSettle();
+    expect(repo.billDetail(bill).bill.title, '洗衣液补货');
+    expect(find.text('账单修改记录'), findsOneWidget);
+    expect(find.text('编辑 · 张小林'), findsOneWidget);
+    expect(
+      tester.widget<DeviceCode>(find.byType(DeviceCode).first).code,
+      repo.identity.deviceCode,
+    );
     expect(tester.takeException(), isNull);
   });
 

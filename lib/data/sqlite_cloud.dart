@@ -108,7 +108,7 @@ class _SqliteCloudStore implements CloudStore {
   @override
   void accept(
     CloudSnapshot data,
-    CloudSnapshot base,
+    CloudSnapshot? base,
   ) => repository._transaction(() {
     final ids = <String, Map<String, int>>{};
     final shiftIds = <String, int>{};
@@ -209,6 +209,6 @@ class _SqliteCloudStore implements CloudStore {
         _db.select('SELECT 1 FROM members WHERE active = 1 LIMIT 1').isEmpty) {
       throw const InputException('有启用的卫生任务时，至少需要一位在用成员');
     }
-    rememberBase(base);
+    if (base != null) rememberBase(base);
   });
 }

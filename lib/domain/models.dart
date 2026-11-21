@@ -1,8 +1,16 @@
+import 'identity.dart';
 import 'schedule.dart';
 
 enum AppearanceMode { system, light, dark }
 
-typedef Member = ({int id, String name, bool active});
+typedef Member = ({
+  int id,
+  String name,
+  bool active,
+  String identityCode,
+  String? avatar,
+  String? deviceCode,
+});
 
 typedef Bill = ({
   int id,
@@ -50,6 +58,9 @@ typedef BillDetail = ({
   Bill bill,
   List<Share> shares,
   List<Transfer> transfers,
+  List<int> participants,
+  String version,
+  List<AuditEntry> activity,
 });
 
 typedef Balance = ({

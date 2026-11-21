@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'identity.dart';
 import 'ledger.dart';
 
 const cloudBranch = 'dormos-data';
@@ -76,12 +77,29 @@ class CloudTable {
 
   bool get hasSyncId => keyColumns.isEmpty;
 
-  bool inFormat(int format) => name != 'matters' || format >= 3;
+  bool inFormat(int format) => switch (name) {
+    'matters' => format >= 3,
+    'identity_claims' || 'audit_entries' => format >= 5,
+    _ => true,
+  };
 
   List<String> wireColumns(int format) => switch (name) {
-    'bills' when format < 4 =>
-      columns.where((column) => column != 'deleted').toList(),
+    'members' when format < 5 => const ['name', 'active'],
+    'bills' when format < 5 =>
+      columns
+          .where(
+            (column) =>
+                column != 'edit_version' &&
+                (column != 'deleted' || format >= 4),
+          )
+          .toList(),
     'shares' when format == 1 => const ['bill_id', 'member_id', 'amount'],
+    'shares' when format < 5 => const [
+      'bill_id',
+      'member_id',
+      'amount',
+      'personal_amount',
+    ],
     'transfers' when format < 3 => const [
       'bill_id',
       'member_id',
@@ -95,7 +113,7 @@ class CloudTable {
 }
 
 const cloudTables = [
-  CloudTable('members', '成员', ['name', 'active']),
+  CloudTable('members', '成员', ['name', 'active', 'avatar']),
   CloudTable('supplies', '物资', [
     'name',
     'category',
@@ -116,6 +134,7 @@ const cloudTables = [
       'supply_id',
       'supply_name',
       'deleted',
+      'edit_version',
     ],
     references: {'payer_id': 'members', 'supply_id': 'supplies'},
     nullableReferences: {'supply_id'},
@@ -123,7 +142,7 @@ const cloudTables = [
   CloudTable(
     'shares',
     '分摊',
-    ['bill_id', 'member_id', 'amount', 'personal_amount'],
+    ['bill_id', 'member_id', 'amount', 'personal_amount', 'shared'],
     references: {'bill_id': 'bills', 'member_id': 'members'},
     keyColumns: ['bill_id', 'member_id'],
   ),
@@ -164,6 +183,21 @@ const cloudTables = [
     references: {'owner_id': 'members'},
     nullableReferences: {'owner_id'},
   ),
+  CloudTable('identity_claims', '身份认领', [
+    'member_key',
+    'device_code',
+    'state',
+    'created_at',
+  ]),
+  CloudTable('audit_entries', '操作日志', [
+    'target_kind',
+    'target_key',
+    'device_code',
+    'claim_key',
+    'action',
+    'created_at',
+    'detail',
+  ]),
 ];
 
 typedef CloudRow = Map<String, Object?>;
@@ -195,7 +229,7 @@ class CloudSnapshot {
       throw const InputException('云端文件格式不受支持');
     }
     final format = value['format'];
-    if (format is! int || (format < 1 || format > 4)) {
+    if (format is! int || (format < 1 || format > 5)) {
       throw const InputException('云端文件版本不受支持，请检查 Dorm 更新');
     }
     final rawTables = value['tables'] as Map<String, dynamic>;
@@ -268,6 +302,7 @@ class CloudSnapshot {
             throw const InputException('云端批量结算标识无效');
           }
         }
+        if (format >= 5) _validateIdentityFields(table, row);
         decoded[entry.key] = row;
       }
       tables[table.name] = decoded;
@@ -289,10 +324,19 @@ class CloudSnapshot {
     final hasDeletedBills = tables['bills']!.values.any(
       (row) => row['deleted'] != 0,
     );
-    final format = hasDeletedBills
-        ? 4
-        : (hasNewRecords ? 3 : (hasPersonal ? 2 : 1));
-    return jsonEncode({
+    final hasIdentityData =
+        tables['identity_claims']!.isNotEmpty ||
+        tables['audit_entries']!.isNotEmpty ||
+        tables['members']!.values.any((row) => row['avatar'] != null) ||
+        tables['bills']!.values.any((row) => row['edit_version'] != null) ||
+        tables['shares']!.values.any((row) => row['shared'] != null);
+    final format = hasIdentityData
+        ? 5
+        : (hasDeletedBills ? 4 : (hasNewRecords ? 3 : (hasPersonal ? 2 : 1)));
+    final encoder = format >= 5
+        ? const JsonEncoder.withIndent('  ')
+        : const JsonEncoder();
+    return encoder.convert({
       'format': format,
       'tables': {
         for (final table in cloudTables)
@@ -308,8 +352,164 @@ class CloudSnapshot {
     });
   }
 
+  /// Keeps both devices' permanent audit events and claim history even when
+  /// the user chooses a complete version of the business data.
+  CloudSnapshot withIdentityHistory(CloudSnapshot local, CloudSnapshot remote) {
+    final claims = _reconcileClaims(
+      local.tables['identity_claims']!,
+      remote.tables['identity_claims']!,
+    );
+    for (final entry in claims.entries.toList()) {
+      if (entry.value['state'] == ClaimState.active.index &&
+          tables['members']![entry.value['member_key']]?['active'] != 1) {
+        claims[entry.key] = {
+          ...entry.value,
+          'state': ClaimState.released.index,
+        };
+      }
+    }
+    final events = <String, CloudRow>{...local.tables['audit_entries']!};
+    for (final entry in remote.tables['audit_entries']!.entries) {
+      final previous = events[entry.key];
+      if (previous != null && jsonEncode(previous) != jsonEncode(entry.value)) {
+        throw const InputException('同一条操作日志有不同内容，无法确认设备记录');
+      }
+      events[entry.key] = entry.value;
+    }
+    return CloudSnapshot({
+      ...tables,
+      'identity_claims': claims,
+      'audit_entries': events,
+    });
+  }
+
+  CloudSnapshot withClaimConflicts(CloudSnapshot other) {
+    final claims = _reconcileClaims(
+      tables['identity_claims']!,
+      other.tables['identity_claims']!,
+    );
+    return CloudSnapshot({
+      ...tables,
+      'identity_claims': {
+        ...tables['identity_claims']!,
+        for (final entry in claims.entries)
+          if (entry.value['state'] == ClaimState.conflict.index)
+            entry.key: entry.value,
+      },
+    });
+  }
+
+  bool sameBusinessData(CloudSnapshot other) => cloudTables
+      .where((table) => !_isHistoryTable(table.name))
+      .every(
+        (table) =>
+            jsonEncode(tables[table.name]) ==
+            jsonEncode(other.tables[table.name]),
+      );
+
+  bool get hasBusinessData => cloudTables.any(
+    (table) => !_isHistoryTable(table.name) && tables[table.name]!.isNotEmpty,
+  );
+
   bool get isEmpty => tables.values.every((rows) => rows.isEmpty);
   bool sameAs(CloudSnapshot other) => encoded == other.encoded;
+}
+
+CloudRows _reconcileClaims(CloudRows local, CloudRows remote) {
+  final claims = _mergeClaimRows(local, remote);
+  final open = claims.entries
+      .where((entry) => entry.value['state'] == ClaimState.active.index)
+      .toList();
+  final byMember = <Object?, int>{};
+  final byDevice = <Object?, int>{};
+  for (final entry in open) {
+    byMember.update(
+      entry.value['member_key'],
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+    byDevice.update(
+      entry.value['device_code'],
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+  }
+  for (final entry in open) {
+    final memberKey = entry.value['member_key'];
+    final deviceCode = entry.value['device_code'];
+    if (byMember[memberKey]! > 1 || byDevice[deviceCode]! > 1) {
+      claims[entry.key] = {...entry.value, 'state': ClaimState.conflict.index};
+    }
+  }
+  return claims;
+}
+
+void _validateIdentityFields(CloudTable table, CloudRow row) {
+  switch (table.name) {
+    case 'members':
+      final avatar = row['avatar'];
+      if (avatar != null) {
+        if (avatar is! String) throw const InputException('云端头像格式不正确');
+        decodeAvatar(avatar);
+      }
+    case 'bills':
+      final version = row['edit_version'];
+      if (version != null && !isIdentityCode(version)) {
+        throw const InputException('云端账单版本无效');
+      }
+    case 'shares':
+      if (![null, 0, 1].contains(row['shared'])) {
+        throw const InputException('云端公共分摊标记无效');
+      }
+    case 'identity_claims':
+      if (!isIdentityCode(row['member_key']) ||
+          !isIdentityCode(row['device_code']) ||
+          !ClaimState.values.any((state) => state.index == row['state']) ||
+          !_validTimestamp(row['created_at'])) {
+        throw const InputException('云端成员认领记录无效');
+      }
+    case 'audit_entries':
+      final detail = row['detail'];
+      if (!isIdentityCode(row['target_key']) ||
+          !isIdentityCode(row['device_code']) ||
+          (row['claim_key'] != null && !isIdentityCode(row['claim_key'])) ||
+          !AuditTarget.values.any(
+            (target) => target.name == row['target_kind'],
+          ) ||
+          !AuditAction.values.any((action) => action.name == row['action']) ||
+          !_validTimestamp(row['created_at']) ||
+          detail is! String ||
+          detail.length > 2048) {
+        throw const InputException('云端操作日志格式无效');
+      }
+  }
+}
+
+bool _validTimestamp(Object? value) =>
+    value is String && DateTime.tryParse(value) != null;
+
+bool _isHistoryTable(String name) =>
+    name == 'identity_claims' || name == 'audit_entries';
+
+CloudRows _mergeClaimRows(CloudRows local, CloudRows remote) {
+  final result = <String, CloudRow>{...local};
+  for (final entry in remote.entries) {
+    final prior = result[entry.key];
+    final row = entry.value;
+    if (prior == null) {
+      result[entry.key] = row;
+      continue;
+    }
+    if (row.keys.any(
+      (column) => column != 'state' && row[column] != prior[column],
+    )) {
+      throw const InputException('同一条认领记录对应不同设备或成员');
+    }
+    if ((row['state'] as int) > (prior['state'] as int)) {
+      result[entry.key] = row;
+    }
+  }
+  return result;
 }
 
 enum CloudSide { local, remote }
@@ -324,7 +524,28 @@ typedef CloudRowConflict = ({
 
 class CloudMerge {
   CloudMerge(this.local, this.remote, CloudSnapshot base) {
-    for (final table in cloudTables) {
+    final bills = cloudTables.firstWhere((table) => table.name == 'bills');
+    final baseVersions = _billVersions(base);
+    final localVersions = _billVersions(local);
+    final remoteVersions = _billVersions(remote);
+    for (final key in {...localVersions.keys, ...remoteVersions.keys}) {
+      final original = baseVersions[key];
+      final here = localVersions[key];
+      final there = remoteVersions[key];
+      if (here != there && here != original && there != original) {
+        _billConflicts.add(key);
+        conflicts.add((
+          table: bills,
+          key: key,
+          base: base.tables['bills']![key],
+          local: local.tables['bills']![key],
+          remote: remote.tables['bills']![key],
+        ));
+      }
+    }
+    for (final table in cloudTables.where(
+      (table) => !_isHistoryTable(table.name),
+    )) {
       final baseRows = base.tables[table.name]!;
       final localRows = local.tables[table.name]!;
       final remoteRows = remote.tables[table.name]!;
@@ -334,6 +555,11 @@ class CloudMerge {
         ...localRows.keys,
         ...remoteRows.keys,
       }) {
+        if ((table.name == 'bills' && _billConflicts.contains(key)) ||
+            (table.name == 'shares' &&
+                _billConflicts.contains(key.split('/').first))) {
+          continue;
+        }
         final original = baseRows[key];
         final here = localRows[key];
         final there = remoteRows[key];
@@ -358,6 +584,18 @@ class CloudMerge {
   final CloudSnapshot remote;
   final conflicts = <CloudRowConflict>[];
   final _merged = <String, CloudRows>{};
+  final _billConflicts = <String>{};
+
+  static Map<String, String> _billVersions(CloudSnapshot snapshot) {
+    final shares = <Object?, List<CloudRow>>{};
+    for (final row in snapshot.tables['shares']!.values) {
+      shares.putIfAbsent(row['bill_id'], () => []).add(row);
+    }
+    return {
+      for (final entry in snapshot.tables['bills']!.entries)
+        entry.key: jsonEncode([entry.value, shares[entry.key]]),
+    };
+  }
 
   CloudSnapshot resolve(Map<int, CloudSide> choices) {
     final result = {
@@ -369,8 +607,17 @@ class CloudMerge {
       if (choice == null) throw const InputException('请选择每条冲突记录要保留的版本');
       final row = choice == CloudSide.local ? conflict.local : conflict.remote;
       if (row != null) result[conflict.table.name]![conflict.key] = row;
+      if (conflict.table.name == 'bills' &&
+          _billConflicts.contains(conflict.key)) {
+        final snapshot = choice == CloudSide.local ? local : remote;
+        result['shares']!.addEntries(
+          snapshot.tables['shares']!.entries.where(
+            (entry) => entry.value['bill_id'] == conflict.key,
+          ),
+        );
+      }
     }
-    return CloudSnapshot(result);
+    return CloudSnapshot(result).withIdentityHistory(local, remote);
   }
 
   static bool _sameRow(CloudRow? a, CloudRow? b) =>
@@ -382,6 +629,6 @@ abstract interface class CloudStore {
   void saveSettings(CloudSettings? settings);
   CloudSnapshot? get base;
   CloudSnapshot snapshot();
-  void accept(CloudSnapshot data, CloudSnapshot base);
+  void accept(CloudSnapshot data, CloudSnapshot? base);
   void rememberBase(CloudSnapshot base);
 }

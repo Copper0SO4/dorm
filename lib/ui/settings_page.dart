@@ -10,6 +10,7 @@ import 'common.dart';
 import 'data_exports.dart';
 import 'lan_settings.dart';
 import 'members_dialog.dart';
+import 'member_identity.dart';
 
 enum _Category {
   appearance('外观', '主题与启动页面', Icons.palette_outlined),
@@ -381,10 +382,42 @@ class _SettingsPageState extends State<_SettingsPage> {
       ListTile(
         leading: const Icon(Icons.group_outlined),
         title: const Text('寝室成员'),
-        subtitle: const Text('添加、改名或停用成员'),
+        subtitle: const Text('编辑姓名和头像、启用或停用成员'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => showMembers(context, controller),
       ),
+      for (final member in controller.repository.members())
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: MemberAvatar(name: member.name, avatar: member.avatar),
+          title: Text(member.name),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 2,
+            children: [
+              const Text('成员身份码'),
+              SelectableText(
+                member.identityCode,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'monospace'),
+              ),
+              if (member.deviceCode case final code?) ...[
+                const Text('认领设备码'),
+                DeviceCode(code),
+              ] else
+                Text(member.active ? '待认领' : '已停用'),
+            ],
+          ),
+          trailing: IconButton(
+            tooltip: '修改日志',
+            onPressed: () => showMemberActivity(context, controller, member),
+            icon: const Icon(Icons.history),
+          ),
+          onTap: () => editMember(context, controller, member),
+        ),
+      const Divider(height: 1),
+      Text('本机设备码', style: Theme.of(context).textTheme.titleSmall),
+      DeviceCode(controller.repository.identity.deviceCode),
       const Divider(height: 1),
       ListTile(
         leading: const Icon(Icons.event_repeat_outlined),

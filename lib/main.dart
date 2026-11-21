@@ -29,6 +29,7 @@ Future<DormController> _openDorm() async {
     SshVault(directory),
     GitHubTransport(
       Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
+      deviceCode: repository.deviceCode,
     ),
     initialize: git.PlatformSpecific.initialize,
   );
