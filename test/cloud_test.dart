@@ -592,6 +592,78 @@ void main() {
     expect(await syncA.devicePublicKey(), keys.first);
   });
 
+  testWidgets(
+    'factory reset can keep the repository and SSH independently of clearing remote data',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final repo = SqliteDormRepository.open(':memory:');
+      addTearDown(repo.close);
+      repo.saveMember('甲');
+      final settings = CloudSettings(
+        repository: 'https://github.com/owner/dorm-reset',
+        operator: '测试',
+        useDeviceKey: true,
+      );
+      repo.cloud.saveSettings(settings);
+      final vault = _WidgetVault(Directory.systemTemp);
+      final key = await vault.generateDevice();
+      final transport = _DelayedStartupTransport();
+      transport.remote.complete(null);
+      final sync = CloudSync(repo.cloud, vault, transport);
+      final controller = DormController(repo, cloud: sync);
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(DormApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('本机数据'));
+      await tester.tap(find.text('本机数据'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('清空数据与恢复出厂设置'));
+      await tester.pumpAndSettle();
+
+      final keep = find.widgetWithText(CheckboxListTile, '保留仓库配置');
+      final clear = find.widgetWithText(CheckboxListTile, '清空远程仓库的 Dorm 数据');
+      bool? checked(Finder option) =>
+          tester.widget<CheckboxListTile>(option).value;
+      Future<void> toggle(Finder option) async {
+        await tester.ensureVisible(option);
+        await tester.tap(option);
+        await tester.pumpAndSettle();
+      }
+
+      expect(find.textContaining(settings.repository), findsOneWidget);
+      expect(checked(keep), isFalse);
+      expect(checked(clear), isFalse);
+      await toggle(keep);
+      expect(checked(keep), isTrue);
+      expect(checked(clear), isFalse);
+      expect(find.textContaining('重新下载到本机'), findsOneWidget);
+
+      await toggle(clear);
+      expect(checked(keep), isTrue);
+      expect(checked(clear), isTrue);
+      expect(find.widgetWithText(FilledButton, '清空本机与远程'), findsOneWidget);
+      await toggle(clear);
+      expect(checked(keep), isTrue);
+      expect(checked(clear), isFalse);
+      await tester.tap(find.widgetWithText(FilledButton, '确认清空'));
+      await tester.pumpAndSettle();
+
+      expect(repo.members(), isEmpty);
+      expect(sync.settings?.repository, settings.repository);
+      expect(sync.settings?.useDeviceKey, isTrue);
+      expect(await vault.readDevice(), same(key));
+      expect(transport.pulls, 0);
+      expect(transport.uploaded, isNull);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   test('factory reset clears local data and optionally keeps repo while clearing remote', () async {
     final root = await Directory.systemTemp.createTemp('dorm-reset-');
     addTearDown(() => root.delete(recursive: true));
@@ -637,6 +709,7 @@ void main() {
     expect(repo.appearanceMode, AppearanceMode.system);
     expect(repo.preferences.startupPage, StartupPage.ledger);
     expect(sync.settings?.repository, settings.repository);
+    expect((await vault.read(settings.repository))?.privateKey, key.privateKey);
     expect((await transport.pull(settings, key))!.data.isEmpty, isTrue);
     expect((await sync.cardMailbox!.pull())!.body, '{}');
     await sync.sync();

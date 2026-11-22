@@ -60,6 +60,11 @@ const penaltyPresets = <String>[
   '做 15 个深蹲或平板支撑 30 秒',
 ];
 
+List<String> parsePenaltyOptions(String text) => List.unmodifiable({
+  for (final line in text.split('\n'))
+    if (line.trim().isNotEmpty) line.trim(),
+});
+
 String pickRandomOption(List<String> entries, Random random) {
   final valid = entries
       .map((item) => item.trim())

@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'app_identity.dart';
 import 'data/cloud_sync.dart';
+import 'data/data_location.dart';
 import 'data/github_transport.dart';
 import 'data/local_directory.dart';
 import 'data/ssh_vault.dart';
@@ -19,21 +20,35 @@ void main() {
 }
 
 Future<DormController> _openDorm() async {
-  final directory = await dormDataDirectory();
-  await directory.create(recursive: true);
-  final repository = SqliteDormRepository.open(
-    '${directory.path}${Platform.pathSeparator}dormos.sqlite3',
-  );
-  final cloud = CloudSync(
-    repository.cloud,
-    SshVault(directory),
-    GitHubTransport(
-      Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
-      deviceCode: repository.deviceCode,
-    ),
-    initialize: git.PlatformSpecific.initialize,
-  );
-  return DormController(repository, cloud: cloud);
+  final defaultDirectory = await dormDataDirectory();
+  final location = Platform.isWindows
+      ? await DormDataLocation.open(defaultDirectory)
+      : null;
+  final directory = location?.directory ?? defaultDirectory;
+  SqliteDormRepository? opened;
+  try {
+    await directory.create(recursive: true);
+    final repository = opened = SqliteDormRepository.open(
+      '${directory.path}${Platform.pathSeparator}${DormDataLocation.databaseName}',
+    );
+    final cloud = CloudSync(
+      repository.cloud,
+      SshVault(directory),
+      GitHubTransport(
+        Directory('${directory.path}${Platform.pathSeparator}cloud-git'),
+        deviceCode: repository.deviceCode,
+      ),
+      initialize: git.PlatformSpecific.initialize,
+    );
+    return DormController(repository, cloud: cloud, dataLocation: location);
+  } catch (_) {
+    try {
+      opened?.close();
+    } finally {
+      location?.close();
+    }
+    rethrow;
+  }
 }
 
 class DormBootstrap extends StatefulWidget {
@@ -67,18 +82,25 @@ class _DormBootstrapState extends State<DormBootstrap>
   Future<DormController> _open() async {
     final controller = await widget.openController();
     if (!mounted) {
-      controller.dispose();
-      controller.repository.close();
+      _closeController(controller);
       throw StateError('Startup was interrupted');
     }
     return _controller = controller;
   }
 
+  void _closeController(DormController controller) {
+    controller.dispose();
+    try {
+      controller.repository.close();
+    } finally {
+      controller.dataLocation?.close();
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
-    _controller?.repository.close();
+    if (_controller case final controller?) _closeController(controller);
     super.dispose();
   }
 

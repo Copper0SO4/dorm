@@ -2,6 +2,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:material_ui/material_ui.dart';
 
 import '../data/cloud_sync.dart';
+import '../data/data_location.dart';
 import '../data/lan_api.dart';
 import '../data/lan_server.dart';
 import '../domain/ledger.dart';
@@ -10,12 +11,13 @@ import '../domain/repository.dart';
 import '../game/card_session.dart';
 
 class DormController extends ChangeNotifier {
-  DormController(this.repository, {this.cloud}) {
+  DormController(this.repository, {this.cloud, this.dataLocation}) {
     cloud?.onDataChanged = notifyListeners;
   }
 
   final DormRepository repository;
   final CloudSync? cloud;
+  final DormDataLocation? dataLocation;
   DormLanServer? _lan;
   CardSession? _cards;
   CardSession get cards => _cards ??= CardSession(() => cloud?.cardMailbox);

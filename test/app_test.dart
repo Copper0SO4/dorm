@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dormos/domain/cloud.dart';
+import 'package:dormos/domain/draw.dart';
 
 import 'package:dormos/data/local_directory.dart';
 import 'package:dormos/data/sqlite_repository.dart';
@@ -65,10 +66,10 @@ void main() {
     expect(find.text('抽签中…'), findsOneWidget);
     expect(find.text('洗签中'), findsOneWidget);
     expect(find.text('抽签结果'), findsNothing);
-    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pump(const Duration(milliseconds: 1200));
     expect(find.text('抽出签牌'), findsOneWidget);
     expect(find.text('复制结果'), findsNothing);
-    await tester.pump(const Duration(milliseconds: 360));
+    await tester.pump(const Duration(milliseconds: 620));
     expect(find.text('揭晓结果'), findsOneWidget);
     expect(find.text('抽签结果'), findsNothing);
     expect(find.byType(TextFormField), findsNothing);
@@ -77,9 +78,39 @@ void main() {
       matching: find.byWidgetPredicate((widget) => widget is TextButton),
     );
     expect(tester.widget<TextButton>(edit).onPressed, isNull);
+    final stage = find.byType(DrawCeremony);
+    final revealFrame = tester.widget<DrawCeremony>(stage);
+    final winningLabel = revealFrame.results.single;
+    expect(
+      revealFrame.pickedSlots.single,
+      inInclusiveRange(0, DrawCeremony.ticketCount - 1),
+    );
+    final stageElement = tester.element(stage);
     await tester.pumpAndSettle();
     expect(find.text('抽签结果'), findsOneWidget);
-    expect(find.byType(Chip), findsOneWidget);
+    expect(find.widgetWithText(Chip, winningLabel), findsOneWidget);
+    expect(tester.widget<DrawCeremony>(stage).progress, 1);
+    expect(tester.element(stage), same(stageElement));
+    expect(
+      tester.widget<DrawCeremony>(stage).pickedSlots.single,
+      revealFrame.pickedSlots.single,
+    );
+    await tester.pump(const Duration(seconds: 5));
+    expect(tester.widget<DrawCeremony>(stage).results.single, winningLabel);
+    expect(find.text('复制结果'), findsOneWidget);
+    await tester.tap(find.byTooltip('增加抽取数量'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(Chip, winningLabel), findsOneWidget);
+    await tester.tap(find.text('再抽一次'));
+    await tester.pumpAndSettle();
+    final picked = tester.widgetList<Chip>(find.byType(Chip)).toList();
+    expect(picked, hasLength(2));
+    final multiple = tester.widget<DrawCeremony>(stage);
+    expect(multiple.results, [
+      for (final chip in picked) (chip.label as Text).data,
+    ]);
+    expect(multiple.pickedSlots.toSet(), hasLength(2));
+    expect(find.text('已揭晓 2 项'), findsOneWidget);
     await tester.tap(find.text('随机分组'));
     await tester.pumpAndSettle();
     expect(find.text('每组 2 人'), findsOneWidget);
@@ -148,6 +179,65 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test('multiple labels share each ticket in draw order', () {
+    for (final (count, sizes) in [
+      (5, [2, 1, 1, 1]),
+      (100, [25, 25, 25, 25]),
+    ]) {
+      final results = List.generate(count, (index) => '选项${index + 1}');
+      final scene = DrawCeremony(
+        progress: 1,
+        results: results,
+        pickedSlots: const [0, 2, 4, 6],
+      );
+      final groups = scene.ticketGroups;
+      expect(groups.map((group) => group.length), sizes);
+      expect(groups.expand((group) => group), results);
+    }
+  });
+
+  testWidgets('large draws keep four visual slots and all results on a phone', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(360, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final members = List.generate(7, (index) => '选项${index + 1}');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: DrawCard(
+              mode: DrawMode.draw,
+              members: members,
+              panelWidth: 416,
+            ),
+          ),
+        ),
+      ),
+    );
+    for (var index = 1; index < members.length; index++) {
+      await tester.tap(find.byTooltip('增加抽取数量'));
+      await tester.pump();
+    }
+    await tester.tap(find.text('开始抽签'));
+    await tester.pumpAndSettle();
+
+    final scene = tester.widget<DrawCeremony>(find.byType(DrawCeremony));
+    expect(scene.results, unorderedEquals(members));
+    expect(
+      scene.pickedSlots.toSet(),
+      hasLength(DrawCeremony.maxDisplayedTickets),
+    );
+    expect(find.text('已揭晓 7 项 · 分在 4 张签上'), findsOneWidget);
+    expect(scene.ticketGroups.map((group) => group.length), [2, 2, 2, 1]);
+    expect(scene.ticketGroups.expand((group) => group), scene.results);
+    final chips = tester.widgetList<Chip>(find.byType(Chip));
+    expect([
+      for (final chip in chips) (chip.label as Text).data,
+    ], scene.results);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('compact tools keep results and honor reduced animation', (
     tester,
   ) async {
@@ -182,6 +272,7 @@ void main() {
     await tester.pump();
     expect(find.text('抽签结果'), findsOneWidget);
     expect(find.text('抽签中…'), findsNothing);
+    expect(find.byType(DrawCeremony), findsNothing);
 
     await tester.tap(find.text('骰子与硬币'));
     await tester.pump();
@@ -719,6 +810,14 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('清空数据与恢复出厂设置'));
       await tester.pumpAndSettle();
+      expect(find.textContaining('尚未配置 GitHub 仓库'), findsOneWidget);
+      for (final label in ['保留仓库配置', '清空远程仓库的 Dorm 数据']) {
+        final option = tester.widget<CheckboxListTile>(
+          find.widgetWithText(CheckboxListTile, label),
+        );
+        expect(option.onChanged, isNull);
+        expect(option.value, isFalse);
+      }
       await tester.tap(find.widgetWithText(FilledButton, '确认清空'));
       await tester.pumpAndSettle();
 

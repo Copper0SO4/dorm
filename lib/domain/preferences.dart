@@ -1,4 +1,5 @@
 import 'ledger.dart';
+import 'party_tools.dart';
 
 enum StartupPage {
   ledger('公共账本'),
@@ -65,9 +66,11 @@ class DormPreferences {
     this.lanPort = defaultLanPort,
     this.themePalette = ThemePalette.pine,
     this.einkMode = false,
+    this.penaltyOptions = penaltyPresets,
   });
 
   factory DormPreferences.fromValues(Map<String, String> values) {
+    final penalties = parsePenaltyOptions(values['penaltyOptions'] ?? '');
     return DormPreferences(
       startupPage: _readEnum(
         StartupPage.values,
@@ -95,6 +98,7 @@ class DormPreferences {
         ThemePalette.pine,
       ),
       einkMode: values['einkMode'] == 'true',
+      penaltyOptions: penalties.isEmpty ? penaltyPresets : penalties,
     );
   }
 
@@ -108,6 +112,7 @@ class DormPreferences {
   final int lanPort;
   final ThemePalette themePalette;
   final bool einkMode;
+  final List<String> penaltyOptions;
 
   DormPreferences copyWith({
     StartupPage? startupPage,
@@ -120,6 +125,7 @@ class DormPreferences {
     int? lanPort,
     ThemePalette? themePalette,
     bool? einkMode,
+    List<String>? penaltyOptions,
   }) => DormPreferences(
     startupPage: startupPage ?? this.startupPage,
     ledgerFilter: ledgerFilter ?? this.ledgerFilter,
@@ -131,6 +137,7 @@ class DormPreferences {
     lanPort: lanPort ?? this.lanPort,
     themePalette: themePalette ?? this.themePalette,
     einkMode: einkMode ?? this.einkMode,
+    penaltyOptions: penaltyOptions ?? this.penaltyOptions,
   );
 
   Map<String, String> toValues() => {
@@ -144,6 +151,7 @@ class DormPreferences {
     'lanPort': lanPort.toString(),
     'themePalette': themePalette.name,
     'einkMode': einkMode.toString(),
+    'penaltyOptions': penaltyOptions.join('\n'),
   };
 }
 

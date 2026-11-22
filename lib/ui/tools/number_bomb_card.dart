@@ -4,11 +4,17 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../domain/ledger.dart';
 import '../../domain/party_tools.dart';
+import '../common.dart';
 
 class NumberBombCard extends StatefulWidget {
-  const NumberBombCard({super.key, required this.panelWidth});
+  const NumberBombCard({
+    super.key,
+    required this.panelWidth,
+    required this.controller,
+  });
 
   final double panelWidth;
+  final DormController controller;
 
   @override
   State<NumberBombCard> createState() => _NumberBombCardState();
@@ -65,9 +71,66 @@ class _NumberBombCardState extends State<NumberBombCard> {
   }
 
   void _drawPenalty() {
-    setState(() {
-      _penalty = pickRandomOption(penaltyPresets, _random);
-    });
+    final options = widget.controller.repository.preferences.penaltyOptions;
+    setState(() => _penalty = pickRandomOption(options, _random));
+  }
+
+  Future<void> _editPenalties() async {
+    final formKey = GlobalKey<FormState>();
+    var text = widget.controller.repository.preferences.penaltyOptions.join(
+      '\n',
+    );
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        scrollable: true,
+        title: const Text('编辑惩罚'),
+        content: SizedBox(
+          width: 400,
+          child: Form(
+            key: formKey,
+            child: TextFormField(
+              initialValue: text,
+              maxLines: 7,
+              decoration: const InputDecoration(
+                labelText: '每行一项惩罚',
+                helperText: '空行和重复项会自动忽略',
+                alignLabelWithHint: true,
+              ),
+              onChanged: (value) => text = value,
+              validator: (value) =>
+                  parsePenaltyOptions(value ?? '').isEmpty ? '请至少填写一项惩罚' : null,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, penaltyPresets),
+            child: const Text('恢复默认'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                Navigator.pop(dialogContext, parsePenaltyOptions(text));
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || selected == null) return;
+    try {
+      widget.controller.updatePreferences(
+        (current) => current.copyWith(penaltyOptions: selected),
+      );
+    } catch (error) {
+      notify(context, errorText(error, fallback: '保存惩罚失败'));
+    }
   }
 
   @override
@@ -86,11 +149,22 @@ class _NumberBombCardState extends State<NumberBombCard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               spacing: 12,
               children: [
-                Text(
-                  '数字炸弹',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '数字炸弹',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _editPenalties,
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('编辑惩罚'),
+                    ),
+                  ],
                 ),
                 Text(
                   '室友轮流报数，每次缩小安全范围，踩中隐藏数字的人抽一个小惩罚！',

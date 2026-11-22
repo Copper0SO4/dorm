@@ -1,7 +1,9 @@
 'use strict';
 
 (function () {
+  const penaltyStorageKey = 'dorm-web-penalties';
   const toolState = {
+    penaltyOptions: loadPenaltyOptions(),
     tab: 'decide',
     presetId: null,
     customOptions: {},
@@ -47,6 +49,14 @@
       if (cleaned) seen.add(cleaned);
     }
     return [...seen];
+  }
+
+  function loadPenaltyOptions() {
+    try {
+      return uniqueLines(localStorage.getItem(penaltyStorageKey));
+    } catch (_) {
+      return [];
+    }
   }
 
   function shuffle(list) {
@@ -228,11 +238,48 @@
         submitGuess();
       });
 
-      const penalties = data.penalties || ['承包今天寝室倒垃圾'];
+      const defaults = data.penalties?.length ? data.penalties : ['承包今天寝室倒垃圾'];
+      const penalties = toolState.penaltyOptions.length ? toolState.penaltyOptions : defaults;
+      function editPenalties() {
+        const area = node('textarea', {rows: 7}, penalties.join('\n'));
+        const error = node('small', {class: 'error', role: 'alert'});
+        function applyOptions(options) {
+          toolState.penaltyOptions = options;
+          let saved = true;
+          try {
+            if (options.length) localStorage.setItem(penaltyStorageKey, options.join('\n'));
+            else localStorage.removeItem(penaltyStorageKey);
+          } catch (_) {
+            saved = false;
+          }
+          dialog.close();
+          rerender();
+          if (!saved) message('当前浏览器无法长期保存名单');
+        }
+        openDialog('编辑惩罚', [
+          node('div', {class: 'stack'},
+            node('label', {}, '每行一项惩罚', area),
+            node('small', {}, '空行和重复项会自动忽略'),
+            error,
+            node('div', {class: 'actions'},
+              button('保存', () => {
+                const options = uniqueLines(area.value);
+                if (!options.length) {
+                  error.textContent = '请至少填写一项惩罚';
+                  area.focus();
+                  return;
+                }
+                applyOptions(options);
+              }, 'primary'),
+              button('恢复默认', () => applyOptions([]))))
+        ]);
+      }
       return node('div', {class: 'stack'},
         tabBar,
         node('section', {class: 'panel card-body'},
-          node('h3', {}, '数字炸弹'),
+          node('div', {class: 'actions'},
+            node('h3', {}, '数字炸弹'),
+            button('编辑惩罚', editPenalties)),
           node('small', {}, '室友轮流报数缩窄安全区间，踩中炸弹数字的人抽一个轻惩罚！'),
           rangeBar,
           node('div', {class: toolState.bombExploded ? 'result-banner boom' : 'result-banner'},

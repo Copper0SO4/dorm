@@ -1,7 +1,7 @@
 name: dormos
 description: Offline dorm collaboration with optional GitHub sync.
 publish_to: none
-version: 0.18.6+33
+version: 0.18.14+41
 environment:
   sdk: '>=3.14.0 <4.0.0'
   flutter: '>=3.50.0'

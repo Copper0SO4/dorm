@@ -28,12 +28,15 @@ class DrawCard extends StatefulWidget {
 class _DrawCardState extends State<DrawCard>
     with SingleTickerProviderStateMixin {
   final _random = Random.secure();
+  final _stageKey = GlobalKey();
   late final _motion = AnimationController(vsync: this)
     ..addStatusListener(_finish);
   late var _requested = _teams ? 2 : 1;
   List<String>? _custom;
   List<List<String>>? _pending;
   List<List<String>>? _result;
+  bool _showCeremony = false;
+  List<int> _pickedSlots = const [];
   String? _error;
 
   bool get _teams => widget.mode == DrawMode.teams;
@@ -57,7 +60,7 @@ class _DrawCardState extends State<DrawCard>
     setState(() {
       _custom = roster;
       _requested = count;
-      _result = null;
+      if (_teams) _result = null;
       _error = null;
     });
   }
@@ -98,12 +101,39 @@ class _DrawCardState extends State<DrawCard>
         _error = null;
         _result = animate ? null : result;
         _pending = animate ? result : null;
+        _showCeremony = !_teams && animate;
+        if (_showCeremony) {
+          final visible = min(
+            result.single.length,
+            DrawCeremony.maxDisplayedTickets,
+          );
+          const tickets = DrawCeremony.ticketCount;
+          final first = _random.nextInt(tickets);
+          _pickedSlots = [
+            for (var index = 0; index < visible; index++)
+              (first + index * tickets ~/ visible) % tickets,
+          ];
+        }
       });
       if (animate) {
         _motion.duration = Duration(
-          milliseconds: _teams ? 680 + min(660, _roster.length * 42) : 1400,
+          milliseconds: _teams
+              ? 680 + min(660, _roster.length * 42)
+              : 2400 + (_pickedSlots.length - 1) * 150,
         );
         _motion.forward(from: 0);
+      }
+      if (_showCeremony && MediaQuery.sizeOf(context).width < 740) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_stageKey.currentContext case final stage?) {
+            Scrollable.ensureVisible(
+              stage,
+              alignment: .15,
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOut,
+            );
+          }
+        });
       }
     } on InputException catch (error) {
       setState(() => _error = error.message);
@@ -297,64 +327,77 @@ class _DrawCardState extends State<DrawCard>
   }
 
   Widget? _output(BuildContext context) {
-    if (_pending case final pending?) {
-      return AnimatedBuilder(
-        animation: _motion,
-        builder: (context, _) => _teams
-            ? GroupBoard(groups: pending, progress: _motion.value)
-            : DrawCeremony(
-                progress: _motion.value,
-                resultLabel: pending.single.length == 1
-                    ? pending.single.single
-                    : '${pending.single.length} 项入选',
-              ),
-      );
+    final draw = _pending ?? _result;
+    if (draw == null) return null;
+
+    if (_teams) {
+      if (_pending != null) {
+        return AnimatedBuilder(
+          animation: _motion,
+          builder: (context, _) =>
+              GroupBoard(groups: draw, progress: _motion.value),
+        );
+      }
+      return GroupBoard(groups: draw, progress: 1, onCopy: () => _copy(draw));
     }
-    if (_result case final result?) {
-      return _teams
-          ? GroupBoard(groups: result, progress: 1, onCopy: () => _copy(result))
-          : Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  spacing: 12,
-                  children: [
-                    Semantics(
-                      liveRegion: true,
-                      child: Text(
-                        '抽签结果',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
+
+    return Card(
+      key: _stageKey,
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_showCeremony)
+            AnimatedBuilder(
+              animation: _motion,
+              builder: (context, _) => DrawCeremony(
+                progress: _pending == null ? 1 : _motion.value,
+                results: draw.single,
+                pickedSlots: _pickedSlots,
+              ),
+            ),
+          if (_result != null)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: 12,
+                children: [
+                  Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      '抽签结果',
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        for (final name in result.single)
-                          Chip(
-                            label: Text(
-                              name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      for (final name in draw.single)
+                        Chip(
+                          label: Text(
+                            name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                      ],
+                        ),
+                    ],
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => _copy(draw),
+                      icon: const Icon(Icons.copy_outlined),
+                      label: const Text('复制结果'),
                     ),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: () => _copy(result),
-                        icon: const Icon(Icons.copy_outlined),
-                        label: const Text('复制结果'),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            );
-    }
-    return null;
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _label(String name, ColorScheme colors) => Container(

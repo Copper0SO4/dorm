@@ -144,7 +144,10 @@ class _ToolsPageState extends State<ToolsPage> {
               Visibility(
                 visible: _selected == _Tool.bomb,
                 maintainState: true,
-                child: NumberBombCard(panelWidth: _panelWidth),
+                child: NumberBombCard(
+                  panelWidth: _panelWidth,
+                  controller: widget.controller,
+                ),
               ),
             ],
           ),

@@ -224,7 +224,24 @@ class SshVault {
   Future<void> _saveKey(File file, CloudKey key) =>
       _save(file, {'key': key.privateKey, 'passphrase': key.passphrase});
 
-  Future<void> _save(File file, Map<String, Object?> payload) async {
+  Future<void> copyTo(Directory appDirectory) async {
+    if (!await _directory.exists()) return;
+    final files = await _directory
+        .list(followLinks: false)
+        .where((entry) => entry is File && entry.path.endsWith('.json'))
+        .cast<File>()
+        .toList();
+    if (files.isEmpty) return;
+    final destination = SshVault(appDirectory);
+    await destination._prepareDirectory();
+    for (final file in files) {
+      await file.copy(
+        '${destination._directory.path}${Platform.pathSeparator}${file.uri.pathSegments.last}',
+      );
+    }
+  }
+
+  Future<void> _prepareDirectory() async {
     await _directory.create(recursive: true);
     if (Platform.isWindows) {
       final user = await Process.run('whoami.exe', [
@@ -252,6 +269,10 @@ class SshVault {
         throw const InputException('无法限制凭据目录权限，设置未保存');
       }
     }
+  }
+
+  Future<void> _save(File file, Map<String, Object?> payload) async {
+    await _prepareDirectory();
     final temp = File('${file.path}.tmp');
     try {
       await temp.writeAsString(jsonEncode(payload), flush: true);
