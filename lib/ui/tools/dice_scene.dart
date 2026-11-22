@@ -29,13 +29,7 @@ class _DicePainter extends CustomPainter {
   final int initialFace;
   final int finalFace;
   final double progress;
-  static const _camera = 7.0;
-  static const _corners = [
-    Offset(-1, -1),
-    Offset(1, -1),
-    Offset(1, 1),
-    Offset(-1, 1),
-  ];
+  static const _camera = 7.2;
 
   static (double, double) _facing(int face) => switch (face) {
     2 => (0, -pi / 2),
@@ -84,38 +78,93 @@ class _DicePainter extends CustomPainter {
     return (p) => (x: p.x * c + p.z * s, y: p.y, z: p.z * c - p.x * s);
   }
 
+  static _Point Function(_Point) _rotateZ(double angle) {
+    final c = cos(angle);
+    final s = sin(angle);
+    return (p) => (x: p.x * c - p.y * s, y: p.x * s + p.y * c, z: p.z);
+  }
+
+  /// Multi-stage physical bounce height (0.0 at rest, peak ~0.185 at mid-air).
+  static double _bounceHeight(double t) {
+    if (t < 0.66) {
+      return sin(pi * (t / 0.66)) * 0.185;
+    }
+    if (t < 0.88) {
+      return sin(pi * ((t - 0.66) / 0.22)) * 0.048;
+    }
+    return sin(pi * ((t - 0.88) / 0.12)) * 0.012;
+  }
+
+  static List<Offset> _roundedFaceOutline(
+    Offset Function(double u, double v) projectUv,
+  ) {
+    // 2D rounded square in (u, v) space [-1, 1]^2 with corner radius r = 0.22.
+    const r = 0.22;
+    const inner = 1.0 - r;
+    const cornerCenters = [
+      Offset(-inner, -inner),
+      Offset(inner, -inner),
+      Offset(inner, inner),
+      Offset(-inner, inner),
+    ];
+    const startAngles = [pi, -pi / 2, 0.0, pi / 2];
+    final points = <Offset>[];
+    for (var c = 0; c < 4; c++) {
+      final center = cornerCenters[c];
+      final base = startAngles[c];
+      for (var step = 0; step <= 4; step++) {
+        final theta = base + (pi / 2) * (step / 4);
+        points.add(
+          projectUv(center.dx + r * cos(theta), center.dy + r * sin(theta)),
+        );
+      }
+    }
+    return points;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final turn = Curves.easeOutCubic.transform(progress);
     final (startPitch, startYaw) = _facing(initialFace);
     final (endPitch, endYaw) = _facing(finalFace);
+    final settleWobble = progress > 0.66
+        ? sin((progress - 0.66) * 18) * (1 - progress) * 0.24
+        : 0.0;
     final pitch = _rotateX(
-      startPitch + (endPitch - startPitch + 2 * pi) * turn,
+      startPitch + (endPitch - startPitch + 2 * pi) * turn + settleWobble,
     );
-    final yaw = _rotateY(startYaw + (endYaw - startYaw + 4 * pi) * turn);
+    final yaw = _rotateY(
+      startYaw + (endYaw - startYaw + 4 * pi) * turn - settleWobble * 0.6,
+    );
+    final spin = _rotateZ(sin(pi * progress) * 0.35 * (1 - progress));
     final tilt = _rotateX(-.28);
     final view = _rotateY(-.39);
-    _Point rotate(_Point p) => view(tilt(yaw(pitch(p))));
+    _Point rotate(_Point p) => view(tilt(spin(yaw(pitch(p)))));
 
-    final scale = size.shortestSide * .215;
-    final lift = sin(pi * progress) * size.height * .135;
-    final drift = sin(2 * pi * progress) * (1 - progress) * size.width * .06;
-    final center = Offset(size.width / 2 + drift, size.height * .51 - lift);
+    final scale = size.shortestSide * .218;
+    final heightFraction = _bounceHeight(progress);
+    final lift = heightFraction * size.height;
+    final drift = sin(2.4 * pi * progress) * (1 - progress) * size.width * .07;
+    final center = Offset(size.width / 2 + drift, size.height * .54 - lift);
     Offset project(_Point p) =>
         center + Offset(p.x, p.y) * (scale / (1 - p.z / _camera));
     Offset facePoint(int face, double u, double v) =>
         project(rotate(_plane(face, u, v)));
 
-    final shadowAlpha = .24 - lift / size.height * .78;
+    final shadowAlpha = (.27 - heightFraction * .95).clamp(0.06, 0.30);
+    final shadowWidth = scale * (2.35 - heightFraction * 3.0);
     canvas.drawOval(
       Rect.fromCenter(
-        center: Offset(center.dx, size.height * .81),
-        width: scale * (2.25 - lift / size.height * 2),
+        center: Offset(center.dx, size.height * .82),
+        width: shadowWidth,
         height: scale * .46,
       ),
       Paint()
-        ..color = const Color(0xff122f25).withValues(alpha: shadowAlpha)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+        ..color = const Color(0xff10261e).withValues(alpha: shadowAlpha)
+        ..maskFilter = MaskFilter.blur(
+          BlurStyle.normal,
+          5.0 + heightFraction * 26.0,
+        ),
     );
 
     final visible =
@@ -127,37 +176,50 @@ class _DicePainter extends CustomPainter {
     final fill = Paint();
     final edge = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = .9
+      ..strokeWidth = 1.05
       ..strokeJoin = StrokeJoin.round
-      ..color = const Color(0xff6e9485);
-    final ink = Paint()..color = const Color(0xff163b31);
+      ..color = const Color(0xff789c8d);
+    final rimHighlight = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.7
+      ..color = const Color(0x55ffffff);
+    final darkInk = Paint()..color = const Color(0xff163b31);
+    final redInk = Paint()..color = const Color(0xffc0392b);
+
     for (final side in visible) {
       final face = side.face;
       final normal = side.normal;
-      final light = (.50 - normal.x * .18 - normal.y * .32 + normal.z * .26)
+      final light = (.52 - normal.x * .18 - normal.y * .34 + normal.z * .26)
           .clamp(0.0, 1.0);
       final outline = Path()
-        ..addPolygon([
-          for (final point in _corners) facePoint(face, point.dx, point.dy),
-        ], true);
+        ..addPolygon(
+          _roundedFaceOutline((u, v) => facePoint(face, u, v)),
+          true,
+        );
       fill.color = Color.lerp(
-        const Color(0xff82ac98),
-        const Color(0xfffff8e8),
+        const Color(0xff89b29f),
+        const Color(0xfffffaf0),
         light,
       )!;
       canvas.drawPath(outline, fill);
       canvas.drawPath(outline, edge);
+      if (light > 0.55) {
+        canvas.drawPath(outline, rimHighlight);
+      }
+
+      final pipPaint = (face == 1 || face == 4) ? redInk : darkInk;
+      final pipRadius = face == 1 ? .18 : .128;
       for (final pip in _pips(face)) {
         final dot = Path()
           ..addPolygon([
             for (var step = 0; step < 14; step++)
               facePoint(
                 face,
-                pip.dx + .125 * cos(step * 2 * pi / 14),
-                pip.dy + .125 * sin(step * 2 * pi / 14),
+                pip.dx + pipRadius * cos(step * 2 * pi / 14),
+                pip.dy + pipRadius * sin(step * 2 * pi / 14),
               ),
           ], true);
-        canvas.drawPath(dot, ink);
+        canvas.drawPath(dot, pipPaint);
       }
     }
   }

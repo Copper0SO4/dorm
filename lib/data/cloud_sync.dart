@@ -138,6 +138,77 @@ class CloudSync extends ChangeNotifier {
     }
   }
 
+  Future<void> resetData({
+    required Future<void> Function() clearLocal,
+    bool keepRepository = false,
+    bool clearRemote = false,
+  }) async {
+    if (_busy) throw const InputException('同步正在进行，请稍后再试');
+    final current = settings;
+    final mailbox = cardMailbox;
+    _debounce?.cancel();
+    _repeat = false;
+    _setBusy();
+    try {
+      if (current != null && clearRemote) {
+        final key = await _key(current);
+        final proxy = await readProxy();
+        final empty = CloudSnapshot({});
+        for (var attempt = 0; attempt < 2; attempt++) {
+          try {
+            if (_disposed) return;
+            final remote = await _transport.pull(current, key, proxy: proxy);
+            if (_disposed) return;
+            if (remote != null && !remote.data.isEmpty) {
+              await _transport.push(
+                current,
+                key,
+                empty,
+                remote.revision,
+                proxy: proxy,
+              );
+            }
+            break;
+          } on CloudRace {
+            if (attempt == 1) {
+              throw const InputException('云端在清空时又有更新，请稍后重试');
+            }
+          }
+        }
+        if (mailbox != null) {
+          for (var attempt = 0; attempt < 2; attempt++) {
+            try {
+              if (_disposed) return;
+              final remoteCards = await mailbox.pull();
+              if (_disposed) return;
+              if (remoteCards != null && remoteCards.body.trim() != '{}') {
+                await mailbox.push('{}', remoteCards.revision);
+              }
+              break;
+            } on CardMailboxRace {
+              if (attempt == 1) {
+                throw const InputException('在线牌桌在清空时又有更新，请稍后重试');
+              }
+            }
+          }
+        }
+      }
+      if (current != null && !keepRepository) {
+        await _vault.remove(current.repository);
+        if (_disposed) return;
+      }
+      await clearLocal();
+      if (_disposed) return;
+      _conflict = null;
+      _error = null;
+      _lastSynced = (keepRepository && current != null && clearRemote)
+          ? DateTime.now()
+          : null;
+    } finally {
+      _finish();
+    }
+  }
+
   void changed() {
     if (_disposed || settings == null) return;
     if (_busy) {

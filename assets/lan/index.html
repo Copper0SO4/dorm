@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>Dorm · 局域网工作台</title>
   <link rel="stylesheet" href="/dorm.css">
+  <script defer src="/tools.js"></script>
   <script defer src="/dorm.js"></script>
 </head>
 <body>
@@ -17,8 +18,25 @@
         <button type="button" data-section="chores"><span aria-hidden="true">▦</span>卫生排班</button>
         <button type="button" data-section="supplies"><span aria-hidden="true">◇</span>公共物资</button>
         <button type="button" data-section="matters"><span aria-hidden="true">☷</span>寝室事务</button>
+        <button type="button" data-section="members"><span aria-hidden="true">☺</span>寝室成员</button>
+        <button type="button" data-section="tools"><span aria-hidden="true">★</span>娱乐工具</button>
       </nav>
       <div class="sidebar-footer">
+        <label class="viewer-box">
+          <small>我的视角</small>
+          <select id="viewer-select" aria-label="切换当前使用成员"></select>
+        </label>
+        <div class="theme-row">
+          <select id="palette-select" aria-label="切换网页调色板">
+            <option value="pine">松林绿</option>
+            <option value="ocean">海盐蓝</option>
+            <option value="amber">暖橘棕</option>
+            <option value="plum">暮色紫</option>
+            <option value="crimson">枫叶红</option>
+            <option value="slate">石墨灰</option>
+          </select>
+          <button id="eink-toggle" type="button" class="ghost" aria-pressed="false">墨水屏</button>
+        </div>
         <span id="server-status">正在连接</span>
       </div>
     </aside>

@@ -56,7 +56,9 @@ class _QuickRollCardState extends State<QuickRollCard>
       _next = animate ? outcome : null;
     });
     if (animate) {
-      _motion.duration = Duration(milliseconds: kind == _Roll.dice ? 970 : 620);
+      _motion.duration = Duration(
+        milliseconds: kind == _Roll.dice ? 1050 : 880,
+      );
       _motion.forward(from: 0);
     }
   }
@@ -141,34 +143,118 @@ class _QuickRollCardState extends State<QuickRollCard>
 
   Widget _figure(ThemeData theme, bool rolling) {
     final time = rolling ? _motion.value : 1.0;
-    final turn = Curves.easeOutCubic.transform(time);
-    final hop = sin(time * pi) * 23;
-    final colors = theme.colorScheme;
-    final steps = (turn * 13).floor();
     if (_kind == _Roll.dice) {
       return DiceScene(from: _startingFace, points: _lastFace, progress: time);
     }
 
-    final face = rolling ? steps % 2 : _result ?? 0;
-    return Transform.translate(
-      offset: Offset(0, -hop),
-      child: Transform.scale(
-        scaleX: rolling ? max(.14, cos(turn * 6 * pi).abs()) : 1,
-        child: Container(
-          width: 76,
-          height: 76,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.tertiaryContainer,
-            border: Border.all(color: colors.tertiary, width: 2),
-          ),
-          child: Text(
-            face == 0 ? '正' : '反',
-            style: theme.textTheme.headlineMedium?.copyWith(
-              color: colors.onTertiaryContainer,
-              fontWeight: FontWeight.w700,
+    final turn = Curves.easeOutCubic.transform(time);
+    // Multi-bounce vertical arc: high toss (0..0.72) then crisp landing bounce (0.72..1.0).
+    final hop = time < 0.72
+        ? sin(pi * (time / 0.72)) * 42
+        : sin(pi * ((time - 0.72) / 0.28)) * 9;
+    final target = _result ?? _next ?? 0;
+    // Rotate 5 full flips + exact half-turn if target is tails (1).
+    final totalAngle = (10 + target) * pi * turn;
+    final facingFront = cos(totalAngle) >= 0;
+    final edgeProximity = 1 - cos(totalAngle).abs();
+    final shadowWidth = 64.0 - hop * 0.65;
+    final shadowAlpha = (0.26 - hop * 0.004).clamp(0.06, 0.26);
+
+    return SizedBox(
+      width: 120,
+      height: 150,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned(
+            bottom: 12,
+            child: Container(
+              width: shadowWidth,
+              height: 14,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                color: Colors.black.withValues(alpha: shadowAlpha),
+              ),
             ),
+          ),
+          Transform.translate(
+            offset: Offset(0, -hop + 6),
+            child: Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.identity()
+                ..setEntry(3, 2, 0.0022)
+                ..rotateX(totalAngle)
+                ..rotateZ(sin(2 * pi * time) * (1 - time) * 0.16),
+              child: Transform(
+                alignment: Alignment.center,
+                transform: facingFront
+                    ? Matrix4.identity()
+                    : (Matrix4.identity()..rotateX(pi)),
+                child: _CoinFace(
+                  front: facingFront,
+                  edgeGlow: edgeProximity,
+                  theme: theme,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CoinFace extends StatelessWidget {
+  const _CoinFace({
+    required this.front,
+    required this.edgeGlow,
+    required this.theme,
+  });
+
+  final bool front;
+  final double edgeGlow;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = theme.colorScheme;
+    final lightFill = front
+        ? const [Color(0xffffe79b), Color(0xffd79e33)]
+        : const [Color(0xffe9eff3), Color(0xff96a7b3)];
+    final ringColor = front ? const Color(0xffa46f19) : const Color(0xff5b6b76);
+    final textColor = front ? const Color(0xff573706) : const Color(0xff23313b);
+
+    return Container(
+      width: 82,
+      height: 82,
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: lightFill,
+        ),
+        border: Border.all(
+          color: Color.lerp(ringColor, colors.onSurface, edgeGlow * 0.35)!,
+          width: 2.5 + edgeGlow * 1.5,
+        ),
+      ),
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: ringColor.withValues(alpha: 0.48),
+            width: 1.2,
+          ),
+        ),
+        child: Text(
+          front ? '正' : '反',
+          style: theme.textTheme.headlineMedium?.copyWith(
+            color: textColor,
+            fontWeight: FontWeight.w800,
           ),
         ),
       ),

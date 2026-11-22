@@ -3,10 +3,21 @@ import 'package:material_ui/material_ui.dart';
 import '../domain/draw.dart';
 import 'common.dart';
 import 'cards_page.dart';
+import 'tools/decision_wheel_card.dart';
 import 'tools/draw_card.dart';
+import 'tools/number_bomb_card.dart';
 import 'tools/quick_roll_card.dart';
 
-enum _Tool { draw, teams, roll }
+enum _Tool {
+  draw('抽签'),
+  teams('随机分组'),
+  roll('骰子与硬币'),
+  decide('决策盲盒'),
+  bomb('数字炸弹');
+
+  const _Tool(this.label);
+  final String label;
+}
 
 class ToolsPage extends StatefulWidget {
   const ToolsPage({super.key, required this.controller});
@@ -52,25 +63,42 @@ class _ToolsPageState extends State<ToolsPage> {
             ),
           ),
           const SizedBox(height: panelGap),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: _panelWidth),
-              child: SizedBox(
-                width: double.infinity,
-                child: SegmentedButton<_Tool>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: _Tool.draw, label: Text('抽签')),
-                    ButtonSegment(value: _Tool.teams, label: Text('随机分组')),
-                    ButtonSegment(value: _Tool.roll, label: Text('骰子与硬币')),
-                  ],
-                  selected: {_selected},
-                  onSelectionChanged: (choice) =>
-                      setState(() => _selected = choice.single),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _panelWidth),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<_Tool>(
+                    showSelectedIcon: false,
+                    emptySelectionAllowed: true,
+                    segments: const [
+                      ButtonSegment(value: _Tool.draw, label: Text('抽签')),
+                      ButtonSegment(value: _Tool.teams, label: Text('随机分组')),
+                      ButtonSegment(value: _Tool.roll, label: Text('骰子与硬币')),
+                    ],
+                    selected: switch (_selected) {
+                      _Tool.draw || _Tool.teams || _Tool.roll => {_selected},
+                      _Tool.decide || _Tool.bomb => const {},
+                    },
+                    onSelectionChanged: (choice) {
+                      if (choice.isNotEmpty) {
+                        setState(() => _selected = choice.single);
+                      }
+                    },
+                  ),
                 ),
               ),
-            ),
+              for (final tool in const [_Tool.decide, _Tool.bomb])
+                ChoiceChip(
+                  label: Text(tool.label),
+                  selected: _selected == tool,
+                  onSelected: (_) => setState(() => _selected = tool),
+                ),
+            ],
           ),
           const SizedBox(height: panelGap),
           Column(
@@ -104,6 +132,19 @@ class _ToolsPageState extends State<ToolsPage> {
                     child: const QuickRollCard(showTitle: false),
                   ),
                 ),
+              ),
+              Visibility(
+                visible: _selected == _Tool.decide,
+                maintainState: true,
+                child: DecisionWheelCard(
+                  members: members,
+                  panelWidth: _panelWidth,
+                ),
+              ),
+              Visibility(
+                visible: _selected == _Tool.bomb,
+                maintainState: true,
+                child: NumberBombCard(panelWidth: _panelWidth),
               ),
             ],
           ),

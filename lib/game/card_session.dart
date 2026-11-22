@@ -16,12 +16,13 @@ enum CardLocation { local, lan, git }
 typedef LobbyRoom = ({RoomJson info, CardLocation location, Uri? link});
 
 class CardSession extends ChangeNotifier {
-  CardSession(this._mailbox) {
-    rooms.addListener(_offlineChanged);
+  CardSession(this._mailbox, {CardRooms? rooms})
+    : rooms = rooms ?? CardRooms() {
+    this.rooms.addListener(_offlineChanged);
   }
 
   final CardMailbox? Function() _mailbox;
-  final rooms = CardRooms();
+  final CardRooms rooms;
   DormLanServer? _listener;
   OnlineCards? _online;
   CardHttp? _http;
@@ -165,10 +166,7 @@ class CardSession extends ChangeNotifier {
         since: view?['version'] as int?,
       );
       if (_http != http || _seat != seat || _disposed) return;
-      if (next.containsKey('phase') &&
-          (next['version'] as int) >= (view?['version'] as int? ?? 0)) {
-        view = next;
-      }
+      _acceptLanView(next);
       if (error == '局域网牌桌暂不可用，正在重连') error = null;
       _notify();
     } catch (_) {
@@ -178,6 +176,13 @@ class CardSession extends ChangeNotifier {
       }
     } finally {
       _polling = false;
+    }
+  }
+
+  void _acceptLanView(RoomJson next) {
+    if (next.containsKey('phase') &&
+        (next['version'] as int) >= (view?['version'] as int? ?? 0)) {
+      view = next;
     }
   }
 
@@ -196,10 +201,12 @@ class CardSession extends ChangeNotifier {
 
   Future<void> act(String action, [RoomJson choices = const {}]) =>
       _work(() async {
-        final input = <String, dynamic>{
-          ...choices,
-          'turnVersion': view?['turnVersion'],
-        };
+        final currentTurn = view?['turnVersion'];
+        final input = <String, dynamic>{'turnVersion': currentTurn, ...choices};
+        if (const {'play', 'pass', 'bid'}.contains(action) &&
+            input['turnVersion'] != currentTurn) {
+          throw const InputException('回合已变化，请刷新后再试');
+        }
         if (_onlineGuest) {
           if (action == 'leave' && view == null) {
             _online?.forgetGuest();
@@ -217,7 +224,7 @@ class CardSession extends ChangeNotifier {
             data: input,
             token: seat.token,
           );
-          if (action != 'leave') view = next;
+          if (action != 'leave') _acceptLanView(next);
         } else {
           final wasOnline = view?['scope'] == 'online';
           if (action == 'leave' && wasOnline) await _online?.closeHost();

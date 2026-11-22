@@ -2,6 +2,7 @@ import '../domain/identity.dart';
 import '../domain/ledger.dart';
 import '../domain/matters.dart';
 import '../domain/models.dart';
+import '../domain/party_tools.dart';
 import '../domain/repository.dart';
 import '../domain/schedule.dart';
 
@@ -45,6 +46,7 @@ class LanApi {
               'archived': item.archived,
             },
         ],
+        ['tools'] => _tools(),
         _ => null,
       };
 
@@ -112,6 +114,40 @@ class LanApi {
             browserDevice: browserDevice(),
           ),
         );
+      case ['settlement']:
+        final rawExpected = body['expected'];
+        if (rawExpected is! Map<String, dynamic> || rawExpected.isEmpty) {
+          throw const InputException('请选择需要核销的账单');
+        }
+        final expected = <int, int>{};
+        for (final entry in rawExpected.entries) {
+          final amount = entry.value;
+          if (amount is! int || amount <= 0) {
+            throw const InputException('待付账单金额格式无效');
+          }
+          expected[_positiveId(entry.key)] = amount;
+        }
+        write(
+          () => repository.recordSettlement(
+            data.id('debtorId'),
+            data.id('payerId'),
+            expected,
+            data.money('amount'),
+          ),
+        );
+      case ['members', 'save']:
+        write(
+          () => repository.saveMember(
+            data.text('name'),
+            id: data.optionalId('id'),
+          ),
+        );
+      case ['members', 'active']:
+        write(
+          () => repository.setMemberActive(data.id('id'), data.flag('active')),
+        );
+      case ['members', 'delete']:
+        write(() => repository.deleteMember(data.id('id')));
       case ['chores', 'generate']:
         final day = _parseDay(data.text('day'));
         if (day.isAfter(today().add(const Duration(days: 45)))) {
@@ -120,6 +156,10 @@ class LanApi {
         write(() => repository.generateShiftsThrough(day));
       case ['chores', 'complete']:
         write(() => repository.completeShift(data.id('id')));
+      case ['chores', 'reassign']:
+        write(
+          () => repository.reassignShift(data.id('id'), data.id('memberId')),
+        );
       case ['supplies', 'save']:
         final draft = (
           name: data.text('name'),
@@ -130,6 +170,8 @@ class LanApi {
           status: data.choice('status', PurchaseStatus.values),
         );
         write(() => repository.saveSupply(draft, id: data.optionalId('id')));
+      case ['supplies', 'delete']:
+        write(() => repository.deleteSupply(data.id('id')));
       case ['supplies', 'order']:
         write(() => repository.markSupplyOrdered(data.id('id')));
       case ['supplies', 'receive']:
@@ -190,8 +232,61 @@ class LanApi {
       'outstanding': bills.fold(0, (sum, bill) => sum + bill.outstanding),
       'hasNext': (page + 1) * pageSize < bills.length,
       'bills': bills.skip(page * pageSize).take(pageSize).map(_bill).toList(),
+      'balances': () {
+        final membersByName = {
+          for (final member in repository.members()) member.name: member,
+        };
+        return [
+          for (final item in repository.balances())
+            {
+              'id': membersByName[item.name]?.id,
+              'name': item.name,
+              'active': membersByName[item.name]?.active ?? true,
+              'receivable': item.receivable,
+              'payable': item.payable,
+              'openReceivable': item.openReceivable,
+              'openPayable': item.openPayable,
+            },
+        ];
+      }(),
+      'openSettlements': [
+        for (final pair in repository.openSettlements())
+          {
+            'debtorId': pair.debtorId,
+            'debtor': pair.debtor,
+            'payerId': pair.payerId,
+            'payer': pair.payer,
+            'total': pair.charges.fold(0, (sum, charge) => sum + charge.amount),
+            'charges': [
+              for (final charge in pair.charges)
+                {
+                  'billId': charge.billId,
+                  'title': charge.title,
+                  'amount': charge.amount,
+                },
+            ],
+          },
+      ],
     };
   }
+
+  Object _tools() => {
+    'members': [
+      for (final member in repository.members())
+        if (member.active) member.name,
+    ],
+    'presets': [
+      for (final preset in decisionPresets)
+        {
+          'id': preset.id,
+          'title': preset.title,
+          'description': preset.description,
+          'usesMembers': preset.usesMembers,
+          'options': preset.options,
+        },
+    ],
+    'penalties': penaltyPresets,
+  };
 
   Object _detail(int id) {
     final detail = repository.billDetail(id);

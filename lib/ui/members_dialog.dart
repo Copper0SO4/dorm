@@ -5,6 +5,32 @@ import '../domain/models.dart';
 import 'common.dart';
 import 'member_identity.dart';
 
+Future<void> _runMemberAction(
+  BuildContext context,
+  DormController controller,
+  String errorTitle,
+  void Function() action,
+) async {
+  try {
+    controller.write(action);
+  } catch (error) {
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(errorTitle),
+        content: Text(errorText(error)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 Future<bool?> showMembers(
   BuildContext context,
   DormController controller, {
@@ -47,30 +73,33 @@ Future<bool?> showMembers(
                                 controller,
                                 member,
                               );
+                            } else if (action == 'delete') {
+                              final confirmed = await confirm(
+                                context,
+                                '删除成员',
+                                '将永久删除成员「${member.name}」及与其相关的未完成排班和身份认领记录，操作不可恢复。',
+                                action: '删除',
+                                destructive: true,
+                              );
+                              if (!confirmed || !context.mounted) return;
+                              await _runMemberAction(
+                                context,
+                                controller,
+                                '无法删除成员',
+                                () => controller.repository.deleteMember(
+                                  member.id,
+                                ),
+                              );
                             } else {
-                              try {
-                                controller.write(
-                                  () => controller.repository.setMemberActive(
-                                    member.id,
-                                    !member.active,
-                                  ),
-                                );
-                              } catch (error) {
-                                if (!context.mounted) return;
-                                await showDialog<void>(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    title: const Text('成员状态未更新'),
-                                    content: Text(errorText(error)),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(context),
-                                        child: const Text('关闭'),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }
+                              await _runMemberAction(
+                                context,
+                                controller,
+                                '成员状态未更新',
+                                () => controller.repository.setMemberActive(
+                                  member.id,
+                                  !member.active,
+                                ),
+                              );
                             }
                           },
                           itemBuilder: (context) => [
@@ -85,6 +114,10 @@ Future<bool?> showMembers(
                             PopupMenuItem(
                               value: 'status',
                               child: Text(member.active ? '停用成员' : '启用成员'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Text('删除成员'),
                             ),
                           ],
                         ),

@@ -14,6 +14,8 @@ enum CardMode {
 enum DealRemainder { equal, extra }
 
 class CardRules {
+  static const defaultRocketBeatsChain = false;
+
   CardRules({
     this.players = 3,
     this.decks = 1,
@@ -22,6 +24,9 @@ class CardRules {
     this.landlord = true,
     this.bottom = 3,
     this.mode = CardMode.classic,
+    this.chainBombs = true,
+    this.rocketBeatsChain = defaultRocketBeatsChain,
+    this.fourWithTwo = true,
   }) {
     if (players < 2 || players > 8 || decks < 1 || decks > 4) {
       throw const InputException('支持 2 至 8 人，1 至 4 副牌');
@@ -38,7 +43,10 @@ class CardRules {
     }
   }
 
-  factory CardRules.fromJson(Map<String, dynamic> values) {
+  factory CardRules.fromJson(
+    Map<String, dynamic> values, {
+    bool newRoom = false,
+  }) {
     try {
       return CardRules(
         players: values['players'] as int,
@@ -48,6 +56,11 @@ class CardRules {
         landlord: values['landlord'] as bool,
         bottom: values['bottom'] as int,
         mode: CardMode.values.byName(values['mode'] as String),
+        chainBombs: (values['chainBombs'] as bool?) ?? false,
+        rocketBeatsChain:
+            (values['rocketBeatsChain'] as bool?) ??
+            (newRoom ? defaultRocketBeatsChain : true),
+        fourWithTwo: (values['fourWithTwo'] as bool?) ?? true,
       );
     } on ArgumentError {
       throw const InputException('房间规则格式有误');
@@ -63,6 +76,9 @@ class CardRules {
   final bool landlord;
   final int bottom;
   final CardMode mode;
+  final bool chainBombs;
+  final bool rocketBeatsChain;
+  final bool fourWithTwo;
   int get available => 54 * decks - discard - bottom;
 
   Map<String, Object> toJson() => {
@@ -73,6 +89,9 @@ class CardRules {
     'landlord': landlord,
     'bottom': bottom,
     'mode': mode.name,
+    'chainBombs': chainBombs,
+    'rocketBeatsChain': rocketBeatsChain,
+    'fourWithTwo': fourWithTwo,
   };
 }
 
@@ -146,6 +165,7 @@ enum PlayKind {
   fourSingles('四带二'),
   fourPairs('四带两对'),
   bomb('炸弹'),
+  chainBomb('连炸'),
   rocket('王炸');
 
   const PlayKind(this.label);
@@ -181,19 +201,31 @@ class CardPlay {
   final Map<int, int> ranks;
 
   String get key => '${kind.name}:$high:$width:$strength';
-  bool get bomb => kind == PlayKind.bomb || kind == PlayKind.rocket;
-  bool beats(CardPlay? earlier) {
+  int _bombOrder(CardRules? rules) {
+    final rocketFirst =
+        rules?.rocketBeatsChain ?? CardRules.defaultRocketBeatsChain;
+    return switch (kind) {
+      PlayKind.bomb => 1,
+      PlayKind.chainBomb => rocketFirst ? 2 : 3,
+      PlayKind.rocket => rocketFirst ? 3 : 2,
+      _ => 0,
+    };
+  }
+
+  bool get bomb => _bombOrder(null) > 0;
+
+  int _compareBombs(CardPlay other, CardRules? rules) {
+    final order = _bombOrder(rules).compareTo(other._bombOrder(rules));
+    if (order != 0) return order;
+    final count = width.compareTo(other.width);
+    if (count != 0) return count;
+    final firmness = strength.compareTo(other.strength);
+    return firmness == 0 ? high.compareTo(other.high) : firmness;
+  }
+
+  bool beats(CardPlay? earlier, {CardRules? rules}) {
     if (earlier == null) return true;
-    if (kind == PlayKind.rocket) {
-      return earlier.kind != kind || width > earlier.width;
-    }
-    if (earlier.kind == PlayKind.rocket) return false;
-    if (kind == PlayKind.bomb) {
-      if (earlier.kind != kind) return true;
-      if (width != earlier.width) return width > earlier.width;
-      if (strength != earlier.strength) return strength > earlier.strength;
-      return high > earlier.high;
-    }
+    if (bomb || earlier.bomb) return _compareBombs(earlier, rules) > 0;
     return earlier.kind == kind &&
         earlier.width == width &&
         high > earlier.high;
@@ -201,7 +233,12 @@ class CardPlay {
 
   String get label => switch (kind) {
     PlayKind.bomb => '$width 张${['软炸', '硬炸', '纯癞子炸弹'][strength]}',
-    PlayKind.rocket => '$width 张王炸',
+    PlayKind.chainBomb => '$width 连炸',
+    PlayKind.rocket => switch (width) {
+      2 => '王炸',
+      4 => '双王炸',
+      _ => '${width ~/ 2} 组王炸',
+    },
     _ => kind.label,
   };
 
@@ -217,7 +254,23 @@ class CardPlay {
   };
 }
 
-List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
+List<CardPlay> cardPlays(
+  List<PlayingCard> chosen,
+  Set<int> wildRanks, {
+  CardRules? rules,
+}) => _matchingPlays(
+  chosen,
+  wildRanks,
+  chainBombs: rules?.chainBombs ?? false,
+  fourWithTwo: rules?.fourWithTwo ?? true,
+);
+
+List<CardPlay> _matchingPlays(
+  List<PlayingCard> chosen,
+  Set<int> wildRanks, {
+  required bool chainBombs,
+  required bool fourWithTwo,
+}) {
   if (chosen.isEmpty ||
       chosen.map((card) => card.id).toSet().length != chosen.length) {
     return [];
@@ -230,7 +283,7 @@ List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
   final fixed = <int, int>{};
   final wild = <PlayingCard>[];
   for (final card in cards) {
-    if (wildRanks.contains(card.rank)) {
+    if (card.rank <= 15 && wildRanks.contains(card.rank)) {
       wild.add(card);
     } else {
       fixed.update(card.rank, (count) => count + 1, ifAbsent: () => 1);
@@ -289,13 +342,11 @@ List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
     for (final (i, card) in unmatched.indexed) {
       conversion[card.id] = deficits[i];
     }
-    final strength = kind != PlayKind.bomb
-        ? 0
-        : wild.isEmpty
-        ? 1
-        : fixed.isEmpty
-        ? 2
-        : 0;
+    final strength = switch (kind) {
+      PlayKind.bomb => wild.isEmpty ? 1 : (fixed.isEmpty ? 2 : 0),
+      PlayKind.chainBomb => wild.isEmpty ? 1 : 0,
+      _ => 0,
+    };
     final play = CardPlay(kind, high, width, strength, cards, conversion);
     result[play.key] = play;
   }
@@ -313,7 +364,7 @@ List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
     if (size == 5) {
       add(PlayKind.triplePair, rank, 1, {rank: 3}, wingSlots: 1, wingSize: 2);
     }
-    if (size == 6) {
+    if (size == 6 && fourWithTwo) {
       add(
         PlayKind.fourSingles,
         rank,
@@ -324,7 +375,7 @@ List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
         distinct: false,
       );
     }
-    if (size == 8) {
+    if (size == 8 && fourWithTwo) {
       add(PlayKind.fourPairs, rank, 1, {rank: 4}, wingSlots: 2, wingSize: 2);
     }
     if (size >= 4 &&
@@ -355,116 +406,263 @@ List<CardPlay> cardPlays(List<PlayingCard> chosen, Set<int> wildRanks) {
   sequence(PlayKind.plane, 3, 0, 2);
   sequence(PlayKind.planeSingles, 3, 1, 2);
   sequence(PlayKind.planePairs, 3, 2, 2);
+  if (chainBombs) sequence(PlayKind.chainBomb, 4, 0, 2);
   return result.values.toList();
 }
 
-/// Evaluates small, targeted candidate sets using exactly the same judge as play.
+String? disabledCardPlayMessage(
+  List<PlayingCard> chosen,
+  Set<int> wildRanks,
+  CardRules rules,
+) {
+  if (rules.chainBombs || chosen.length < 8 || chosen.length % 4 != 0) {
+    return null;
+  }
+  final matches = _matchingPlays(
+    chosen,
+    wildRanks,
+    chainBombs: true,
+    fourWithTwo: false,
+  );
+  return matches.any((play) => play.kind == PlayKind.chainBomb)
+      ? '本房间未开启连炸'
+      : null;
+}
+
+/// The room and both clients validate the same declared play.
+List<CardPlay> legalCardPlays(
+  List<PlayingCard> chosen,
+  Set<int> wild,
+  CardPlay? previous, {
+  CardRules? rules,
+}) => cardPlays(
+  chosen,
+  wild,
+  rules: rules,
+).where((play) => play.beats(previous, rules: rules)).toList();
+
+/// Bots prefer an immediate win, then the smallest available response.
 CardPlay? suggestCards(
   List<PlayingCard> hand,
   Set<int> wild,
-  CardPlay? previous,
-) {
+  CardPlay? previous, {
+  CardRules? rules,
+}) {
   if (hand.isEmpty) return null;
-  final byRank = <int, List<PlayingCard>>{};
-  for (final card in hand) {
-    byRank.putIfAbsent(card.rank, () => []).add(card);
+  final finish = legalCardPlays(hand, wild, previous, rules: rules).firstOrNull;
+  if (finish != null) return finish;
+  if (previous == null) {
+    final lowest = hand.reduce(
+      (a, b) => PlayingCard.compare(a, b) <= 0 ? a : b,
+    );
+    return cardPlays([lowest], wild).single;
   }
-  final full = cardPlays(
-    hand,
-    wild,
-  ).where((play) => play.beats(previous)).firstOrNull;
-  if (full != null) return full;
-  if (previous == null) return cardPlays([hand.first], wild).single;
+  return hintPlays(hand, wild, previous, rules: rules).firstOrNull;
+}
 
-  CardPlay? attempt(Map<int, int> core, {int wings = 0, int wingSize = 1}) {
-    final included = <PlayingCard>[];
-    for (final entry in core.entries) {
-      final available = byRank[entry.key] ?? [];
-      included.addAll(available.take(entry.value));
+const _hintShapes = [
+  (kind: PlayKind.single, copies: 1, minimum: 1, wings: 0, wingSize: 0),
+  (kind: PlayKind.pair, copies: 2, minimum: 1, wings: 0, wingSize: 0),
+  (kind: PlayKind.triple, copies: 3, minimum: 1, wings: 0, wingSize: 0),
+  (kind: PlayKind.tripleSingle, copies: 3, minimum: 1, wings: 1, wingSize: 1),
+  (kind: PlayKind.triplePair, copies: 3, minimum: 1, wings: 1, wingSize: 2),
+  (kind: PlayKind.straight, copies: 1, minimum: 5, wings: 0, wingSize: 0),
+  (kind: PlayKind.pairs, copies: 2, minimum: 3, wings: 0, wingSize: 0),
+  (kind: PlayKind.plane, copies: 3, minimum: 2, wings: 0, wingSize: 0),
+  (kind: PlayKind.planeSingles, copies: 3, minimum: 2, wings: 1, wingSize: 1),
+  (kind: PlayKind.planePairs, copies: 3, minimum: 2, wings: 1, wingSize: 2),
+  (kind: PlayKind.fourSingles, copies: 4, minimum: 1, wings: 2, wingSize: 1),
+  (kind: PlayKind.fourPairs, copies: 4, minimum: 1, wings: 2, wingSize: 2),
+];
+
+/// Finds a playable card set for each possible rank and shape. Alternate
+/// suits for the same play do not need separate hint entries.
+List<CardPlay> hintPlays(
+  List<PlayingCard> hand,
+  Set<int> wild,
+  CardPlay? previous, {
+  CardRules? rules,
+}) {
+  if (hand.isEmpty) return [];
+  final sorted = [...hand]..sort(PlayingCard.compare);
+  final printed = <int, List<PlayingCard>>{};
+  final naturals = <int, List<PlayingCard>>{};
+  final wildCards = <PlayingCard>[];
+  for (final card in sorted) {
+    printed.putIfAbsent(card.rank, () => []).add(card);
+    if (card.rank <= 15 && wild.contains(card.rank)) {
+      wildCards.add(card);
+    } else {
+      naturals.putIfAbsent(card.rank, () => []).add(card);
     }
-    final taken = included.map((card) => card.id).toSet();
-    for (final entry in core.entries) {
-      final missing = max(0, entry.value - (byRank[entry.key]?.length ?? 0));
-      final replacements = hand
-          .where((card) => !taken.contains(card.id) && wild.contains(card.rank))
-          .take(missing)
-          .toList();
-      if (missing != replacements.length || (missing > 0 && entry.key > 15)) {
-        return null;
+  }
+
+  List<PlayingCard>? choose(
+    Map<int, int> core, {
+    int wings = 0,
+    int wingSize = 0,
+    bool repeatedSingles = false,
+  }) {
+    final chosen = <PlayingCard>[];
+    final spares = [...wildCards];
+
+    bool useWild(int count, {int? asRank}) {
+      if (count > spares.length || (count > 0 && (asRank ?? 0) > 15)) {
+        return false;
       }
-      included.addAll(replacements);
-      taken.addAll(replacements.map((card) => card.id));
+      for (var i = 0; i < count; i++) {
+        final natural = spares.indexWhere((card) => card.rank == asRank);
+        chosen.add(spares.removeAt(natural < 0 ? 0 : natural));
+      }
+      return true;
     }
-    var remaining = wings;
-    for (final entry in byRank.entries) {
-      if (remaining == 0) break;
-      if (core.containsKey(entry.key)) continue;
-      final kickers = entry.value
-          .where((card) => !taken.contains(card.id))
+
+    for (final rank in core.keys) {
+      final count = core[rank]!;
+      final cards = (naturals[rank] ?? const <PlayingCard>[]).take(count);
+      chosen.addAll(cards);
+      if (!useWild(count - cards.length, asRank: rank)) return null;
+    }
+    if (wings == 0) return chosen;
+    if (repeatedSingles) {
+      final cards = naturals.entries
+          .where((entry) => !core.containsKey(entry.key))
+          .expand((entry) => entry.value)
+          .take(wings)
+          .toList();
+      chosen.addAll(cards);
+      return useWild(wings - cards.length) ? chosen : null;
+    }
+
+    final attachments = <({int rank, List<PlayingCard> cards, int needed})>[];
+    for (var rank = 3; rank <= 17; rank++) {
+      if (core.containsKey(rank)) continue;
+      final cards = (naturals[rank] ?? const <PlayingCard>[])
           .take(wingSize)
           .toList();
-      if (kickers.length < wingSize) continue;
-      included.addAll(kickers);
-      remaining--;
+      final needed = wingSize - cards.length;
+      if (rank > 15 && needed > 0) continue;
+      attachments.add((rank: rank, cards: cards, needed: needed));
     }
-    if (remaining != 0) return null;
-    return cardPlays(
-      included,
-      wild,
-    ).where((play) => play.beats(previous)).firstOrNull;
+    if (attachments.length < wings) return null;
+    attachments.sort((a, b) {
+      final cost = a.needed.compareTo(b.needed);
+      return cost == 0 ? a.rank.compareTo(b.rank) : cost;
+    });
+    for (final attachment in attachments.take(wings)) {
+      chosen.addAll(attachment.cards);
+      if (!useWild(attachment.needed, asRank: attachment.rank)) return null;
+    }
+    return chosen;
   }
 
-  final kind = previous.kind;
-  final multiple = switch (kind) {
-    PlayKind.single || PlayKind.straight => 1,
-    PlayKind.pair || PlayKind.pairs => 2,
-    PlayKind.fourSingles || PlayKind.fourPairs => 4,
-    _ => 3,
-  };
-  final wings = switch (kind) {
-    PlayKind.tripleSingle || PlayKind.triplePair => 1,
-    PlayKind.fourSingles || PlayKind.fourPairs => 2,
-    PlayKind.planeSingles || PlayKind.planePairs => previous.width,
-    _ => 0,
-  };
-  final wingSize =
-      [
-        PlayKind.triplePair,
-        PlayKind.fourPairs,
-        PlayKind.planePairs,
-      ].contains(kind)
-      ? 2
-      : 1;
-  if (!previous.bomb) {
-    for (
-      var high = previous.high + 1;
-      high <= (previous.width == 1 ? 17 : 14);
-      high++
-    ) {
-      final found = attempt(
-        {
-          for (var rank = high - previous.width + 1; rank <= high; rank++)
-            rank: multiple,
-        },
-        wings: wings,
-        wingSize: wingSize,
-      );
-      if (found != null) return found;
+  final hints = <String, CardPlay>{};
+  void add(List<PlayingCard>? cards, PlayKind kind, int high, int width) {
+    if (cards == null || cards.isEmpty) return;
+    final play = legalCardPlays(cards, wild, previous, rules: rules)
+        .where(
+          (play) =>
+              play.kind == kind && play.high == high && play.width == width,
+        )
+        .firstOrNull;
+    if (play == null) return;
+    final ids = [for (final card in play.cards) card.id]..sort();
+    final signature = ids.join(',');
+    final current = hints[signature];
+    if (current == null || _compareHints(play, current, rules) < 0) {
+      hints[signature] = play;
     }
   }
-  for (
-    var size = max(4, previous.bomb ? previous.width : 4);
-    size <= min(hand.length, 16);
-    size++
-  ) {
+
+  for (final shape in _hintShapes) {
+    if (previous != null && previous.kind != shape.kind) continue;
+    if (rules?.fourWithTwo == false &&
+        (shape.kind == PlayKind.fourSingles ||
+            shape.kind == PlayKind.fourPairs)) {
+      continue;
+    }
+    final sequential = shape.minimum > 1;
+    final maxWidth = sequential
+        ? min(12, hand.length ~/ (shape.copies + shape.wings * shape.wingSize))
+        : 1;
+    final firstWidth = previous?.width ?? shape.minimum;
+    final lastWidth = min(maxWidth, previous?.width ?? maxWidth);
+    final lastRank = sequential
+        ? 14
+        : shape.kind == PlayKind.single || shape.kind == PlayKind.pair
+        ? 17
+        : 15;
+    for (var width = firstWidth; width <= lastWidth; width++) {
+      final firstHigh = max(width + 2, (previous?.high ?? 2) + 1);
+      for (var high = firstHigh; high <= lastRank; high++) {
+        if (shape.kind == PlayKind.single) {
+          final card = printed[high]?.firstOrNull;
+          if (card != null) add([card], shape.kind, high, width);
+          continue;
+        }
+        add(
+          choose(
+            {
+              for (var rank = high - width + 1; rank <= high; rank++)
+                rank: shape.copies,
+            },
+            wings: width * shape.wings,
+            wingSize: shape.wingSize,
+            repeatedSingles: shape.kind == PlayKind.fourSingles,
+          ),
+          shape.kind,
+          high,
+          width,
+        );
+      }
+    }
+  }
+
+  if (previous == null || previous._bombOrder(rules) <= 1) {
+    final first = previous?.kind == PlayKind.bomb ? previous!.width : 4;
     for (var rank = 3; rank <= 15; rank++) {
-      final found = attempt({rank: size});
-      if (found != null) return found;
+      final count = naturals[rank]?.length ?? 0;
+      if (count == 0 && !wild.contains(rank)) continue;
+      for (var length = first; length <= count + wildCards.length; length++) {
+        add(choose({rank: length}), PlayKind.bomb, rank, length);
+      }
     }
   }
-  for (var pairs = 1; pairs <= 4; pairs++) {
-    final rocket = attempt({16: pairs, 17: pairs});
-    if (rocket != null) return rocket;
+  if (rules?.chainBombs == true &&
+      (previous?.kind != PlayKind.rocket || rules?.rocketBeatsChain == false)) {
+    final first = previous?.kind == PlayKind.chainBomb ? previous!.width : 2;
+    for (var width = first; width <= min(12, hand.length ~/ 4); width++) {
+      for (var high = width + 2; high <= 14; high++) {
+        add(
+          choose({
+            for (var rank = high - width + 1; rank <= high; rank++) rank: 4,
+          }),
+          PlayKind.chainBomb,
+          high,
+          width,
+        );
+      }
+    }
   }
-  return null;
+  final smallJokers = naturals[16] ?? const <PlayingCard>[];
+  final bigJokers = naturals[17] ?? const <PlayingCard>[];
+  for (
+    var pairs = 1;
+    pairs <= min(smallJokers.length, bigJokers.length);
+    pairs++
+  ) {
+    add(
+      [...smallJokers.take(pairs), ...bigJokers.take(pairs)],
+      PlayKind.rocket,
+      17,
+      pairs * 2,
+    );
+  }
+  return hints.values.toList()..sort((a, b) => _compareHints(a, b, rules));
+}
+
+int _compareHints(CardPlay a, CardPlay b, CardRules? rules) {
+  if (a.bomb || b.bomb) return a._compareBombs(b, rules);
+  final high = a.high.compareTo(b.high);
+  return high == 0 ? a.cards.length.compareTo(b.cards.length) : high;
 }

@@ -19,6 +19,7 @@ abstract interface class DormRepository {
     String? expectedIdentityCode,
   });
   void setMemberActive(int id, bool active);
+  void deleteMember(int id);
 
   List<Bill> bills({int? supplyId});
   BillDetail billDetail(int id);
@@ -71,5 +72,9 @@ abstract interface class DormRepository {
   AppearanceMode get appearanceMode;
   void saveAppearanceMode(AppearanceMode mode);
   Future<void> writeBackup(String path);
+  void resetFactory({
+    bool keepCloudSettings = false,
+    bool rememberEmptyCloudBase = false,
+  });
   void close();
 }

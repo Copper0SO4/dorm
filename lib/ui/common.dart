@@ -33,6 +33,30 @@ class DormController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> resetFactory({
+    bool keepRepository = false,
+    bool clearRemote = false,
+  }) async {
+    Future<void> clearLocal() async {
+      repository.resetFactory(
+        keepCloudSettings: keepRepository && cloud?.settings != null,
+        rememberEmptyCloudBase:
+            keepRepository && cloud?.settings != null && clearRemote,
+      );
+      notifyListeners();
+    }
+
+    if (cloud != null) {
+      await cloud!.resetData(
+        clearLocal: clearLocal,
+        keepRepository: keepRepository,
+        clearRemote: clearRemote,
+      );
+    } else {
+      await clearLocal();
+    }
+  }
+
   @override
   void dispose() {
     _cards?.dispose();

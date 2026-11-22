@@ -4,16 +4,11 @@
 
 Dorm 是寝室公用账本、卫生排班和物资清单。首次打开应用时，账本和清单均为空。添加实际寝室成员后即可开始使用。数据保存在本机 SQLite，支持离线操作和可选的 GitHub 云同步。
 
-## 从源码运行 Linux 版
+## 支持平台
 
-在 x86_64 Debian 13 或兼容的 Linux 环境使用 Linux Flutter Stable。项目在 WSL2 Debian 13 上以 Flutter 3.50.0 和 Dart 3.14.0 为基线。开发时需要 Clang、CMake、Ninja、pkg-config 和 GTK 3 开发头文件。SDK 和其自带的 Dart 可以放在 `~/.local/opt/flutter`。以下操作在 Linux 原生文件系统中的仓库目录执行。
-
-```bash
-export PATH="$HOME/.local/opt/flutter/bin:$PATH"
-flutter doctor -v
-flutter pub get --enforce-lockfile
-flutter run -d linux
-```
+- Windows x64。运行安装包，或解压完整免安装目录并运行 Dorm.exe。
+- Android ARM64。安装 APK。在 Dorm 房间入座后使用横屏牌桌，离桌后恢复系统方向设置。
+- 网页。通过 Windows 或 Android 房主分享的局域网链接打开斗地主牌桌，浏览器访客可以匿名入座。
 
 ## 使用方式
 
@@ -102,11 +97,7 @@ Dorm 在所有 IPv4 接口监听，使用 HTTP。能访问该地址的人都可�
 dart format --output=none --set-exit-if-changed lib test
 flutter analyze
 flutter test --reporter expanded
-flutter build linux --release --target-platform linux-x64
-./build/linux/x64/release/bundle/dormos
 ```
-
-Linux 分发需要整个 `build/linux/x64/release/bundle`。解包后从图形会话运行 `dormos`。WSL2 中需要能显示 Linux 窗口的 WSLg。可用 `ldd build/linux/x64/release/bundle/dormos` 排查目标机器缺失的共享库。应用更新时保留用户数据目录。
 
 ### Windows x86_64 构建
 
@@ -169,7 +160,7 @@ unzip -Z1 build/app/outputs/flutter-apk/app-arm64-v8a-release.apk | grep '^lib/'
 | `test/` | 数据、业务规则和 Widget 测试 |
 | `docs/development.md` | 开发与 AI 辅助记录 |
 
-SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Linux 应用支持目录默认使用 `$XDG_DATA_HOME`（未设置时为 `~/.local/share`）。Windows 沿用早期版本在 `org.dormos/dormos` 下的应用支持目录。关闭应用后可以复制该数据库文件做备份。业务数据在同一台设备上重启后保留。
+SQLite 文件位于平台的应用支持目录下 `dormos/dormos.sqlite3`。Windows 沿用早期版本在 `org.dormos/dormos` 下的应用支持目录。关闭应用后可以复制该数据库文件做备份。业务数据在同一台设备上重启后保留。
 
 Dorm 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 作为中文回退字体。字体按 SIL Open Font License 1.1 发布，许可文本保存在 `assets/fonts/OFL-NotoSansSC.txt`。
 
@@ -189,6 +180,10 @@ Dorm 随包提供 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/n
 在「寝室工具箱 → 斗地主」进入原生大厅。本机房间可用电脑玩家填补座位。局域网房间可从同网 Dorm 客户端搜索，也可分享网页链接或二维码，网页访客可跳过寝室身份认领。牌桌端口独立于寝室工作台。
 
 支持 2 至 8 人、1 至 4 副牌、经典、单癞子和天地癞子。可调整随机舍弃张数、选择平分或随机给一位玩家全部余牌，也可以关闭地主或关闭底牌。地主局采用叫分、炸弹翻倍与春天结算，无地主局先出完者获胜。房间可聊天、丢番茄并切换音效。
+
+创建或调整房间时可以开启连炸，或者关闭四带二和四带两对。连炸由 3 至 A 范围内两组或更多相邻点数的四张牌组成，允许用癞子补牌。连炸始终大于普通炸弹。同为连炸时先比较组数，再比较软硬和最高点数。单组大小王构成王炸，两组为双王炸，组数越多越大。「王炸大于连炸」开启时，各级王炸大于连炸。关闭时，各级王炸位于普通炸弹和连炸之间。新建房间默认开启连炸与两种四带二，并采用连炸大于各级王炸的顺序。牌桌始终显示连炸开关状态，关掉后选到连炸会提示房间规则。
+
+网页横屏牌桌用内置 Canvas 绘制。手机可以使用「全屏」，浏览器未切换物理方向时牌桌仍按横向尺寸显示。点选或拖过手牌即可多选，支持提前选牌。选牌抬起时保留相邻牌的点数可见。自己的出牌显示在操作区上方，对手的出牌靠对应座位一侧。「不要」与「管上」使用不同颜色。标准手牌保持一排，牌多时自动分成两排。可从「更多」展开手牌、查看上一手或离开房间。
 
 连接同一 GitHub 仓库并拥有写权限后，室友的在线房间会和局域网房间一起显示。在线牌桌采用独立的 \`dormos-card-rooms\` 分支，通常间隔约七秒轮询，出牌和响应可能跨越多轮同步。房主需保持 Dorm 运行。仓库保存大厅标题、人数等资料，私人手牌和操作消息通过每个座位的加密通道传输。网页牌桌通过局域网连接房主，Git 联机由原生客户端承载。
 

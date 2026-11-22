@@ -14,6 +14,7 @@ const _files = {
   '/': (file: 'index.html', type: 'html'),
   '/dorm.css': (file: 'dorm.css', type: 'css'),
   '/dorm.js': (file: 'dorm.js', type: 'javascript'),
+  '/tools.js': (file: 'tools.js', type: 'javascript'),
 };
 
 const _cardFiles = {
@@ -21,6 +22,7 @@ const _cardFiles = {
   '/cards': (file: 'cards.html', type: 'html'),
   '/cards.css': (file: 'cards.css', type: 'css'),
   '/cards.js': (file: 'cards.js', type: 'javascript'),
+  '/cards_surface.js': (file: 'cards_surface.js', type: 'javascript'),
 };
 
 class DormLanServer extends ChangeNotifier {
@@ -238,7 +240,7 @@ class DormLanServer extends ChangeNotifier {
         final rules = body['rules'];
         if (rules is! RoomJson) throw const InputException('请填写房间规则');
         final seat = cards.create(
-          CardRules.fromJson(rules),
+          CardRules.fromJson(rules, newRoom: true),
           name: body['name'] as String?,
           scope: 'lan',
         );
@@ -268,6 +270,11 @@ class DormLanServer extends ChangeNotifier {
         cards.requireScope(room, 'lan');
         _json(response, HttpStatus.ok, {
           'options': cards.options((room: room, token: token), body),
+        });
+      case ('POST', ['cards', final room, 'hints']):
+        cards.requireScope(room, 'lan');
+        _json(response, HttpStatus.ok, {
+          'hints': cards.hints((room: room, token: token), body),
         });
       case ('POST', ['cards', final room, final action]):
         cards.requireScope(room, 'lan');

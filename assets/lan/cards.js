@@ -2,12 +2,20 @@
 const by = id => document.getElementById(id);
 const content = by('content');
 const dialog = by('dialog');
+const chat = by('chat');
+const message = by('message');
 const codePattern = /^[2-9A-HJ-NP-Z]{7}$/;
 const queryRoom = new URL(location.href).searchParams.get('room')?.toUpperCase();
 const modes = {classic:'经典',wild:'癞子',doubleWild:'天地癞子'};
 let session = null;
 let state = null;
 let selected = new Set();
+let hints = null;
+let selectionRevision = 0;
+let loadingHints = false;
+let checkingPlay = false;
+let hintCursor = 0;
+let preferred = null;
 let currentEvents = 0;
 let pending = false;
 let noticeTimer;
@@ -96,6 +104,7 @@ async function request(path, data, seat = session) {
   return result;
 }
 function openDialog(title, ...parts) {
+  delete dialog.dataset.playChoice;
   dialog.replaceChildren(el('div',{class:'stack'},el('h2',{},title),parts));
   if (!dialog.open) dialog.showModal();
 }
@@ -103,7 +112,9 @@ function enter(next) {
   session = next;
   state = null;
   currentEvents = 0;
-  selected.clear();
+  releaseFan();
+  setSelection(new Set());
+  hints = null;
   try { sessionStorage.setItem('dorm-cards:' + next.room, next.token); } catch (_) {}
   const target = new URL(location.href);
   target.searchParams.set('room', next.room);
@@ -129,16 +140,26 @@ function rulesForm(previous = null) {
   const remainder = select('remainder',[['equal','必须平分'],['extra','随机多发给一人']],old.remainder);
   const landlord = check('landlord','启用地主',old.landlord);
   const reserve = check('reserve','给地主底牌',old.bottom > 0);
+  const chain = check('chainBombs','连炸',old.chainBombs ?? (previous === null));
+  const rocket = check('rocketBeatsChain','王炸大于连炸',old.rocketBeatsChain ?? (previous !== null));
+  const bombOrder = el('small');
+  const four = check('fourWithTwo','四带二／四带两对',old.fourWithTwo ?? true);
   const summary = el('p',{class:'muted'});
   const reserveRow = el('div',{class:'stack'},reserve,line('底牌张数',bottom));
   function rule() {
     const hasLandlord = landlord.querySelector('input').checked;
     const hasBottom = hasLandlord && reserve.querySelector('input').checked;
     return {players:Number(players.value),decks:Number(decks.value),discard:Number(discard.value),
-      landlord:hasLandlord,bottom:hasBottom ? Number(bottom.value) : 0,mode:mode.value,remainder:remainder.value};
+      landlord:hasLandlord,bottom:hasBottom ? Number(bottom.value) : 0,mode:mode.value,remainder:remainder.value,
+      chainBombs:chain.querySelector('input').checked,rocketBeatsChain:rocket.querySelector('input').checked,
+      fourWithTwo:four.querySelector('input').checked};
   }
   function counts() {
     const r = rule();
+    rocket.querySelector('input').disabled = !r.chainBombs;
+    bombOrder.textContent = r.rocketBeatsChain
+      ? '普通炸弹 ＜ 连炸 ＜ 王炸 ＜ 双王炸'
+      : '普通炸弹 ＜ 王炸 ＜ 双王炸 ＜ 连炸';
     reserveRow.hidden = !r.landlord;
     bottom.disabled = !r.landlord || !reserve.querySelector('input').checked;
     const available = r.decks*54-r.bottom-r.discard;
@@ -146,6 +167,7 @@ function rulesForm(previous = null) {
   }
   const form = el('form',{class:'stack'},
     line('玩法',mode),el('div',{class:'duo'},line('人数',players),line('副数',decks)),
+    chain,el('div',{class:'rule-order'},rocket,bombOrder),four,
     landlord,reserveRow,line('随机舍弃张数',discard),line('余牌处理',remainder),summary,
     el('div',{class:'actions'},
       button('取消',() => dialog.close()),
@@ -164,6 +186,7 @@ function rulesForm(previous = null) {
   counts();
 }
 function buildLobby(rooms) {
+  clearBoard();
   const choices = rooms.map(room => el('article',{class:'room'},
     el('div',{},el('h3',{},room.host+'的牌桌'),el('small',{},room.players+'/'+room.capacity+' 人 · '+(modes[room.mode] ?? '斗地主'))),
     button('加入',() => chooseIdentity(async name => enter(await request('/'+room.room+'/join',{name},null))),{design:'primary'})));
@@ -176,78 +199,310 @@ function buildLobby(rooms) {
     el('h2',{},'局域网房间'),
     choices.length ? choices : el('p',{class:'muted'},'还没有可加入的牌桌。')));
 }
-const rankNames = {11:'J',12:'Q',13:'K',14:'A',15:'2',16:'小王',17:'大王'};
-const rankName = rank => rankNames[rank] ?? String(rank);
-const rankOf = id => id%54 < 52 ? 3+Math.floor((id%54)/4) : id%54-36;
-function face(id, shown, clickable = false) {
-  const raw = rankOf(id);
-  const suit = id%54 < 52 ? id%4 : null;
-  const wild = clickable && state.wild.includes(raw);
-  const label = rankName(shown ?? raw);
-  const mark = suit === null ? '★' : ['♠','♥','♦','♣'][suit];
-  const attrs = {class:'face'+(suit===1 || suit===2 || raw===17 ? ' red':'')+(wild?' wild':'')};
-  if (clickable) {
-    attrs.type = 'button'; attrs['aria-pressed'] = String(selected.has(id));
-    attrs['aria-label'] = label+' '+mark+(wild?' 癞子':'');
-  }
-  const node = el(clickable?'button':'span',attrs,el('span',{},label),el('small',{},wild?'癞':mark));
-  if (clickable) node.addEventListener('click',() => {
-    if (!selected.delete(id)) selected.add(id);
-    node.setAttribute('aria-pressed',String(selected.has(id)));
-    const play = by('play');
-    if (play) {play.disabled = selected.size===0;play.textContent='出牌 · '+selected.size;}
-  });
-  return node;
+function face(card) {
+  const rank = card.rank ?? rankOf(card.id);
+  const suit = suitOf(card.id);
+  return el('span',{class:'mini-face'+(suit==='♦'||suit==='♥'||rank===17?' red':'')},
+    el('strong',{},rankName(rank)),suit ? el('span',{},suit) : null);
 }
-const playerName = id => state?.people.find(person => person.id === id)?.name ?? '';
+const playerName = id => state?.people.find(person => person.id===id)?.name ?? '';
+const gestureActive = () => Boolean(board?.hand.gesture);
+
+const moveLabels = {lead:'先出',beat:'管上',pass:'不要'};
+
+function turnMoves(s) {
+  const moves = new Map(s.people.map(player=>[player.id,player.move]));
+  if (s.people.some(player=>'move' in player) || !s.last || s.leader==null) return moves;
+  const play = s.events.findLast(event=>event.from===s.leader && ['play','bomb','rocket'].includes(event.kind));
+  if (!play) return moves;
+  moves.set(s.leader,'lead');
+  for (const event of s.events) {
+    if (event.kind==='pass' && event.id>play.id) moves.set(event.from,'pass');
+  }
+  return moves;
+}
+
+function moveTag(move) {
+  return moveLabels[move] ? el('span',{class:'move-tag move-'+move},moveLabels[move]) : null;
+}
+
+function seatView(player, move) {
+  if (!player) return el('div',{class:'seat vacant'},'空座');
+  const role = player.id===state.landlord ? '地主' : '';
+  const seat = button('',()=>openDialog(player.name,
+    button('🍅 丢番茄',async()=>{await act('tomato',{target:player.id});dialog.close();}),
+    button('关闭',()=>dialog.close())),{design:'seat'+(player.id===state.turn?' turn':'')});
+  seat.dataset.seat = player.id;
+  if (moveLabels[move]) seat.dataset.move = move;
+  seat.title = [player.name,role,moveLabels[move],player.cards+' 张'].filter(Boolean).join(' · ');
+  seat.append(el('span',{class:'seat-avatar','aria-hidden':'true'},player.bot?'机':Array.from(player.name)[0]),
+    el('span',{class:'seat-text'},el('b',{},player.name),
+      el('span',{class:'seat-meta'},role ? el('small',{},role) : null,moveTag(move))),
+    el('strong',{class:'seat-count','aria-label':player.cards+' 张'},player.cards));
+  return seat;
+}
+
+function opponentSeats(s) {
+  const me = Math.max(0,s.people.findIndex(person=>person.id===s.you));
+  const others = [];
+  for (let step=1;step<s.people.length;step++) others.push(s.people[(me+step)%s.people.length]);
+  while (others.length<s.rules.players-1) others.push(null);
+  return others.reverse();
+}
+
+function canSelectCards() {
+  return session && state?.phase==='playing' && !pending;
+}
+function sameHand(a,b) {
+  return a!=null && b!=null && a.room===b.room && a.you===b.you &&
+    a.hand.length===b.hand.length && a.hand.every((id,index)=>id===b.hand[index]);
+}
+function setSelection(cards, pattern=null) {
+  selected = cards;
+  preferred = pattern;
+  selectionRevision++;
+  if (pattern===null) hintCursor = 0;
+}
+function changeSelection(cards) {
+  setSelection(cards);
+  renderRoom();
+}
+function releaseFan() {
+  board?.hand.cancel();
+}
+
+function showCards(title,cards,editable=false) {
+  const list = el('div',{class:'inspect-cards'});
+  for (const card of cards) {
+    if (!editable) {
+      list.append(face(card));
+      continue;
+    }
+    const key = button('',()=>{
+      if (!canSelectCards() || !state.hand.includes(card.id)) return;
+      const next = new Set(selected);
+      if (!next.delete(card.id)) next.add(card.id);
+      changeSelection(next);
+      key.setAttribute('aria-pressed',String(next.has(card.id)));
+    },{design:'inspect-card'});
+    key.setAttribute('aria-label',rankName(rankOf(card.id))+suitOf(card.id));
+    key.setAttribute('aria-pressed',String(selected.has(card.id)));
+    key.append(face(card));
+    list.append(key);
+  }
+  openDialog(title,list,button('完成',()=>dialog.close(),{design:'primary'}));
+}
+
+function showBottom() {
+  const bottom = state.bottom.map(id=>({id}));
+  if (bottom.length) showCards('地主底牌',bottom);
+  else openDialog('地主底牌',el('p',{},'底牌 '+state.rules.bottom+' 张 · 叫分后揭晓'),button('关闭',()=>dialog.close()));
+}
+function updateChat() {
+  if (!board?.history.isConnected) return;
+  board.history.replaceChildren(...state.events.slice(-24).reverse().map(event=>
+    el('p',{},event.kind==='chat'?playerName(event.from)+' · '+event.text:event.text)));
+}
+function showChat() {
+  openDialog('牌桌消息',board.history,chat,button('关闭',()=>dialog.close()));
+  chat.hidden = false;
+  updateChat();
+}
+function settingsMenu() {
+  const extras = [];
+  if (state.you===state.host && ['playing','bidding'].includes(state.phase)) {
+    extras.push(button('结束牌局',()=>openDialog('结束当前牌局？',
+      button('取消',()=>dialog.close()),button('结束牌局',async()=>{await act('abort');dialog.close();}))));
+  }
+  const last = state.last ?? state.previousTrick?.play;
+  if (last) extras.push(button('查看上一手',()=>showCards(last.label,last.cards)));
+  if (state.hand.length) extras.push(button('展开手牌',()=>showCards('我的手牌',state.hand.map(id=>({id})),canSelectCards())));
+  openDialog('牌桌菜单',extras,
+    button(muted?'打开音效':'关闭音效',()=>{by('audio').click();dialog.close();}),
+    button('离开房间',leave),button('返回牌桌',()=>dialog.close(),{design:'primary'}));
+}
+async function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+    return;
+  }
+  try {
+    await document.documentElement.requestFullscreen();
+    ownedFullscreen = true;
+  } catch (_) {
+    notice('浏览器保留了工具栏，牌桌仍可横屏操作');
+    return;
+  }
+  if (matchMedia('(pointer: coarse)').matches) {
+    try { await screen.orientation?.lock?.('landscape'); } catch (_) { /* CSS keeps the table horizontal. */ }
+  }
+}
+
+let board = null;
+let ownedFullscreen = false;
+function clearBoard() {
+  if (!board) return;
+  board.hand.dispose();
+  board.trick.dispose();
+  board = null;
+  content.replaceChildren();
+  document.body.classList.remove('at-table');
+  if (ownedFullscreen && document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  ownedFullscreen = false;
+}
+
+function mountBoard() {
+  const roomText = el('div',{class:'table-identity'});
+  const bottom = button('',showBottom,{design:'bottom-preview',title:'查看地主底牌'});
+  const fullscreen = button('全屏',toggleFullscreen,{title:'横屏全屏'});
+  fullscreen.hidden = !document.fullscreenEnabled;
+  const seats = el('div',{class:'opponents','aria-label':'其他玩家'});
+  const status = el('p',{class:'turn-status',role:'status'});
+  const wild = el('span',{class:'wild-status'});
+  const last = el('div',{class:'last-play'});
+  const played = el('div',{class:'played-canvas'});
+  const playArea = el('div',{class:'play-area',hidden:true},last,played);
+  const ownMove = el('span',{class:'own-move'});
+  const controls = el('div',{class:'play-controls'});
+  const count = el('span',{class:'own-count'});
+  const countSelected = el('span',{class:'selection-count'});
+  const clear = button('清空',()=>changeSelection(new Set()),{design:'text-action'});
+  const expand = button('展开手牌',()=>showCards('我的手牌',state.hand.map(id=>({id})),canSelectCards()),
+    {design:'text-action'});
+  expand.hidden = true;
+  const hand = el('div',{class:'hand-canvas',role:'group','aria-label':'我的手牌'});
+  const history = el('div',{class:'message-history'});
+  const surface = el('section',{class:'card-stage','aria-label':'斗地主牌桌'},
+    el('div',{class:'table-head'},roomText,el('div',{class:'bottom-slot'},bottom),
+      el('div',{class:'head-tools'},button('消息',showChat),button('分享',share),fullscreen,button('更多',settingsMenu))),
+    seats,
+    el('div',{class:'trick-zone'},el('div',{class:'play-spots'},playArea)),
+    el('div',{class:'action-row'},el('div',{class:'action-status'},status,wild),controls),
+    el('div',{class:'hand-line'},count,ownMove,countSelected,clear,expand),
+    hand);
+  document.body.classList.add('at-table');
+  content.replaceChildren(surface);
+  return {surface,roomText,bottom,seats,status,wild,last,playArea,controls,count,ownMove,countSelected,clear,expand,history,
+    hand:new CardSurface(hand,{onSelection:changeSelection,onDense:dense=>{expand.hidden=!dense;}}),
+    trick:new CardSurface(played),version:null,playStamp:null};
+}
+
 function renderRoom() {
   if (!state) return;
+  board ??= mountBoard();
   const s = state;
-  const own = s.you === s.turn;
-  const host = s.you === s.host;
-  const active = ['bidding','playing'].includes(s.phase);
-  const title = s.phase === 'finished' ? s.result :
-    s.phase === 'bidding' ? (own?'轮到你叫分':playerName(s.turn)+'正在叫分') :
-    s.phase === 'playing' ? (own?'轮到你出牌':playerName(s.turn)+'正在出牌') : '等待发牌';
-  const seat = p => el('div',{class:'seat'+(p.id===s.turn?' turn':''),'data-seat':p.id},p.name,
-    el('small',{},(p.id===s.you?'我 · ':'')+(p.id===s.landlord?'地主 · ':'')+p.cards+' 张'),
-    p.id===s.you?null:button('🍅',() => act('tomato',{target:p.id}),{title:'向'+p.name+'丢番茄'}));
-  const actions = [];
+  const own = s.you===s.turn;
+  const host = s.you===s.host;
+  const bidding = s.phase==='bidding';
+  const playing = s.phase==='playing';
+  const active = bidding || playing;
+  const activeRuleNames = [modes[s.rules.mode],s.rules.decks+' 副'];
+  activeRuleNames.push(s.rules.chainBombs ? '连炸开' : '连炸关');
+  const controls = [];
   if (host && !active) {
-    actions.push(button(s.phase==='finished'?'再来一局':'发牌开局',() => act('start'),{design:'primary',disabled:s.people.length!==s.rules.players}));
-    actions.push(button('添加电脑玩家',() => act('bot'),{disabled:s.people.length>=s.rules.players}));
-    if (s.people.some(p => p.bot)) actions.push(button('移除电脑玩家',() => act('removeBot')));
-    actions.push(button('调整规则',() => rulesForm(s.rules)));
+    controls.push(button(s.phase==='finished'?'再来一局':'发牌开局',()=>act('start'),
+      {design:'primary',disabled:pending || s.people.length!==s.rules.players}));
+    controls.push(button('添加电脑玩家',()=>act('bot'),{disabled:pending || s.people.length>=s.rules.players}));
+    if (s.people.some(player=>player.bot)) controls.push(button('移除电脑玩家',()=>act('removeBot'),{disabled:pending}));
+    controls.push(button('调整规则',()=>rulesForm(s.rules),{disabled:pending}));
   }
-  if (host && active) actions.push(button('结束牌局',() => {
-    openDialog('结束当前牌局？',button('取消',() => dialog.close()),button('结束牌局',() => {dialog.close();return act('abort');}));
-  }));
-  if (own && s.phase==='bidding') {
-    actions.push(button('不叫',() => act('bid',{bid:0})));
-    for (let bid=s.bid+1;bid<=3;bid++) actions.push(button('叫 '+bid+' 分',() => act('bid',{bid}),{design:'primary'}));
+  if (own && bidding) {
+    controls.push(button('不叫',()=>act('bid',{bid:0},s.turnVersion),{disabled:pending}));
+    for (let bid=s.bid+1;bid<=3;bid++) {
+      controls.push(button('叫 '+bid+' 分',()=>act('bid',{bid},s.turnVersion),{design:'primary',disabled:pending}));
+    }
   }
-  if (own && s.phase==='playing') {
-    const play = button('出牌 · '+selected.size,choosePlay,{design:'primary',disabled:selected.size===0});
-    play.id='play';
-    actions.push(play,button('不要',() => act('pass'),{disabled:!s.last}));
+  if (own && playing) {
+    controls.push(button('不出',()=>act('pass',{},s.turnVersion),{disabled:pending || !s.last}));
+    controls.push(button('提示',hint,{disabled:pending}));
+    controls.push(button('出牌',choosePlay,{design:'primary',disabled:pending || !selected.size}));
   }
-  content.replaceChildren(el('div',{class:'stack'},
-    el('div',{class:'room'},el('div',{},el('h2',{},'房间 '+s.room),el('small',{},modes[s.rules.mode]+' · '+s.rules.players+' 人 · '+s.rules.decks+' 副')),
-      el('div',{class:'actions'},button('分享',share),button('离开',leave))),
-    el('section',{class:'felt'},el('div',{class:'seats'},s.people.map(seat)),
-      el('h2',{},title),
-      s.wild.length?el('small',{},'癞子 · '+s.wild.map(rankName).join('、')):null,
-      s.bottom.length?el('div',{class:'played'},'地主底牌',s.bottom.map(id => face(id))):null,
-      s.last?el('div',{class:'played'},playerName(s.leader)+' · '+s.last.label,
-        s.last.cards.map(card => face(card.id,card.rank))):null),
-    el('div',{class:'actions'},actions),
-    s.hand.length?el('div',{class:'stack'},el('h3',{},'我的手牌 · '+s.hand.length+' 张'),
-      el('div',{class:'hand'},s.hand.map(id => face(id,null,s.phase==='playing')))):null,
-    el('details',{class:'history'},
-      el('summary',{},'牌桌聊天 · '+s.events.length+' 条'),
-      s.events.slice().reverse().map(event => el('p',{},event.kind==='chat'?playerName(event.from)+' · '+event.text:event.text))),
-  ));
-  by('chat').hidden = false;
+  if (board.version!==s.version) {
+    board.version = s.version;
+    const opponents = opponentSeats(s);
+    const moves = turnMoves(s);
+    board.roomText.replaceChildren(el('b',{},s.room),el('span',{},activeRuleNames.join(' · ')));
+    const bottomCount = s.bottom.length || (bidding ? s.rules.bottom : 0);
+    board.bottom.hidden = bottomCount === 0;
+    if (bottomCount) {
+      board.bottom.setAttribute('aria-label','地主底牌 '+bottomCount+' 张');
+      const visible = Math.min(3,bottomCount);
+      board.bottom.replaceChildren(...Array.from({length:visible},(_,index)=>
+        s.bottom.length ? face({id:s.bottom[index]}) : el('span',{class:'bottom-back','aria-hidden':'true'})));
+      if (bottomCount>visible) board.bottom.append(el('span',{class:'extra-bottom'},'+'+(bottomCount-visible)));
+    }
+    board.seats.replaceChildren(...opponents.map(player=>seatView(player,moves.get(player?.id))));
+    board.status.textContent = s.phase==='finished' ? (s.result || '牌局结束') :
+      bidding ? (own?'轮到你叫分':playerName(s.turn)+'正在叫分') :
+      playing ? (own?(s.last?'轮到你出牌':'轮到你先出'):playerName(s.turn)+'正在出牌') :
+      (s.people.length===s.rules.players?'座位已满，可以发牌':'等待其他玩家入座');
+    board.status.classList.toggle('your-turn',own && active);
+    const previousTrick = s.last ? null : s.previousTrick;
+    const played = s.last ?? previousTrick?.play;
+    const actor = s.leader ?? previousTrick?.leader;
+    board.playArea.hidden = !played;
+    if (played) {
+      const ownPlay = actor===s.you;
+      const index = opponents.findIndex(player=>player?.id===actor);
+      const anchor = ownPlay || index<0 ? .5 : (index+.5)/opponents.length;
+      board.playArea.dataset.owner = ownPlay ? 'self' : 'opponent';
+      board.playArea.dataset.seat = String(actor);
+      board.playArea.dataset.bomb = String(Boolean(played.bomb));
+      board.playArea.style.setProperty('--play-x',anchor*100+'%');
+      board.playArea.style.setProperty('--play-width',Math.min(580,Math.max(145,106+played.cards.length*19))+'px');
+      const tag = previousTrick ? el('span',{class:'move-tag move-previous'},'上轮') : moveTag(moves.get(actor));
+      board.last.replaceChildren(el('strong',{},ownPlay?'我的出牌':playerName(actor)+' 出牌'),
+        ...[tag].filter(Boolean), el('span',{},played.label));
+      const stamp = [actor,played.key,...played.cards.map(card=>card.id)].join('/');
+      if (stamp!==board.playStamp && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        board.playArea.animate([
+          {opacity:.5,transform:'translateY('+(ownPlay?8:-8)+'px) scale(.98)'},
+          {opacity:1,transform:'translateY(0) scale(1)'},
+        ],{duration:195,easing:'cubic-bezier(.2,.8,.2,1)'});
+      }
+      board.playStamp = stamp;
+    } else board.playStamp = null;
+    board.trick.update(played?.cards ?? []);
+    board.count.textContent = '我 · '+s.hand.length+' 张'+(s.you===s.landlord?' · 地主':'');
+    board.ownMove.replaceChildren(...[moveTag(moves.get(s.you))].filter(Boolean));
+    board.wild.textContent = playing && s.wild.length ? '癞子 '+s.wild.map(rankName).join('、') : '';
+    board.wild.hidden = !board.wild.textContent;
+    updateChat();
+  }
+  board.controls.hidden = !controls.length;
+  board.controls.replaceChildren(...controls);
+  board.countSelected.textContent = selected.size ? '已选 '+selected.size+' 张' : '';
+  board.clear.hidden = !selected.size;
+  board.hand.node.hidden = !s.hand.length;
+  board.count.parentNode.hidden = !s.hand.length;
+  board.hand.update(s.hand.map(id=>({id})),selected,new Set(s.wild),canSelectCards());
+}
+
+function isOwnTurn(seat, revision) {
+  return session === seat && state?.phase === 'playing' &&
+    state.you === state.turn && state.turnVersion === revision;
+}
+async function hint() {
+  const seat = session;
+  const revision = state?.turnVersion;
+  const currentSelection = selectionRevision;
+  if (!seat || !isOwnTurn(seat, revision) || pending || loadingHints || checkingPlay || gestureActive()) return;
+  if (hints === null) {
+    loadingHints = true;
+    try {
+      const result = await request('/'+seat.room+'/hints',{turnVersion:revision},seat);
+      if (!isOwnTurn(seat, revision) || selectionRevision !== currentSelection) return;
+      hints = result.hints ?? [];
+    } finally { loadingHints = false; }
+  }
+  if (!hints.length) {
+    notice('没有可用的提示');
+    return;
+  }
+  const play = hints[hintCursor % hints.length];
+  hintCursor++;
+  setSelection(new Set(play.cards.map(card => card.id)), play.key);
+  renderRoom();
 }
 function share() {
   const input = el('input',{readonly:true,value:location.href,'aria-label':'牌桌链接'});
@@ -263,45 +518,78 @@ function leave() {
     },{design:'primary'}));
 }
 async function choosePlay() {
+  const seat = session;
+  const revision = state?.turnVersion;
+  if (!seat || !isOwnTurn(seat, revision) || pending || checkingPlay || gestureActive() || !selected.size) return;
   const cards = [...selected];
-  const revision = state.turnVersion;
-  const {options} = await request('/'+session.room+'/options',{cards,turnVersion:revision});
-  if (options.length === 1) return act('play',{cards,pattern:options[0].key},revision);
-  openDialog('选择癞子替代方式',options.map(option =>
+  const suggested = preferred;
+  const choiceRevision = selectionRevision;
+  const stillSelected = () => isOwnTurn(seat, revision) && selectionRevision === choiceRevision;
+  let options;
+  checkingPlay = true;
+  try {
+    ({options} = await request('/'+seat.room+'/options',{cards,turnVersion:revision},seat));
+  } finally { checkingPlay = false; }
+  if (!stillSelected()) return;
+  const chosen = options.find(option => option.key === suggested) ?? (options.length === 1 ? options[0] : null);
+  if (chosen) return act('play',{cards,pattern:chosen.key},revision);
+  openDialog('选择出牌方式',options.map(option =>
     button(option.label+' · '+rankName(option.high),() => {
       dialog.close();
-      return act('play',{cards,pattern:option.key},revision);
+      if (stillSelected()) return act('play',{cards,pattern:option.key},revision);
     })),button('取消',() => dialog.close()));
+  dialog.dataset.playChoice = 'true';
 }
 async function act(action, data = {}, revision = state?.turnVersion) {
   if (pending || !session) return;
+  if (['play','pass','bid'].includes(action) && revision !== state?.turnVersion) {
+    notice('回合已变化，请刷新后再试');
+    return;
+  }
+  const seat = session;
   pending = true;
+  renderRoom();
   try {
-    const value = await request('/'+session.room+'/'+action,{...data,turnVersion:revision});
+    const value = await request('/'+seat.room+'/'+action,{...data,turnVersion:revision},seat);
+    if (session !== seat) return;
     if (value.left) {
-      try { sessionStorage.removeItem('dorm-cards:'+session.room); } catch (_) {}
+      try { sessionStorage.removeItem('dorm-cards:'+seat.room); } catch (_) {}
+      releaseFan();
       state = session = null;
-      selected.clear();
-      by('chat').hidden = true;
+      setSelection(new Set());
+      clearBoard();
       await refresh(true);
-    } else accept(value);
-  } finally { pending = false; }
+    } else {
+      pending = false;
+      accept(value);
+    }
+  } finally {
+    pending = false;
+    renderRoom();
+  }
 }
 function accept(value) {
   if (!value.phase || (state && value.version <= state.version)) return;
-  if (value.turnVersion !== state?.turnVersion) selected.clear();
+  const turnChanged = value.turnVersion !== state?.turnVersion;
+  const samePlayingHand = state?.phase === 'playing' &&
+    value.phase === 'playing' && sameHand(state, value);
+  if (!samePlayingHand || (turnChanged && state.turn === state.you)) {
+    releaseFan();
+    setSelection(new Set());
+  }
+  if (turnChanged || !samePlayingHand) {
+    hints = null;
+    preferred = null;
+    hintCursor = 0;
+    selectionRevision++;
+    if (dialog.dataset.playChoice === 'true') dialog.close();
+  }
   const events = state ? value.events.filter(item => item.id>currentEvents) : [];
   state = value;
   currentEvents = value.events.at(-1)?.id ?? 0;
-  const wasOpen = content.querySelector('details')?.open;
   renderRoom();
-  if (wasOpen) content.querySelector('details').open=true;
-  const tomato = events.findLast(event => event.kind==='tomato');
-  if (tomato) content.querySelector('[data-seat="'+tomato.target+'"]')?.classList.add('splat');
-  if (events.some(event => ['rocket','bomb'].includes(event.kind))) {
-    content.querySelector('.felt')?.classList.add('impact');
-  }
-  if (events.some(event => event.kind === 'deal')) content.querySelector('.hand')?.classList.add('deal');
+  const tomato = events.findLast(event=>event.kind==='tomato');
+  if (tomato) board.seats.querySelector('[data-seat="'+tomato.target+'"]')?.classList.add('splat');
   if (events.length) sound(events.at(-1).kind);
 }
 let fetching=false;
@@ -320,20 +608,22 @@ async function refresh(force=false) {
   } catch (error) {
     if (session && error.message.includes('座位已失效')) {
       try { sessionStorage.removeItem('dorm-cards:'+session.room); } catch (_) {}
+      releaseFan();
       session = state = null;
-      by('chat').hidden = true;
+      setSelection(new Set());
+      clearBoard();
       notice('座位已失效，请重新加入');
       setTimeout(() => run(refresh), 100);
     } else throw error;
   } finally { fetching=false; }
 }
-by('chat').addEventListener('submit',event => {
+chat.addEventListener('submit',event=>{
   event.preventDefault();
-  if (pending || !by('message').value.trim()) return;
-  run(async () => {
-    const message=by('message');
-    await act('chat',{text:message.value.trim()});
-    message.value='';
+  const text = message.value.trim();
+  if (pending || !text) return;
+  run(async()=>{
+    await act('chat',{text});
+    message.value = '';
   });
 });
 run(async () => {

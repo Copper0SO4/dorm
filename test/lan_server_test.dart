@@ -133,8 +133,12 @@ void main() {
       expect(page.csp, contains("script-src 'self'"));
       expect((await request('/dorm.css')).status, 200);
       expect((await request('/dorm.js')).status, 200);
+      expect((await request('/tools.js')).status, 200);
       expect((await request('/assets/lan/index.html')).status, 404);
       expect((await request('/api/members')).text, contains('甲'));
+      final toolsJson = jsonDecode((await request('/api/tools')).text) as Map;
+      expect(toolsJson['members'], ['甲', '乙', '丙']);
+      expect((toolsJson['presets'] as List), isNotEmpty);
 
       final task = {'day': dayKey(today())};
       expect(
@@ -241,6 +245,44 @@ void main() {
     expect((await request('/api/ledger/${bill.id}')).status, 400);
     expect(jsonDecode((await request('/api/ledger')).text)['count'], 0);
     expect(writes, 10);
+
+    await post('/api/members/save', {'name': '丁'});
+    final added = repository.members().singleWhere((m) => m.name == '丁');
+    await post('/api/members/active', {'id': added.id, 'active': false});
+    expect(
+      repository.members().singleWhere((m) => m.id == added.id).active,
+      isFalse,
+    );
+    await post('/api/members/delete', {'id': added.id});
+    expect(repository.members().any((m) => m.id == added.id), isFalse);
+
+    await post('/api/ledger', {
+      'title': '批量核销测试',
+      'shared': '10.00',
+      'payerId': 1,
+      'participants': [1, 2],
+      'personal': <String, Object?>{},
+    });
+    final ledgerJson = jsonDecode((await request('/api/ledger')).text) as Map;
+    final openPairs = ledgerJson['openSettlements'] as List;
+    expect(openPairs, hasLength(1));
+    final pair = openPairs.single as Map;
+    final charge = (pair['charges'] as List).single as Map;
+    await post('/api/settlement', {
+      'debtorId': pair['debtorId'],
+      'payerId': pair['payerId'],
+      'expected': {'${charge['billId']}': charge['amount']},
+      'amount': '5.00',
+    });
+    expect(repository.openSettlements(), isEmpty);
+
+    final nextDay = today().add(const Duration(days: 1));
+    await post('/api/chores/generate', {'day': dayKey(nextDay)});
+    final tomorrowShift = repository.shifts(nextDay, nextDay).single;
+    await post('/api/chores/reassign', {'id': tomorrowShift.id, 'memberId': 2});
+    expect(repository.shifts(nextDay, nextDay).single.memberId, 2);
+    await post('/api/supplies/delete', {'id': supply.id});
+    expect(repository.supplies(), isEmpty);
   });
 }
 

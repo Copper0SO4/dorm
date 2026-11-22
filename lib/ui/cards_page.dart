@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -192,130 +193,186 @@ class _CardsPageState extends State<CardsPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('斗地主'),
-      leading: IconButton(
-        tooltip: '返回工具箱',
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => Navigator.pop(context),
-      ),
-    ),
-    body: SafeArea(
-      top: false,
-      child: ListenableBuilder(
-        listenable: session,
-        builder: (context, _) {
-          final view = session.view;
-          if (session.opened && view != null) {
-            return CardTable(session: session, view: view, share: _share);
-          }
-          if (session.opened) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  spacing: 14,
-                  children: [
-                    if (session.error == null)
-                      const CircularProgressIndicator(),
-                    Text(session.error ?? '正在加入牌桌…'),
-                    if (session.gitError case final failure?) Text(failure),
-                    TextButton(
-                      onPressed: session.cancelRemote,
-                      child: const Text('返回房间列表'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-          return PageBody(
-            storageKey: 'card-lobby',
-            children: [
-              PageHeading(
-                '斗地主牌桌',
-                '本机练手、局域网组局，或加入同一 GitHub 仓库的在线房间。',
-                actions: [
-                  OutlinedButton.icon(
-                    onPressed: session.working ? null : _joinLink,
-                    icon: const Icon(Icons.link),
-                    label: const Text('用链接加入'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: session.working ? null : _create,
-                    icon: const Icon(Icons.add),
-                    label: const Text('创建房间'),
-                  ),
-                ],
-              ),
-              Row(
-                spacing: 12,
-                children: [
-                  Expanded(
-                    child: Text(
-                      '公共房间',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: session.searching ? null : session.search,
-                    icon: const Icon(Icons.radar_outlined),
-                    label: Text(session.searching ? '正在搜索…' : '搜索局域网房间'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (session.error case final error?)
-                Text(
-                  error,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              if (session.gitError case final failure?) Text('在线大厅 · $failure'),
-              if (session.directory.isEmpty)
-                const EmptyPanel(
-                  icon: Icons.style_outlined,
-                  title: '暂时没有可加入的房间',
-                  detail: '可以创建牌桌，或让房主开启局域网分享。',
-                )
-              else
-                Column(
-                  spacing: 8,
-                  children: [
-                    for (final room in session.directory)
-                      Card(
-                        child: ListTile(
-                          onTap: session.working ? null : () => _join(room),
-                          leading: Icon(
-                            room.location == CardLocation.git
-                                ? Icons.cloud_outlined
-                                : Icons.wifi,
-                          ),
-                          title: Text('${room.info['host']}的牌桌'),
-                          subtitle: Text(
-                            '${_locations[room.location]} · ${room.info['players']}/${room.info['capacity']} 人 · ${_mode(room.info['mode'])}',
-                          ),
-                          trailing: const Icon(Icons.chevron_right),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: session,
+    builder: (context, _) {
+      final view = session.view;
+      if (session.opened && view != null) {
+        final table = CardTable(session: session, view: view, share: _share);
+        return Scaffold(
+          resizeToAvoidBottomInset: false,
+          body: SafeArea(
+            child: Platform.isAndroid ? _LandscapeRoom(child: table) : table,
+          ),
+        );
+      }
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('斗地主'),
+          leading: IconButton(
+            tooltip: '返回工具箱',
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: SafeArea(
+          top: false,
+          child: session.opened
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      spacing: 14,
+                      children: [
+                        if (session.error == null)
+                          const CircularProgressIndicator(),
+                        Text(session.error ?? '正在加入牌桌…'),
+                        if (session.gitError case final failure?) Text(failure),
+                        TextButton(
+                          onPressed: session.cancelRemote,
+                          child: const Text('返回房间列表'),
                         ),
+                      ],
+                    ),
+                  ),
+                )
+              : PageBody(
+                  storageKey: 'card-lobby',
+                  children: [
+                    PageHeading(
+                      '斗地主牌桌',
+                      '本机练手、局域网组局，或加入同一 GitHub 仓库的在线房间。',
+                      actions: [
+                        OutlinedButton.icon(
+                          onPressed: session.working ? null : _joinLink,
+                          icon: const Icon(Icons.link),
+                          label: const Text('用链接加入'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: session.working ? null : _create,
+                          icon: const Icon(Icons.add),
+                          label: const Text('创建房间'),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      spacing: 12,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '公共房间',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: session.searching ? null : session.search,
+                          icon: const Icon(Icons.radar_outlined),
+                          label: Text(session.searching ? '正在搜索…' : '搜索局域网房间'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (session.error case final error?)
+                      Text(
+                        error,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    if (session.gitError case final failure?)
+                      Text('在线大厅 · $failure'),
+                    if (session.directory.isEmpty)
+                      const EmptyPanel(
+                        icon: Icons.style_outlined,
+                        title: '暂时没有可加入的房间',
+                        detail: '可以创建牌桌，或让房主开启局域网分享。',
+                      )
+                    else
+                      Column(
+                        spacing: 8,
+                        children: [
+                          for (final room in session.directory)
+                            Card(
+                              child: ListTile(
+                                onTap: session.working
+                                    ? null
+                                    : () => _join(room),
+                                leading: Icon(
+                                  room.location == CardLocation.git
+                                      ? Icons.cloud_outlined
+                                      : Icons.wifi,
+                                ),
+                                title: Text('${room.info['host']}的牌桌'),
+                                subtitle: Text(
+                                  '${_locations[room.location]} · ${room.info['players']}/${room.info['capacity']} 人 · ${_mode(room.info['mode'])}',
+                                ),
+                                trailing: const Icon(Icons.chevron_right),
+                              ),
+                            ),
+                        ],
+                      ),
+                    if (!session.gitAvailable)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 16),
+                        child: Text('在设置中连接 GitHub 仓库后，同仓库室友的在线房间会出现在这里。'),
                       ),
                   ],
                 ),
-              if (!session.gitAvailable)
-                const Padding(
-                  padding: EdgeInsets.only(top: 16),
-                  child: Text('在设置中连接 GitHub 仓库后，同仓库室友的在线房间会出现在这里。'),
-                ),
-            ],
-          );
-        },
-      ),
-    ),
+        ),
+      );
+    },
   );
-
   String _mode(Object? value) =>
       CardMode.values.where((mode) => mode.name == value).firstOrNull?.label ??
       '自定义';
+}
+
+class _LandscapeRoom extends StatefulWidget {
+  const _LandscapeRoom({required this.child});
+  final Widget child;
+
+  @override
+  State<_LandscapeRoom> createState() => _LandscapeRoomState();
+}
+
+class _LandscapeRoomState extends State<_LandscapeRoom> {
+  static const _window = MethodChannel('dorm/cards/window');
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
+    unawaited(_immersive(true));
+  }
+
+  Future<void> _immersive(bool enabled) async {
+    try {
+      await _window.invokeMethod<void>('immersive', enabled);
+    } on MissingPluginException {
+      // The window integration is optional outside the Android runner.
+    }
+  }
+
+  @override
+  void dispose() {
+    unawaited(_immersive(false));
+    unawaited(SystemChrome.setPreferredOrientations([]));
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => RotatedBox(
+      quarterTurns: constraints.maxHeight > constraints.maxWidth ? 1 : 0,
+      child: widget.child,
+    ),
+  );
 }
 
 class CardRulesDialog extends StatefulWidget {
@@ -349,6 +406,10 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
   late DealRemainder remainder =
       widget.current?.remainder ?? DealRemainder.equal;
   late CardMode mode = widget.current?.mode ?? CardMode.classic;
+  late bool chainBombs = widget.current?.chainBombs ?? true;
+  late bool rocketBeatsChain =
+      widget.current?.rocketBeatsChain ?? CardRules.defaultRocketBeatsChain;
+  late bool fourWithTwo = widget.current?.fourWithTwo ?? true;
   CardLocation where = CardLocation.local;
   String? issue;
 
@@ -405,6 +466,32 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
                 ),
               ),
             ],
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('连炸'),
+            subtitle: const Text('两组或更多相邻点数的四张牌'),
+            value: chainBombs,
+            onChanged: (value) => setState(() => chainBombs = value),
+          ),
+          SwitchListTile(
+            contentPadding: const EdgeInsets.only(left: 16),
+            title: const Text('王炸大于连炸'),
+            subtitle: Text(
+              rocketBeatsChain
+                  ? '普通炸弹 ＜ 连炸 ＜ 王炸 ＜ 双王炸'
+                  : '普通炸弹 ＜ 王炸 ＜ 双王炸 ＜ 连炸',
+            ),
+            value: rocketBeatsChain,
+            onChanged: chainBombs
+                ? (value) => setState(() => rocketBeatsChain = value)
+                : null,
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('四带二／四带两对'),
+            value: fourWithTwo,
+            onChanged: (value) => setState(() => fourWithTwo = value),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -480,6 +567,9 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
         landlord: landlord,
         remainder: remainder,
         mode: mode,
+        chainBombs: chainBombs,
+        rocketBeatsChain: rocketBeatsChain,
+        fourWithTwo: fourWithTwo,
       );
       Navigator.pop(context, (rules: rules, where: where));
     } on InputException catch (e) {

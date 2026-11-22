@@ -81,6 +81,21 @@ class CardRooms extends ChangeNotifier {
     return room._options(player, data).map((play) => play.toJson()).toList();
   }
 
+  List<RoomJson> hints(CardSeat seat, RoomJson data) {
+    final room = _room(seat.room);
+    final player = room.player(seat.token);
+    room._requireTurn(player, data, _Phase.playing);
+    return [
+      for (final play in hintPlays(
+        player.cards,
+        room.wild,
+        room.last,
+        rules: room.rules,
+      ))
+        play.toJson(),
+    ];
+  }
+
   RoomJson action(CardSeat seat, String action, RoomJson data) {
     final room = _room(seat.room);
     final player = room.player(seat.token);
@@ -149,6 +164,15 @@ class CardRooms extends ChangeNotifier {
 
 enum _Phase { lobby, bidding, playing, finished }
 
+enum CardMove {
+  lead('先出'),
+  beat('管上'),
+  pass('不要');
+
+  const CardMove(this.label);
+  final String label;
+}
+
 class _Person {
   _Person(this.id, this.name, {this.bot = false}) : token = newIdentityCode();
   final int id;
@@ -161,6 +185,7 @@ class _Person {
   int points = 0;
   int wins = 0;
   int moves = 0;
+  CardMove? lastMove;
 
   RoomJson publicView() => {
     'id': id,
@@ -169,6 +194,7 @@ class _Person {
     'bot': bot,
     'points': points,
     'wins': wins,
+    'move': lastMove?.name,
   };
 }
 
@@ -199,6 +225,7 @@ class _CardRoom {
   int passes = 0;
   int multiplier = 1;
   CardPlay? last;
+  ({int leader, CardPlay play})? _previousTrick;
   String? result;
 
   bool get inProgress => phase == _Phase.bidding || phase == _Phase.playing;
@@ -281,6 +308,8 @@ class _CardRoom {
     ],
     'extra': extraSeat,
     'last': last?.toJson(),
+    if (_previousTrick case (leader: final actor, play: final played))
+      'previousTrick': {'leader': actor, 'play': played.toJson()},
     'winners': winners,
     'multiplier': multiplier,
     'result': result,
@@ -402,6 +431,7 @@ class _CardRoom {
     for (final (i, person) in people.indexed) {
       person.cards = deal.hands[i];
       person.moves = 0;
+      person.lastMove = null;
     }
     bottom = deal.bottom;
     extraSeat = deal.extraSeat == null ? null : people[deal.extraSeat!].id;
@@ -413,6 +443,7 @@ class _CardRoom {
     multiplier = 1;
     landlord = bidder = leader = null;
     last = null;
+    _previousTrick = null;
     result = null;
     winners = [];
     turnVersion++;
@@ -451,10 +482,14 @@ class _CardRoom {
   }
 
   void _pass(_Person person) {
-    if (last == null) throw const InputException('领出时必须出牌');
+    final played = last;
+    if (played == null) throw const InputException('领出时必须出牌');
     turn = _next(person);
     passes++;
+    person.lastMove = CardMove.pass;
     if (passes == people.length - 1) {
+      // Keep the cards visible while the winner of the trick prepares to lead.
+      _previousTrick = (leader: leader!, play: played);
       last = null;
       leader = null;
       passes = 0;
@@ -475,11 +510,12 @@ class _CardRoom {
     final available = {for (final card in person.cards) card.id: card};
     final cards = [for (final id in ids) ?available[id]];
     if (cards.length != ids.length) throw const InputException('只能打出自己的手牌');
-    final options = cardPlays(
-      cards,
-      wild,
-    ).where((play) => play.beats(last)).toList();
-    if (options.isEmpty) throw const InputException('所选牌型不合法，或压不过上家的牌');
+    final options = legalCardPlays(cards, wild, last, rules: rules);
+    if (options.isEmpty) {
+      throw InputException(
+        disabledCardPlayMessage(cards, wild, rules) ?? '所选牌型不合法，或压不过上家的牌',
+      );
+    }
     return options;
   }
 
@@ -493,12 +529,20 @@ class _CardRoom {
   }
 
   void _play(_Person person, CardPlay play) {
+    final leading = last == null;
+    if (leading) {
+      for (final player in people) {
+        player.lastMove = null;
+      }
+    }
+    person.lastMove = leading ? CardMove.lead : CardMove.beat;
     final used = play.cards.map((card) => card.id).toSet();
     person.cards.removeWhere((card) => used.contains(card.id));
     person.moves++;
     passes = 0;
     leader = person.id;
     last = play;
+    _previousTrick = null;
     turnVersion++;
     if (play.bomb) multiplier *= 2;
     event(
@@ -554,12 +598,14 @@ class _CardRoom {
     topBid = 0;
     multiplier = 1;
     last = null;
+    _previousTrick = null;
     result = null;
     winners = [];
     bottom = [];
     wild = {};
     for (final person in people) {
       person.cards = [];
+      person.lastMove = null;
     }
     turnVersion++;
     event('abort', reason);
@@ -577,7 +623,7 @@ class _CardRoom {
           : 1;
       _bid(bot, call > topBid ? call : 0, random);
     } else if (phase == _Phase.playing) {
-      final suggestion = suggestCards(bot.cards, wild, last);
+      final suggestion = suggestCards(bot.cards, wild, last, rules: rules);
       if (suggestion == null) {
         _pass(bot);
       } else {

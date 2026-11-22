@@ -583,4 +583,51 @@ void main() {
     expect(() => second.recordTransfer(id, 2, 500), invalid);
     expect(second.bills().single.outstanding, 300);
   });
+
+  test(
+    'deletes unused members while protecting active bills and completed shifts',
+    () {
+      final removedBill = repo.addBill(
+        const BillDraft(
+          title: '误录账单',
+          sharedAmount: 400,
+          payerId: 4,
+          participantIds: [3, 4],
+        ),
+      );
+      expect(() => repo.deleteMember(4), invalid);
+      repo.deleteBill(removedBill);
+
+      final matterId = repo.saveMatter((
+        title: '领快递',
+        note: '',
+        ownerId: 4,
+        due: null,
+        urgent: false,
+      ));
+      repo.claimMember(4);
+      repo.addChore('倒垃圾', Cadence.daily, DateTime.utc(2026, 11, 20));
+      repo.generateShiftsThrough(DateTime.utc(2026, 11, 23));
+
+      repo.deleteMember(4);
+      expect(repo.members().map((member) => member.id), [1, 2, 3]);
+      expect(repo.identity.memberId, isNull);
+      expect(
+        repo.matters().singleWhere((matter) => matter.id == matterId).ownerId,
+        isNull,
+      );
+      repo.saveMember('丁');
+      expect(repo.members().map((member) => member.name), ['甲', '乙', '丙', '丁']);
+
+      final completedShift = repo
+          .shifts(DateTime.utc(2026, 11, 20), DateTime.utc(2026, 11, 23))
+          .firstWhere((shift) => shift.memberId == 1);
+      repo.completeShift(completedShift.id);
+      expect(() => repo.deleteMember(1), invalid);
+
+      repo.deleteMember(3);
+      repo.deleteMember(2);
+      expect(() => repo.deleteMember(1), invalid);
+    },
+  );
 }

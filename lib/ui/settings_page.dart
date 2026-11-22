@@ -19,7 +19,7 @@ enum _Category {
   dorm('寝室管理', '成员与卫生任务', Icons.groups_outlined),
   sync('云同步', 'GitHub、SSH 密钥、代理与邀请', Icons.cloud_sync_outlined),
   lan('局域网服务器', '浏览器访问与多人操作', Icons.lan_outlined),
-  data('本机数据', '账单 CSV 与数据库备份', Icons.storage_outlined),
+  data('本机数据', '账单 CSV、数据库备份与清空重置', Icons.storage_outlined),
   about('关于 Dorm', '应用名称与用途', Icons.info_outline);
 
   const _Category(this.label, this.description, this.icon);
@@ -276,6 +276,42 @@ class _SettingsPageState extends State<_SettingsPage> {
         (page) =>
             _updatePreferences((value) => value.copyWith(startupPage: page)),
       ),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 8,
+        children: [
+          Text(
+            preferences.einkMode ? '主题调色板（墨水屏模式下已切换为纯黑白）' : '主题调色板',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final palette in ThemePalette.values)
+                ChoiceChip(
+                  avatar: CircleAvatar(
+                    backgroundColor: Color(palette.seedColor),
+                    radius: 10,
+                  ),
+                  label: Text(palette.label),
+                  selected: preferences.themePalette == palette,
+                  onSelected: (_) => _updatePreferences(
+                    (value) => value.copyWith(themePalette: palette),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('墨水屏模式'),
+        subtitle: const Text('高对比度纯黑白、锐利边框并禁用过渡动画以减少残影'),
+        value: preferences.einkMode,
+        onChanged: (enabled) =>
+            _updatePreferences((value) => value.copyWith(einkMode: enabled)),
+      ),
     ],
   );
 
@@ -382,7 +418,7 @@ class _SettingsPageState extends State<_SettingsPage> {
       ListTile(
         leading: const Icon(Icons.group_outlined),
         title: const Text('寝室成员'),
-        subtitle: const Text('编辑姓名和头像、启用或停用成员'),
+        subtitle: const Text('编辑姓名和头像、启用、停用或删除成员'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => showMembers(context, controller),
       ),
@@ -458,39 +494,137 @@ class _DataSettingsState extends State<_DataSettings> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) => Card(
-    clipBehavior: Clip.antiAlias,
-    child: Column(
-      children: [
-        ListTile(
-          leading: const Icon(Icons.table_view_outlined),
-          title: const Text('导出全部账单'),
-          subtitle: const Text('CSV 包含付款人、金额、结算状态和关联物资'),
-          trailing: const Icon(Icons.download_outlined),
-          onTap: _saving
-              ? null
-              : () => _save(
-                  () => exportBills(
-                    context,
-                    widget.controller.repository.bills(),
+  Future<void> _confirmReset() async {
+    final cloudSettings = widget.controller.cloud?.settings;
+    var keepRepository = false;
+    var clearRemote = false;
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+              title: const Text('清空数据与恢复出厂设置'),
+              content: SizedBox(
+                width: 440,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 10,
+                  children: [
+                    const Text(
+                      '将永久清空本机所有成员、账单、转账、排班、物资、事务、认领及本地偏好设置，使 Dorm 恢复为初始空白状态。',
+                    ),
+                    if (cloudSettings != null) ...[
+                      Text(
+                        '当前已连接 GitHub 仓库：${cloudSettings.repository}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: keepRepository,
+                        onChanged: (value) =>
+                            update(() => keepRepository = value ?? false),
+                        title: const Text('保留 GitHub 仓库地址与密钥配置'),
+                        subtitle: const Text('恢复出厂后无需重新填写仓库和导入私钥'),
+                      ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: clearRemote,
+                        onChanged: (value) =>
+                            update(() => clearRemote = value ?? false),
+                        title: const Text('同时清空 GitHub 远程仓库内容'),
+                        subtitle: const Text(
+                          '清空远端 dormos-data 与在线牌桌分支内容；未勾选则不影响远端数据',
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                    foregroundColor: Theme.of(context).colorScheme.onError,
                   ),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('确认清空'),
                 ),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(Icons.save_outlined),
-          title: const Text('创建本地备份'),
-          subtitle: const Text('备份成员、账单、寝室事务、排班及物资'),
-          trailing: const Icon(Icons.download_outlined),
-          onTap: _saving
-              ? null
-              : () => _save(
-                  () => exportBackup(context, widget.controller.repository),
-                ),
-        ),
-        if (_saving) const LinearProgressIndicator(),
-      ],
-    ),
-  );
+              ],
+            ),
+          ),
+        ) ??
+        false;
+    if (!confirmed || !mounted) return;
+    await _save(() async {
+      try {
+        await widget.controller.resetFactory(
+          keepRepository: keepRepository,
+          clearRemote: clearRemote,
+        );
+        if (!mounted) return;
+        notify(
+          context,
+          clearRemote ? '已清空本机数据并清空 GitHub 远程仓库' : '已清空本机数据并恢复出厂设置',
+        );
+      } catch (error) {
+        if (!mounted) return;
+        notify(
+          context,
+          errorText(error, fallback: '清空失败，请检查网络连接或 GitHub 仓库权限'),
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.table_view_outlined),
+            title: const Text('导出全部账单'),
+            subtitle: const Text('CSV 包含付款人、金额、结算状态和关联物资'),
+            trailing: const Icon(Icons.download_outlined),
+            onTap: _saving
+                ? null
+                : () => _save(
+                    () => exportBills(
+                      context,
+                      widget.controller.repository.bills(),
+                    ),
+                  ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.save_outlined),
+            title: const Text('创建本地备份'),
+            subtitle: const Text('备份成员、账单、寝室事务、排班及物资'),
+            trailing: const Icon(Icons.download_outlined),
+            onTap: _saving
+                ? null
+                : () => _save(
+                    () => exportBackup(context, widget.controller.repository),
+                  ),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: Icon(Icons.delete_forever_outlined, color: errorColor),
+            title: Text('清空数据与恢复出厂设置', style: TextStyle(color: errorColor)),
+            subtitle: const Text('清空本机所有数据与偏好，可选保留仓库地址并清空远程仓库'),
+            trailing: Icon(Icons.warning_amber_rounded, color: errorColor),
+            onTap: _saving ? null : _confirmReset,
+          ),
+          if (_saving) const LinearProgressIndicator(),
+        ],
+      ),
+    );
+  }
 }

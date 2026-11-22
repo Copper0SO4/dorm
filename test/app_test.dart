@@ -648,4 +648,150 @@ void main() {
     expect(find.text('新增物资'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'members dialog deletes unused members and explains blocked deletes',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      repo.saveMember('甲');
+      repo.saveMember('乙');
+      repo.addBill(
+        const BillDraft(
+          title: '电费',
+          sharedAmount: 200,
+          payerId: 1,
+          participantIds: [1],
+        ),
+      );
+      await tester.pumpWidget(DormApp(controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('寝室管理'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('寝室成员'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('成员操作').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除成员'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pumpAndSettle();
+      expect(repo.members().map((member) => member.name), ['甲']);
+
+      await tester.tap(find.byTooltip('成员操作').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除成员'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pumpAndSettle();
+      expect(find.text('无法删除成员'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, '关闭').last);
+      await tester.pumpAndSettle();
+      expect(repo.members().map((member) => member.name), ['甲']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'data settings factory reset clears business data and appearance',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      repo.saveMember('室友甲');
+      repo.addBill(
+        const BillDraft(
+          title: '水费',
+          sharedAmount: 1000,
+          payerId: 1,
+          participantIds: [1],
+        ),
+      );
+      repo.saveAppearanceMode(AppearanceMode.dark);
+      await tester.pumpWidget(DormApp(controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('本机数据'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('清空数据与恢复出厂设置'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '确认清空'));
+      await tester.pumpAndSettle();
+
+      expect(repo.members(), isEmpty);
+      expect(repo.bills(), isEmpty);
+      expect(repo.appearanceMode, AppearanceMode.system);
+      expect(find.text('已清空本机数据并恢复出厂设置'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('tools page supports decision wheel and number bomb', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    repo.saveMember('室友甲');
+    repo.saveMember('室友乙');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ToolsPage(controller: controller)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('决策盲盒'));
+    await tester.pumpAndSettle();
+    expect(find.text('寝室决策盲盒'), findsOneWidget);
+    await tester.tap(find.text('谁去跑腿'));
+    await tester.pumpAndSettle();
+    expect(find.text('室友甲'), findsOneWidget);
+    await tester.tap(find.text('帮我们决定'));
+    await tester.pump(const Duration(milliseconds: 1300));
+    expect(find.text('谁去跑腿 · 抽中结果'), findsOneWidget);
+
+    await tester.tap(find.text('数字炸弹'));
+    await tester.pumpAndSettle();
+    expect(find.text('当前安全区间'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '50');
+    await tester.tap(find.widgetWithText(FilledButton, '报数'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('appearance settings switch palette and e-ink mode live', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+
+    final initialPrimary = Theme.of(tester.element(find.text('公共账本').first))
+        .colorScheme
+        .primary;
+
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('海盐蓝'));
+    await tester.pumpAndSettle();
+    expect(repo.preferences.themePalette, ThemePalette.ocean);
+    final oceanPrimary = Theme.of(tester.element(find.text('海盐蓝')))
+        .colorScheme
+        .primary;
+    expect(oceanPrimary, isNot(initialPrimary));
+
+    await tester.tap(find.text('墨水屏模式'));
+    await tester.pumpAndSettle();
+    expect(repo.preferences.einkMode, isTrue);
+    final einkContext = tester.element(find.text('墨水屏模式'));
+    expect(Theme.of(einkContext).colorScheme.surface, const Color(0xffffffff));
+    expect(Theme.of(einkContext).colorScheme.primary, const Color(0xff111111));
+    expect(MediaQuery.disableAnimationsOf(einkContext), isTrue);
+    expect(tester.takeException(), isNull);
+  });
 }

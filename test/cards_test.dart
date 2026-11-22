@@ -33,6 +33,630 @@ List<PlayingCard> cards(List<int> ranks) {
 void main() {
   final invalid = throwsA(isA<InputException>());
 
+  test('连炸需要开关，比较组数、硬软和点数，提示也遵守规则', () {
+    final on = CardRules(chainBombs: true);
+    final off = CardRules(chainBombs: false);
+    CardPlay chain(List<int> ranks, [Set<int> wild = const {}]) => cardPlays(
+      cards(ranks),
+      wild,
+      rules: on,
+    ).singleWhere((play) => play.kind == PlayKind.chainBomb);
+    final ranks = [3, 3, 3, 3, 4, 4, 4, 4];
+    final low = chain(ranks);
+    final high = chain([4, 4, 4, 4, 5, 5, 5, 5]);
+    final soft = chain([5, 5, 5, 5, 6, 6, 6, 8], {8});
+    final three = chain([...ranks, 5, 5, 5, 5]);
+    final bomb = cardPlays(cards(List.filled(9, 15)), {}).single;
+    final rocket = cardPlays(cards([16, 17]), {}).single;
+    expect(low.label, '2 连炸');
+    expect(low.beats(bomb), isTrue);
+    expect(bomb.beats(low), isFalse);
+    expect(high.beats(low), isTrue);
+    expect(low.beats(soft), isTrue);
+    expect(three.beats(high), isTrue);
+    expect(three.beats(rocket), isTrue);
+    expect(high.beats(CardPlay.fromJson(low.toJson())), isTrue);
+    expect(cardPlays(cards(ranks), {}, rules: off), isEmpty);
+    expect(
+      cardPlays(cards([14, 14, 14, 14, 15, 15, 15, 15]), {}, rules: on),
+      isEmpty,
+    );
+    final hand = cards([...ranks, 9]);
+    expect(hintPlays(hand, {}, bomb, rules: on).first.kind, PlayKind.chainBomb);
+    expect(hintPlays(hand, {}, bomb, rules: off), isEmpty);
+    expect(suggestCards(hand, {}, bomb, rules: on)?.kind, PlayKind.chainBomb);
+  });
+
+  for (final chainEnabled in [true, false]) {
+    testWidgets(
+      chainEnabled ? '两副牌新房间中四个 10 加四个 J 可以实际压过四个 7' : '关闭连炸时，同一组牌给出明确的房间规则提示',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(1280, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final session = CardSession(
+          () => null,
+          rooms: CardRooms(random: Random(15)),
+        );
+        addTearDown(session.dispose);
+        final defaults = CardRules(
+          players: 2,
+          decks: 2,
+          landlord: false,
+          bottom: 0,
+        );
+        expect(defaults.chainBombs, isTrue);
+        final rules = chainEnabled
+            ? defaults
+            : CardRules.fromJson({...defaults.toJson(), 'chainBombs': false});
+        await session.create(rules, '房主', CardLocation.local);
+        final other = session.rooms.join(
+          session.view!['room'] as String,
+          name: '对手',
+        );
+        await session.act('start');
+        final first = session.rooms.state(other);
+        expect(first['turn'], first['you']);
+        List<int> four(RoomJson snapshot, int rank) =>
+            (snapshot['hand'] as List)
+                .cast<int>()
+                .where((id) => PlayingCard(id).rank == rank)
+                .take(4)
+                .toList();
+        final sevens = four(first, 7);
+        expect(sevens, hasLength(4));
+        session.rooms.action(other, 'play', {
+          'cards': sevens,
+          'turnVersion': first['turnVersion'],
+        });
+        final before = session.view!;
+        final tens = four(before, 10);
+        final jacks = four(before, 11);
+        expect(tens, hasLength(4));
+        expect(jacks, hasLength(4));
+        final chain = [...tens, ...jacks];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ListenableBuilder(
+                listenable: session,
+                builder: (_, _) => CardTable(
+                  session: session,
+                  view: session.view!,
+                  share: () {},
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        for (final id in chain) {
+          final rect = tester.getRect(find.byKey(ValueKey(id)));
+          await tester.tapAt(Offset(rect.left + 3, rect.top + 6));
+          await tester.pumpAndSettle();
+        }
+        final play = find.widgetWithText(FilledButton, '出牌');
+        if (chainEnabled) {
+          expect(tester.widget<FilledButton>(play).onPressed, isNotNull);
+          await tester.tap(play);
+          await tester.pumpAndSettle();
+          final last = session.view!['last'] as RoomJson;
+          expect(last['label'], '2 连炸');
+          expect(CardPlay.fromJson(last).kind, PlayKind.chainBomb);
+          expect(
+            (last['cards'] as List)
+                .cast<RoomJson>()
+                .map((card) => card['id'])
+                .toSet(),
+            chain.toSet(),
+          );
+        } else {
+          expect(tester.widget<FilledButton>(play).onPressed, isNull);
+          expect(find.text('本房间未开启连炸'), findsOneWidget);
+          await session.act('play', {'cards': chain});
+          expect(session.error, '本房间未开启连炸');
+          expect((session.view!['last'] as RoomJson)['label'], '4 张硬炸');
+        }
+      },
+    );
+  }
+
+  test('炸弹大小遵守房间开关，双王炸大于王炸', () {
+    final chainFirst = CardRules();
+    final royalFirst = CardRules(rocketBeatsChain: true);
+    expect(chainFirst.toJson()['rocketBeatsChain'], isFalse);
+    final old = royalFirst.toJson()..remove('rocketBeatsChain');
+    expect(CardRules.fromJson(old).rocketBeatsChain, isTrue);
+    expect(CardRules.fromJson(old, newRoom: true).rocketBeatsChain, isFalse);
+    expect(
+      CardRules.fromJson(royalFirst.toJson(), newRoom: true).rocketBeatsChain,
+      isTrue,
+    );
+    final chainCards = cards([3, 3, 3, 3, 4, 4, 4, 4]);
+    final chain = cardPlays(chainCards, {}, rules: royalFirst).single;
+    final bomb = cardPlays(cards(List.filled(12, 15)), {}).single;
+    final rocket = cardPlays(cards([16, 17]), {}).single;
+    final doubleRocket = cardPlays(cards([16, 16, 17, 17]), {}).single;
+    final tripleRocket = cardPlays(cards([16, 16, 16, 17, 17, 17]), {}).single;
+
+    expect(rocket.label, '王炸');
+    expect(doubleRocket.label, '双王炸');
+    expect(tripleRocket.label, '3 组王炸');
+    for (final rules in [royalFirst, chainFirst]) {
+      expect(chain.beats(bomb, rules: rules), isTrue);
+      expect(bomb.beats(chain, rules: rules), isFalse);
+      expect(doubleRocket.beats(rocket, rules: rules), isTrue);
+      expect(tripleRocket.beats(doubleRocket, rules: rules), isTrue);
+      expect(rocket.beats(doubleRocket, rules: rules), isFalse);
+    }
+    expect(rocket.beats(chain, rules: royalFirst), isTrue);
+    expect(chain.beats(tripleRocket, rules: royalFirst), isFalse);
+    expect(chain.beats(tripleRocket, rules: chainFirst), isTrue);
+    expect(doubleRocket.beats(chain, rules: chainFirst), isFalse);
+    expect(legalCardPlays(chainCards, {}, rocket, rules: royalFirst), isEmpty);
+    expect(
+      legalCardPlays(chainCards, {}, rocket, rules: chainFirst).single.kind,
+      PlayKind.chainBomb,
+    );
+    expect(
+      hintPlays(
+        [...chainCards, dealt(7)],
+        {},
+        doubleRocket,
+        rules: chainFirst,
+      ).single.kind,
+      PlayKind.chainBomb,
+    );
+    expect(
+      suggestCards(
+        [...chainCards, dealt(7)],
+        {},
+        rocket,
+        rules: chainFirst,
+      )?.kind,
+      PlayKind.chainBomb,
+    );
+
+    final hand = [...chainCards, ...doubleRocket.cards];
+    expect(
+      hintPlays(hand, {}, bomb, rules: royalFirst).map((hint) => hint.label),
+      ['2 连炸', '王炸', '双王炸'],
+    );
+    expect(
+      hintPlays(hand, {}, bomb, rules: chainFirst).map((hint) => hint.label),
+      ['王炸', '双王炸', '2 连炸'],
+    );
+  });
+
+  testWidgets('对手出牌与过牌状态保留到新一轮领出', (tester) async {
+    final (session, guests) = await _openGame(
+      tester,
+      size: const Size(740, 360),
+    );
+    CardSeat currentGuest() => guests.firstWhere(
+      (guest) => session.rooms.state(guest)['you'] == session.view!['turn'],
+    );
+    void playGuest(CardSeat guest, int id) {
+      session.rooms.action(guest, 'play', {
+        'cards': [id],
+        'turnVersion': session.view!['turnVersion'],
+      });
+    }
+
+    int firstHigher(CardSeat guest, int rank) =>
+        (session.rooms.state(guest)['hand'] as List).cast<int>().firstWhere(
+          (id) => PlayingCard(id).rank > rank,
+        );
+    RoomJson publicSeat(CardSeat guest) {
+      final id = session.rooms.state(guest)['you'];
+      return (session.view!['people'] as List).cast<RoomJson>().firstWhere(
+        (player) => player['id'] == id,
+      );
+    }
+
+    final first = PlayingCard((session.view!['hand'] as List).first as int);
+    await session.act('play', {
+      'cards': [first.id],
+    });
+    await tester.pumpAndSettle();
+    final own = find.byKey(const ValueKey('my-played-cards'));
+    final ownRect = tester.getRect(own);
+    expect(find.text('我的出牌'), findsOneWidget);
+
+    final right = currentGuest();
+    final higher = firstHigher(right, first.rank);
+    playGuest(right, higher);
+    await tester.pumpAndSettle();
+    final side = find.byKey(ValueKey('played-by-${publicSeat(right)['id']}'));
+    expect(tester.getRect(side).center.dx, greaterThan(ownRect.center.dx + 60));
+    expect(own, findsNothing);
+    expect(publicSeat(right)['move'], 'beat');
+    expect(find.text('管上'), findsAtLeastNWidgets(1));
+    final last = session.view!['last'];
+
+    final left = currentGuest();
+    session.rooms.action(left, 'pass', {
+      'turnVersion': session.view!['turnVersion'],
+    });
+    await tester.pumpAndSettle();
+    expect(publicSeat(left)['move'], 'pass');
+    expect(find.text('不要'), findsOneWidget);
+    expect(side, findsOneWidget);
+
+    await session.act('pass');
+    await tester.pumpAndSettle();
+    expect(session.view!['last'], isNull);
+    expect(session.view!['turn'], publicSeat(right)['id']);
+    expect(session.view!['previousTrick'], {
+      'leader': publicSeat(right)['id'],
+      'play': last,
+    });
+    expect(find.text('不要'), findsNWidgets(2));
+    await tester.pump(const Duration(seconds: 5));
+    expect(side, findsOneWidget);
+    expect(find.text('上轮'), findsOneWidget);
+    expect(
+      find.descendant(of: side, matching: find.byKey(ValueKey(higher))),
+      findsOneWidget,
+    );
+    final lead = (session.rooms.state(right)['hand'] as List).first as int;
+    playGuest(right, lead);
+    await tester.pumpAndSettle();
+    expect(session.view!['previousTrick'], isNull);
+    expect(
+      find.descendant(of: side, matching: find.byKey(ValueKey(lead))),
+      findsOneWidget,
+    );
+    expect(find.text('上轮'), findsNothing);
+    expect(find.text('不要'), findsNothing);
+    final leftHigher = firstHigher(left, PlayingCard(lead).rank);
+    playGuest(left, leftHigher);
+    await tester.pumpAndSettle();
+    final leftSide = find.byKey(
+      ValueKey('played-by-${publicSeat(left)['id']}'),
+    );
+    expect(
+      tester.getRect(leftSide).center.dx,
+      lessThan(ownRect.center.dx - 60),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  test('房间规则兼容旧快照，一个开关控制两种四带二', () {
+    final switches = CardRules(chainBombs: true, fourWithTwo: false);
+    final decoded = CardRules.fromJson(switches.toJson());
+    expect(decoded.chainBombs, isTrue);
+    expect(decoded.fourWithTwo, isFalse);
+    final old = switches.toJson()
+      ..remove('chainBombs')
+      ..remove('fourWithTwo');
+    final legacy = CardRules.fromJson(old);
+    expect(legacy.chainBombs, isFalse);
+    expect(legacy.fourWithTwo, isTrue);
+    final withSingles = cards([4, 4, 4, 4, 6, 6]);
+    final withPairs = cards([4, 4, 4, 4, 6, 6, 7, 7]);
+    expect(
+      cardPlays(withSingles, {}, rules: legacy).single.kind,
+      PlayKind.fourSingles,
+    );
+    expect(
+      cardPlays(withPairs, {}, rules: legacy).single.kind,
+      PlayKind.fourPairs,
+    );
+    expect(cardPlays(withSingles, {}, rules: decoded), isEmpty);
+    expect(cardPlays(withPairs, {}, rules: decoded), isEmpty);
+    expect(
+      hintPlays(withPairs, {}, null, rules: decoded).map((hint) => hint.kind),
+      isNot(
+        anyOf(contains(PlayKind.fourSingles), contains(PlayKind.fourPairs)),
+      ),
+    );
+  });
+
+  testWidgets('窄横屏能完整显示标准手牌，多副牌最多两排', (tester) async {
+    const screen = Size(640, 320);
+    final (classic, _) = await _openGame(tester, size: screen);
+    List<Rect> handRects(CardSession session) => [
+      for (final id in (session.view!['hand'] as List).cast<int>())
+        tester.getRect(find.byKey(ValueKey(id))),
+    ];
+    void verify(List<Rect> rects, int rows) {
+      expect(rects.map((rect) => rect.top).toSet(), hasLength(rows));
+      expect(
+        rects.every(
+          (rect) =>
+              rect.left >= 0 &&
+              rect.top >= 0 &&
+              rect.right <= screen.width &&
+              rect.bottom <= screen.height,
+        ),
+        isTrue,
+      );
+    }
+
+    verify(handRects(classic), 1);
+    final bottom = find.byKey(const ValueKey('bottom-card-preview'));
+    expect(tester.getCenter(bottom).dx, closeTo(screen.width / 2, 1));
+    expect(find.widgetWithText(FilledButton, '出牌'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    final multi = CardSession(() => null, rooms: CardRooms(random: Random(4)));
+    addTearDown(multi.dispose);
+    await multi.create(
+      CardRules(players: 2, decks: 3, landlord: false, bottom: 0),
+      '房主',
+      CardLocation.local,
+    );
+    multi.rooms.join(multi.view!['room'] as String);
+    await multi.act('start');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CardTable(session: multi, view: multi.view!, share: () {}),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final crowded = handRects(multi);
+    expect(crowded, hasLength(81));
+    verify(crowded, 2);
+    expect(tester.takeException(), isNull);
+
+    await tester.binding.setSurfaceSize(const Size(2200, 1200));
+    await tester.pumpAndSettle();
+    final felt = tester.getRect(
+      find.byKey(const ValueKey('dorm-card-table-frame')),
+    );
+    expect(felt.size, const Size(1400, 720));
+    expect(felt.center, const Offset(1100, 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Windows 手牌紧叠且相邻两张可分别点击', (tester) async {
+    final (session, _) = await _openGame(tester, size: const Size(1680, 960));
+    final ids = (session.view!['hand'] as List).cast<int>();
+    final rects = [
+      for (final id in ids) tester.getRect(find.byKey(ValueKey(id))),
+    ];
+    expect(rects.map((rect) => rect.top).toSet(), hasLength(1));
+    expect(rects.first.width, greaterThan(90));
+    final step = rects[1].left - rects.first.left;
+    expect(step, inInclusiveRange(34, 40));
+    expect((rects.last.right + rects.first.left) / 2, closeTo(840, 1));
+
+    final first = _handCard(PlayingCard(ids.first));
+    final second = _handCard(PlayingCard(ids[1]));
+    await tester.tapAt(rects.first.topLeft + const Offset(12, 25));
+    await tester.pumpAndSettle();
+    expect(_isSelected(tester, first), isTrue);
+    expect(_isSelected(tester, second), isFalse);
+    await tester.tapAt(rects[1].topLeft + const Offset(12, 25));
+    await tester.pumpAndSettle();
+    expect(_isSelected(tester, first), isTrue);
+    expect(_isSelected(tester, second), isTrue);
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
+  test('hints offer the smallest follow first and keep bombs for later', () {
+    final hand = cards([3, 3, 4, 6, 6, 8, 16, 17]);
+    final previous = CardPlay(PlayKind.single, 3, 1, 0, const [], const {});
+    final follow = hintPlays(hand, const {}, previous);
+    final lead = hintPlays(hand, const {}, null);
+    expect(follow.first.kind, PlayKind.single);
+    expect(follow.first.high, 4);
+    expect(follow.last.bomb, isTrue);
+    expect(lead.first.kind, PlayKind.single);
+    expect(lead.first.high, 3);
+    expect(
+      follow.map((play) => play.cards.map((card) => card.id).join(',')).toSet(),
+      hasLength(follow.length),
+    );
+  });
+
+  test('hints find a matching four-with-two and bombs longer than a natural deck group', () {
+    final ordinary = hintPlays(
+      cards([6, 6, 6, 6, 7, 7, 7]),
+      const {},
+      CardPlay(PlayKind.fourSingles, 3, 1, 0, const [], const {}),
+    );
+    expect(ordinary.first.kind, PlayKind.fourSingles);
+    expect(ordinary.first.high, 6);
+    expect(ordinary.last.kind, PlayKind.bomb);
+
+    final long = hintPlays(cards([...List.filled(16, 6), 9, 9, 7]), {
+      9,
+    }, CardPlay(PlayKind.bomb, 15, 17, 0, const [], const {}));
+    expect(
+      long.any((play) => play.kind == PlayKind.bomb && play.width == 18),
+      isTrue,
+    );
+  });
+
+  testWidgets('tapping a visibly raised overlapping card toggles that card', (
+    tester,
+  ) async {
+    final (session, _) = await _openGame(tester);
+    final hand = (session.view!['hand'] as List)
+        .cast<int>()
+        .map(PlayingCard.new)
+        .toList();
+    final first = _handCard(hand[0]);
+    final second = _handCard(hand[1]);
+
+    final firstRect = tester.getRect(first);
+    await tester.tapAt(Offset(firstRect.left + 3, firstRect.center.dy));
+    await tester.pumpAndSettle();
+    expect(_isSelected(tester, first), isTrue);
+    final raised = tester.getRect(first);
+    final beside = tester.getRect(second);
+    final overlap = Offset(beside.left + 2, raised.top + 5);
+    expect(raised.contains(overlap), isTrue);
+    expect(beside.contains(overlap), isFalse);
+    await tester.tapAt(overlap);
+    await tester.pumpAndSettle();
+
+    expect(_isSelected(tester, first), isFalse);
+    expect(_isSelected(tester, second), isFalse);
+
+    await tester.tapAt(Offset(firstRect.left + 3, firstRect.center.dy));
+    await tester.pumpAndSettle();
+    final neighborRank = Offset(beside.left + 3, beside.top + 7);
+    expect(tester.getRect(first).contains(neighborRank), isTrue);
+    await tester.tapAt(neighborRank);
+    await tester.pumpAndSettle();
+    expect(_isSelected(tester, first), isTrue);
+    expect(_isSelected(tester, second), isTrue);
+  });
+
+  testWidgets(
+    'drag submits the exact pair and keeps a prepared card through other turns',
+    (tester) async {
+      final (session, guests) = await _openGame(tester);
+      final before = (session.view!['hand'] as List)
+          .cast<int>()
+          .map(PlayingCard.new)
+          .toList();
+      final index = Iterable<int>.generate(before.length - 1)
+          .firstWhere((i) => before[i].rank == before[i + 1].rank);
+      final a = _handCard(before[index]);
+      final b = _handCard(before[index + 1]);
+      final left = tester.getRect(a);
+      final right = tester.getRect(b);
+      final drag = await tester.startGesture(
+        Offset(left.left + 3, left.center.dy),
+      );
+      await drag.moveTo(Offset(right.left + 3, left.center.dy));
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(_isSelected(tester, a), isTrue);
+      expect(_isSelected(tester, b), isTrue);
+      await tester.tap(find.widgetWithText(FilledButton, '出牌'));
+      await tester.pumpAndSettle();
+
+      final played = CardPlay.fromJson(session.view!['last'] as RoomJson);
+      expect(played.kind, PlayKind.pair);
+      final removed = {before[index].id, before[index + 1].id};
+      expect(
+        ((session.view!['last'] as RoomJson)['cards'] as List)
+            .cast<RoomJson>()
+            .map((card) => card['id'])
+            .toSet(),
+        removed,
+      );
+      expect(
+        session.view!['hand'],
+        before
+            .map((card) => card.id)
+            .where((id) => !removed.contains(id))
+            .toList(),
+      );
+
+      final prepared = PlayingCard(
+        (session.view!['hand'] as List).first as int,
+      );
+      final preparedFinder = _handCard(prepared);
+      final preparedRect = tester.getRect(preparedFinder);
+      await tester.tapAt(Offset(preparedRect.left + 2, preparedRect.center.dy));
+      await tester.pumpAndSettle();
+      expect(_isSelected(tester, preparedFinder), isTrue);
+      await tester.tap(find.byTooltip('牌桌菜单'));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < guests.length; i++) {
+        final guest = guests.firstWhere(
+          (seat) => session.rooms.state(seat)['you'] == session.view!['turn'],
+        );
+        session.rooms.action(guest, 'pass', {
+          'turnVersion': session.view!['turnVersion'],
+        });
+      }
+      await tester.pumpAndSettle();
+      expect(session.view!['last'], isNull);
+      await tester.tap(find.text('查看上一手'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('对子'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
+      expect(_isSelected(tester, preparedFinder), isTrue);
+
+      final priorTurn = (session.view!['turnVersion'] as int) - 1;
+      await session.act('play', {
+        'cards': [prepared.id],
+        'turnVersion': priorTurn,
+      });
+      expect(session.error, '回合已变化，请刷新后再试');
+      expect(session.view!['last'], isNull);
+      expect(session.view!['hand'], contains(prepared.id));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '出牌'));
+      await tester.pumpAndSettle();
+      final next = (session.view!['last'] as RoomJson)['cards'] as List;
+      expect((next.single as RoomJson)['id'], prepared.id);
+    },
+  );
+
+  test('hint availability agrees with exhaustive judging of small hands', () {
+    final random = Random(29);
+    final earlier = [
+      const CardPlay(PlayKind.single, 11, 1, 0, [], {}),
+      const CardPlay(PlayKind.pair, 7, 1, 0, [], {}),
+      const CardPlay(PlayKind.triplePair, 4, 1, 0, [], {}),
+      const CardPlay(PlayKind.straight, 8, 5, 0, [], {}),
+      const CardPlay(PlayKind.fourSingles, 4, 1, 0, [], {}),
+      const CardPlay(PlayKind.planePairs, 6, 2, 0, [], {}),
+      const CardPlay(PlayKind.bomb, 11, 4, 1, [], {}),
+      const CardPlay(PlayKind.rocket, 17, 2, 0, [], {}),
+    ];
+    for (final wild in <Set<int>>[
+      {},
+      {7},
+      {4, 9},
+    ]) {
+      for (var i = 0; i < 10; i++) {
+        final hand = (List.generate(
+          108,
+          PlayingCard.new,
+        )..shuffle(random)).take(9).toList();
+        final all = [
+          for (var mask = 1; mask < (1 << hand.length); mask++)
+            ...cardPlays([
+              for (var j = 0; j < hand.length; j++)
+                if ((mask & (1 << j)) != 0) hand[j],
+            ], wild),
+        ];
+        for (final last in earlier) {
+          final expected = all.where((play) => play.beats(last)).toList();
+          final hints = hintPlays(hand, wild, last);
+          final trace =
+              '${last.key}, wild $wild, hand ${hand.map((card) => card.id).toList()}';
+          expect(hints.isNotEmpty, expected.isNotEmpty, reason: trace);
+          if (expected.any((play) => play.kind == last.kind)) {
+            expect(
+              hints.any((play) => play.kind == last.kind),
+              isTrue,
+              reason: trace,
+            );
+          }
+          for (final hint in hints) {
+            expect(
+              legalCardPlays(
+                hint.cards,
+                wild,
+                last,
+              ).any((play) => play.key == hint.key),
+              isTrue,
+              reason: trace,
+            );
+          }
+        }
+      }
+    }
+  });
+
   test('multiple decks, discard, bottom and concentrated remainder never duplicate cards', () {
     final split = dealCards(
       CardRules(players: 5, decks: 2, discard: 3, bottom: 5),
@@ -172,6 +796,9 @@ void main() {
         () => rooms.action(a, 'tomato', {'target': rooms.state(b)['you']}),
         invalid,
       );
+      expect(rooms.state(b)['previousTrick'], isNotNull);
+      rooms.action(a, 'abort', {});
+      expect(rooms.state(b)['previousTrick'], isNull);
     },
   );
 
@@ -312,6 +939,60 @@ void main() {
     },
   );
 }
+
+Future<(CardSession, List<CardSeat>)> _openGame(
+  WidgetTester tester, {
+  Size size = const Size(1280, 800),
+}) async {
+  await tester.binding.setSurfaceSize(size);
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  final session = CardSession(() => null, rooms: CardRooms(random: Random(3)));
+  addTearDown(session.dispose);
+  await session.create(CardRules(), '房主', CardLocation.local);
+  final code = session.view!['room'] as String;
+  final guests = [session.rooms.join(code), session.rooms.join(code)];
+  await session.act('start');
+  while (session.view!['you'] != session.view!['turn']) {
+    final guest = guests.firstWhere(
+      (seat) => session.rooms.state(seat)['you'] == session.view!['turn'],
+    );
+    session.rooms.action(guest, 'bid', {
+      'bid': 0,
+      'turnVersion': session.view!['turnVersion'],
+    });
+  }
+  await session.act('bid', {'bid': 3});
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: ListenableBuilder(
+          listenable: session,
+          builder: (context, _) =>
+              CardTable(session: session, view: session.view!, share: () {}),
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  expect(session.view!['phase'], 'playing');
+  return (session, guests);
+}
+
+Finder _handCard(PlayingCard card) {
+  final mark = card.suit == null ? '★' : ['♠', '♥', '♦', '♣'][card.suit!];
+  final label = '${PlayingCard.rankLabel(card.rank)} $mark';
+  return find.descendant(
+    of: find.byWidgetPredicate(
+      (widget) => widget.runtimeType.toString() == '_HandStrip',
+    ),
+    matching: find.byWidgetPredicate(
+      (widget) => widget is Semantics && widget.properties.label == label,
+    ),
+  );
+}
+
+bool _isSelected(WidgetTester tester, Finder finder) =>
+    tester.widget<Semantics>(finder).properties.selected == true;
 
 class _RealHttp extends HttpOverrides {}
 

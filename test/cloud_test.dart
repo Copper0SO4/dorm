@@ -12,6 +12,7 @@ import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/domain/matters.dart';
 import 'package:dormos/domain/models.dart';
+import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/main.dart';
 import 'package:dormos/ui/app.dart';
 import 'package:dormos/ui/common.dart';
@@ -589,6 +590,71 @@ void main() {
     await syncA.disconnect();
     expect(syncA.settings, isNull);
     expect(await syncA.devicePublicKey(), keys.first);
+  });
+
+  test('factory reset clears local data and optionally keeps repo while clearing remote', () async {
+    final root = await Directory.systemTemp.createTemp('dorm-reset-');
+    addTearDown(() => root.delete(recursive: true));
+    final bare = Directory('${root.path}/remote.git');
+    Repository.initBasic(path: bare.path, bare: true).free();
+    final repo = SqliteDormRepository.open('${root.path}/local.sqlite');
+    addTearDown(repo.close);
+    final vault = SshVault(Directory('${root.path}/home'));
+    final transport = GitHubTransport(
+      Directory('${root.path}/git'),
+      localTestRemote: bare,
+    );
+    final sync = CloudSync(repo.cloud, vault, transport);
+    addTearDown(sync.dispose);
+
+    final key = await CloudKey.generate();
+    final settings = CloudSettings(
+      repository: 'https://github.com/owner/dorm-reset',
+      operator: '组长',
+    );
+    await sync.configure(settings, key);
+    repo.saveMember('甲');
+    repo.savePreferences(
+      repo.preferences.copyWith(startupPage: StartupPage.tools),
+    );
+    repo.saveAppearanceMode(AppearanceMode.dark);
+    await sync.sync();
+    await sync.cardMailbox!.push('{"123456":{"room":"123456"}}', null);
+    expect((await transport.pull(settings, key))!.data.isEmpty, isFalse);
+
+    // Option 1: keep repository config and clear GitHub remote branches.
+    await sync.resetData(
+      keepRepository: true,
+      clearRemote: true,
+      clearLocal: () async {
+        repo.resetFactory(
+          keepCloudSettings: true,
+          rememberEmptyCloudBase: true,
+        );
+      },
+    );
+    expect(repo.members(), isEmpty);
+    expect(repo.appearanceMode, AppearanceMode.system);
+    expect(repo.preferences.startupPage, StartupPage.ledger);
+    expect(sync.settings?.repository, settings.repository);
+    expect((await transport.pull(settings, key))!.data.isEmpty, isTrue);
+    expect((await sync.cardMailbox!.pull())!.body, '{}');
+    await sync.sync();
+    expect(sync.conflict, isNull);
+    expect(sync.error, isNull);
+
+    // Option 2: full factory reset removes repo config without touching remote.
+    repo.saveMember('乙');
+    await sync.sync();
+    await sync.resetData(
+      keepRepository: false,
+      clearRemote: false,
+      clearLocal: () async => repo.resetFactory(),
+    );
+    expect(repo.members(), isEmpty);
+    expect(sync.settings, isNull);
+    expect(await vault.read(settings.repository), isNull);
+    expect((await transport.pull(settings, key))!.data.isEmpty, isFalse);
   });
 }
 

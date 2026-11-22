@@ -30,6 +30,26 @@ enum MatterView {
   final String label;
 }
 
+enum ThemePalette {
+  pine('松林绿', 0xff326454, 0xfff5f7f2, 0xff151e1a),
+  ocean('海盐蓝', 0xff255e8a, 0xfff3f7fb, 0xff131b24),
+  amber('暖橘棕', 0xff9a5824, 0xfffbf7f2, 0xff211a14),
+  plum('暮色紫', 0xff624b8a, 0xfff7f5fb, 0xff1b1724),
+  crimson('枫叶红', 0xff983b3b, 0xfffbf5f5, 0xff231616),
+  slate('石墨灰', 0xff455a64, 0xfff5f7f8, 0xff171b1e);
+
+  const ThemePalette(
+    this.label,
+    this.seedColor,
+    this.lightSurface,
+    this.darkSurface,
+  );
+  final String label;
+  final int seedColor;
+  final int lightSurface;
+  final int darkSurface;
+}
+
 const maxStockQuantity = 999999;
 const defaultLanPort = 8765;
 
@@ -43,6 +63,8 @@ class DormPreferences {
     this.stockThreshold = 1,
     this.matterView = MatterView.board,
     this.lanPort = defaultLanPort,
+    this.themePalette = ThemePalette.pine,
+    this.einkMode = false,
   });
 
   factory DormPreferences.fromValues(Map<String, String> values) {
@@ -67,6 +89,12 @@ class DormPreferences {
         values['matterView'],
         MatterView.board,
       ),
+      themePalette: _readEnum(
+        ThemePalette.values,
+        values['themePalette'],
+        ThemePalette.pine,
+      ),
+      einkMode: values['einkMode'] == 'true',
     );
   }
 
@@ -78,6 +106,8 @@ class DormPreferences {
   final int stockThreshold;
   final MatterView matterView;
   final int lanPort;
+  final ThemePalette themePalette;
+  final bool einkMode;
 
   DormPreferences copyWith({
     StartupPage? startupPage,
@@ -88,6 +118,8 @@ class DormPreferences {
     int? stockThreshold,
     MatterView? matterView,
     int? lanPort,
+    ThemePalette? themePalette,
+    bool? einkMode,
   }) => DormPreferences(
     startupPage: startupPage ?? this.startupPage,
     ledgerFilter: ledgerFilter ?? this.ledgerFilter,
@@ -97,6 +129,8 @@ class DormPreferences {
     stockThreshold: stockThreshold ?? this.stockThreshold,
     matterView: matterView ?? this.matterView,
     lanPort: lanPort ?? this.lanPort,
+    themePalette: themePalette ?? this.themePalette,
+    einkMode: einkMode ?? this.einkMode,
   );
 
   Map<String, String> toValues() => {
@@ -108,6 +142,8 @@ class DormPreferences {
     'stockThreshold': stockThreshold.toString(),
     'matterView': matterView.name,
     'lanPort': lanPort.toString(),
+    'themePalette': themePalette.name,
+    'einkMode': einkMode.toString(),
   };
 }
 

@@ -6,6 +6,10 @@ import 'package:path_provider_windows/path_provider_windows.dart';
 Future<Directory> dormDataDirectory() async {
   final separator = Platform.pathSeparator;
   if (Platform.isWindows) {
+    final isolated = Platform.environment['DORM_DATA_DIR'];
+    if (isolated != null && isolated.trim().isNotEmpty) {
+      return Directory(isolated);
+    }
     // The old Windows VERSIONINFO selected this directory. Keep it independent
     // of the display name so future branding changes also preserve local data.
     final roaming = await _windowsRoamingAppData();

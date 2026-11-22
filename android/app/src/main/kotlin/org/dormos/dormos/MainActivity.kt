@@ -3,6 +3,10 @@ package org.dormos.dormos
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.os.Build
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -13,9 +17,20 @@ class MainActivity : FlutterActivity() {
     private data class DocumentSave(val source: File, val reply: MethodChannel.Result)
 
     private var pendingDocument: DocumentSave? = null
+    private var tableFullscreen = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dorm/cards/window")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "immersive") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                tableFullscreen = call.arguments == true
+                updateTableFullscreen()
+                result.success(null)
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "org.dormos.dormos/documents")
             .setMethodCallHandler { call, result ->
                 if (call.method != "save") {
@@ -53,6 +68,35 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && tableFullscreen) updateTableFullscreen()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun updateTableFullscreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.apply {
+                if (tableFullscreen) {
+                    systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    hide(WindowInsets.Type.systemBars())
+                } else {
+                    systemBarsBehavior = WindowInsetsController.BEHAVIOR_DEFAULT
+                    show(WindowInsets.Type.systemBars())
+                }
+            }
+        } else {
+            val flags = View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            val decor = window.decorView
+            decor.systemUiVisibility = if (tableFullscreen) {
+                decor.systemUiVisibility or flags
+            } else {
+                decor.systemUiVisibility and flags.inv()
+            }
+        }
     }
 
     @Deprecated("FlutterActivity dispatches the document picker result here.")

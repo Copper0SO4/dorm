@@ -250,6 +250,79 @@ class SqliteDormRepository with _SqliteIdentity implements DormRepository {
     });
   }
 
+  @override
+  void deleteMember(int id) => _transaction(() {
+    final member = _requireRow('SELECT id, sync_id FROM members WHERE id = ?', [
+      id,
+    ], '成员不存在');
+    if (_db
+            .select('SELECT id FROM chores WHERE active = 1 LIMIT 1')
+            .isNotEmpty &&
+        _db.select(
+          'SELECT id FROM members WHERE active = 1 AND id <> ? LIMIT 1',
+          [id],
+        ).isEmpty) {
+      throw const InputException('有启用的卫生任务，至少保留一位在用成员');
+    }
+    final hasActiveBills = _db
+        .select(
+          '''SELECT 1 FROM bills WHERE payer_id = ? AND deleted = 0
+      UNION ALL
+      SELECT 1 FROM shares s JOIN bills b ON b.id = s.bill_id
+      WHERE s.member_id = ? AND b.deleted = 0 LIMIT 1''',
+          [id, id],
+        )
+        .isNotEmpty;
+    if (hasActiveBills) {
+      throw const InputException('该成员仍有未删除的账单记录，无法删除；请先删除相关账单，或改用「停用成员」');
+    }
+    if (_db.select(
+      'SELECT 1 FROM shifts WHERE member_id = ? AND completed_at IS NOT NULL LIMIT 1',
+      [id],
+    ).isNotEmpty) {
+      throw const InputException('该成员已有已打卡的卫生记录，无法删除；若不再参与后续排班，请改用「停用成员」');
+    }
+
+    // Purge tombstoned (deleted = 1) bills referencing this member so SQLite FKs
+    // and CloudSnapshot share-sum invariants stay consistent.
+    final deletedBills = _db.select(
+      '''SELECT DISTINCT b.id, b.sync_id FROM bills b
+      LEFT JOIN shares s ON s.bill_id = b.id
+      WHERE b.deleted = 1 AND (b.payer_id = ? OR s.member_id = ?)''',
+      [id, id],
+    );
+    for (final bill in deletedBills) {
+      final billId = bill['id'] as int;
+      final billSyncId = bill['sync_id'] as String?;
+      _db.execute('DELETE FROM transfers WHERE bill_id = ?', [billId]);
+      _db.execute('DELETE FROM shares WHERE bill_id = ?', [billId]);
+      if (billSyncId != null) {
+        _db.execute(
+          "DELETE FROM audit_entries WHERE target_kind = 'bill' AND target_key = ?",
+          [billSyncId],
+        );
+      }
+      _db.execute('DELETE FROM bills WHERE id = ?', [billId]);
+    }
+
+    _db.execute(
+      'DELETE FROM shifts WHERE member_id = ? AND completed_at IS NULL',
+      [id],
+    );
+    _db.execute('UPDATE matters SET owner_id = NULL WHERE owner_id = ?', [id]);
+    _db.execute(
+      'UPDATE chores SET last_member_id = NULL WHERE last_member_id = ?',
+      [id],
+    );
+    final syncId = member['sync_id'] as String;
+    _db.execute('DELETE FROM identity_claims WHERE member_key = ?', [syncId]);
+    _db.execute(
+      "DELETE FROM audit_entries WHERE target_kind = 'member' AND target_key = ?",
+      [syncId],
+    );
+    _db.execute('DELETE FROM members WHERE id = ?', [id]);
+  });
+
   static const _billQuery = '''SELECT b.*, m.name AS payer,
     COALESCE((SELECT SUM(o.outstanding) FROM obligations o WHERE o.bill_id = b.id), 0) AS outstanding,
     COALESCE((SELECT SUM(s.personal_amount) FROM shares s WHERE s.bill_id = b.id), 0) AS personal_amount
@@ -1053,6 +1126,24 @@ class SqliteDormRepository with _SqliteIdentity implements DormRepository {
       copy.close();
     }
   }
+
+  @override
+  void resetFactory({
+    bool keepCloudSettings = false,
+    bool rememberEmptyCloudBase = false,
+  }) => _transaction(() {
+    for (final table in cloudTables.reversed) {
+      _db.execute('DELETE FROM ${table.name}');
+    }
+    _db.execute('DELETE FROM local_preferences');
+    if (!keepCloudSettings) {
+      _db.execute('DELETE FROM cloud_settings');
+    } else {
+      _db.execute('UPDATE cloud_settings SET base = ? WHERE id = 1', [
+        rememberEmptyCloudBase ? CloudSnapshot({}).encoded : null,
+      ]);
+    }
+  });
 
   @override
   void close() => _db.close();
