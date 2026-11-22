@@ -14,6 +14,8 @@ let hints = null;
 let selectionRevision = 0;
 let loadingHints = false;
 let checkingPlay = false;
+let selectionCheck = null;
+let selectionTimer;
 let hintCursor = 0;
 let preferred = null;
 let currentEvents = 0;
@@ -100,7 +102,11 @@ async function request(path, data, seat = session) {
     signal:AbortSignal.timeout(7000),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || '无法连接牌桌');
+  if (!response.ok) {
+    const error = new Error(result.error || '无法连接牌桌');
+    error.status = response.status;
+    throw error;
+  }
   return result;
 }
 function openDialog(title, ...parts) {
@@ -139,8 +145,13 @@ function rulesForm(previous = null) {
   const mode = select('mode',Object.entries(modes),old.mode);
   const remainder = select('remainder',[['equal','必须平分'],['extra','随机多发给一人']],old.remainder);
   const landlord = check('landlord','启用地主',old.landlord);
+  const way = select('landlordCall',[['score','叫分'],['call','叫地主']],old.landlordCall ?? 'score');
+  const wayRow = line('地主产生方式',way);
+  const first = select('firstCaller',[['random','每局随机'],['previousWinner','上局最先出完']],old.firstCaller ?? 'random');
+  const rounds = number('matchRounds',old.matchRounds ?? 0,0,30);
+  const counter = check('cardCounter','全员记牌器',old.cardCounter ?? false);
   const reserve = check('reserve','给地主底牌',old.bottom > 0);
-  const chain = check('chainBombs','连炸',old.chainBombs ?? (previous === null));
+  const chain = check('chainBombs','连炸（每组张数相同，至少四张）',old.chainBombs ?? (previous === null));
   const rocket = check('rocketBeatsChain','王炸大于连炸',old.rocketBeatsChain ?? (previous !== null));
   const bombOrder = el('small');
   const four = check('fourWithTwo','四带二／四带两对',old.fourWithTwo ?? true);
@@ -152,7 +163,8 @@ function rulesForm(previous = null) {
     return {players:Number(players.value),decks:Number(decks.value),discard:Number(discard.value),
       landlord:hasLandlord,bottom:hasBottom ? Number(bottom.value) : 0,mode:mode.value,remainder:remainder.value,
       chainBombs:chain.querySelector('input').checked,rocketBeatsChain:rocket.querySelector('input').checked,
-      fourWithTwo:four.querySelector('input').checked};
+      fourWithTwo:four.querySelector('input').checked,landlordCall:way.value,
+      firstCaller:first.value,matchRounds:Number(rounds.value),cardCounter:counter.querySelector('input').checked};
   }
   function counts() {
     const r = rule();
@@ -160,7 +172,7 @@ function rulesForm(previous = null) {
     bombOrder.textContent = r.rocketBeatsChain
       ? '普通炸弹 ＜ 连炸 ＜ 王炸 ＜ 双王炸'
       : '普通炸弹 ＜ 王炸 ＜ 双王炸 ＜ 连炸';
-    reserveRow.hidden = !r.landlord;
+    reserveRow.hidden = wayRow.hidden = !r.landlord;
     bottom.disabled = !r.landlord || !reserve.querySelector('input').checked;
     const available = r.decks*54-r.bottom-r.discard;
     summary.textContent = r.players ? '起手每位 '+Math.max(0,Math.floor(available/r.players))+' 张 · 余 '+Math.max(0,available%r.players)+' 张' : '';
@@ -168,7 +180,9 @@ function rulesForm(previous = null) {
   const form = el('form',{class:'stack'},
     line('玩法',mode),el('div',{class:'duo'},line('人数',players),line('副数',decks)),
     chain,el('div',{class:'rule-order'},rocket,bombOrder),four,
-    landlord,reserveRow,line('随机舍弃张数',discard),line('余牌处理',remainder),summary,
+    landlord,wayRow,reserveRow,
+    el('div',{class:'duo'},line('首个行动的座位',first),line('比赛局数（0 为不限）',rounds)),
+    counter,line('随机舍弃张数',discard),line('余牌处理',remainder),summary,
     el('div',{class:'actions'},
       button('取消',() => dialog.close()),
       button('自动补齐舍弃张数',() => {
@@ -229,16 +243,19 @@ function moveTag(move) {
 function seatView(player, move) {
   if (!player) return el('div',{class:'seat vacant'},'空座');
   const role = player.id===state.landlord ? '地主' : '';
+  const called = state.phase==='bidding' && player.called != null
+    ? (player.called === 0 ? '不叫' : state.rules.landlordCall==='call' ? '叫地主' : player.called+' 分') : '';
+  const automatic = player.autoplay === true;
   const seat = button('',()=>openDialog(player.name,
     button('🍅 丢番茄',async()=>{await act('tomato',{target:player.id});dialog.close();}),
     button('关闭',()=>dialog.close())),{design:'seat'+(player.id===state.turn?' turn':'')});
   seat.dataset.seat = player.id;
   if (moveLabels[move]) seat.dataset.move = move;
-  seat.title = [player.name,role,moveLabels[move],player.cards+' 张'].filter(Boolean).join(' · ');
+  seat.title = [player.name,role,called,moveLabels[move],automatic?'托管中':'',player.cards+' 张'].filter(Boolean).join(' · ');
   seat.append(el('span',{class:'seat-avatar','aria-hidden':'true'},player.bot?'机':Array.from(player.name)[0]),
     el('span',{class:'seat-text'},el('b',{},player.name),
-      el('span',{class:'seat-meta'},role ? el('small',{},role) : null,moveTag(move))),
-    el('strong',{class:'seat-count','aria-label':player.cards+' 张'},player.cards));
+      el('span',{class:'seat-meta'},role || called ? el('small',{},role || called) : null,moveTag(move))),
+    el('strong',{class:'seat-count','aria-label': (automatic?'托管中，':'')+player.cards+' 张'},automatic?'托管 · '+player.cards:player.cards));
   return seat;
 }
 
@@ -250,8 +267,11 @@ function opponentSeats(s) {
   return others.reverse();
 }
 
+function ownAutoplay() {
+  return state?.people.find(player => player.id===state.you)?.autoplay === true;
+}
 function canSelectCards() {
-  return session && state?.phase==='playing' && !pending;
+  return session && state?.phase==='playing' && !pending && !ownAutoplay();
 }
 function sameHand(a,b) {
   return a!=null && b!=null && a.room===b.room && a.you===b.you &&
@@ -261,6 +281,8 @@ function setSelection(cards, pattern=null) {
   selected = cards;
   preferred = pattern;
   selectionRevision++;
+  clearTimeout(selectionTimer);
+  selectionCheck = null;
   if (pattern===null) hintCursor = 0;
 }
 function changeSelection(cards) {
@@ -343,7 +365,7 @@ let ownedFullscreen = false;
 function clearBoard() {
   if (!board) return;
   board.hand.dispose();
-  board.trick.dispose();
+  for (const lane of board.lanes.values()) lane.cards.dispose();
   board = null;
   content.replaceChildren();
   document.body.classList.remove('at-table');
@@ -357,15 +379,22 @@ function mountBoard() {
   const fullscreen = button('全屏',toggleFullscreen,{title:'横屏全屏'});
   fullscreen.hidden = !document.fullscreenEnabled;
   const seats = el('div',{class:'opponents','aria-label':'其他玩家'});
+  const counter = el('div',{class:'rank-counter',title:'未见牌，含未知的底牌和弃牌',hidden:true});
+  const autoButton = button('托管',()=>act('autoplay',{enabled:!ownAutoplay()}));
+  const summary = el('div',{class:'settlement',hidden:true});
+  const advice = button('',showAiAdvice,{design:'ai-advice'});
+  advice.hidden = true;
   const status = el('p',{class:'turn-status',role:'status'});
   const wild = el('span',{class:'wild-status'});
-  const last = el('div',{class:'last-play'});
-  const played = el('div',{class:'played-canvas'});
-  const playArea = el('div',{class:'play-area',hidden:true},last,played);
+  const spots = el('div',{class:'play-spots'});
   const ownMove = el('span',{class:'own-move'});
   const controls = el('div',{class:'play-controls'});
+  const passButton = button('不出',() => act('pass',{},state?.turnVersion));
+  const hintButton = button('提示',hint);
+  const aiButton = button('AI 提示',()=>act('aiHint',{},state?.turnVersion));
+  const playButton = button('出牌',choosePlay,{design:'primary'});
   const count = el('span',{class:'own-count'});
-  const countSelected = el('span',{class:'selection-count'});
+  const countSelected = el('span',{class:'selection-count','aria-live':'polite'});
   const clear = button('清空',()=>changeSelection(new Set()),{design:'text-action'});
   const expand = button('展开手牌',()=>showCards('我的手牌',state.hand.map(id=>({id})),canSelectCards()),
     {design:'text-action'});
@@ -373,18 +402,116 @@ function mountBoard() {
   const hand = el('div',{class:'hand-canvas',role:'group','aria-label':'我的手牌'});
   const history = el('div',{class:'message-history'});
   const surface = el('section',{class:'card-stage','aria-label':'斗地主牌桌'},
-    el('div',{class:'table-head'},roomText,el('div',{class:'bottom-slot'},bottom),
-      el('div',{class:'head-tools'},button('消息',showChat),button('分享',share),fullscreen,button('更多',settingsMenu))),
+    el('div',{class:'table-top'},
+      el('div',{class:'table-head'},roomText,el('div',{class:'bottom-slot'},bottom),
+        el('div',{class:'head-tools'},autoButton,button('消息',showChat),button('分享',share),fullscreen,button('更多',settingsMenu))),
+      counter),
     seats,
-    el('div',{class:'trick-zone'},el('div',{class:'play-spots'},playArea)),
+    el('div',{class:'trick-zone'},spots,summary),
     el('div',{class:'action-row'},el('div',{class:'action-status'},status,wild),controls),
-    el('div',{class:'hand-line'},count,ownMove,countSelected,clear,expand),
+    el('div',{class:'hand-line'},count,ownMove,countSelected,clear,expand,advice),
     hand);
   document.body.classList.add('at-table');
   content.replaceChildren(surface);
-  return {surface,roomText,bottom,seats,status,wild,last,playArea,controls,count,ownMove,countSelected,clear,expand,history,
+  return {surface,roomText,bottom,seats,status,wild,spots,counter,autoButton,summary,advice,controls,
+    passButton,hintButton,aiButton,playButton,
+    count,ownMove,countSelected,clear,expand,history,
     hand:new CardSurface(hand,{onSelection:changeSelection,onDense:dense=>{expand.hidden=!dense;}}),
-    trick:new CardSurface(played),version:null,playStamp:null};
+    lanes:new Map(),version:null};
+}
+
+function renderTrick(s, opponents, moves) {
+  const previous = s.last ? null : s.previousTrick;
+  const played = s.last ?? previous?.play;
+  const actor = s.leader ?? previous?.leader;
+  const entries = new Map((s.last ? s.tablePlays ?? [] : []).map(item => [item.seat, item.play]));
+  if (played && actor != null) entries.set(actor, played);
+  for (const [seat, lane] of board.lanes) {
+    if (!entries.has(seat)) {
+      lane.cards.dispose();
+      lane.area.remove();
+      board.lanes.delete(seat);
+    }
+  }
+  const others = [...entries.keys()].filter(seat => seat !== s.you);
+  const split = entries.has(s.you) && others.length > 0;
+  board.spots.dataset.split = String(split);
+  board.spots.dataset.busy = String(opponents.length > 3);
+  for (const [seat, play] of entries) {
+    let lane = board.lanes.get(seat);
+    if (!lane) {
+      const heading = el('div',{class:'last-play'});
+      const canvas = el('div',{class:'played-canvas'});
+      const area = el('div',{class:'play-area'},heading,canvas);
+      board.spots.append(area);
+      lane = {area,heading,cards:new CardSurface(canvas), stamp:null};
+      board.lanes.set(seat,lane);
+    }
+    const mine = seat === s.you;
+    const index = opponents.findIndex(player => player?.id === seat);
+    const anchor = mine || index < 0 || opponents.length===1 ? .5
+      : opponents.length===2 ? (index===0?.16:.84) : (index+.5)/opponents.length;
+    lane.area.dataset.owner = mine ? 'self' : 'opponent';
+    lane.area.dataset.current = String(seat === actor);
+    lane.area.dataset.bomb = String(Boolean(play.bomb));
+    lane.area.style.setProperty('--play-x',anchor*100+'%');
+    lane.area.style.setProperty('--play-width',Math.min(580,Math.max(145,106+play.cards.length*19))+'px');
+    lane.area.style.setProperty('--lane-limit',mine || others.length < 2 ? '100%' : (100 / opponents.length)+'% - 6px');
+    const tag = previous ? el('span',{class:'move-tag move-previous'},'上轮') : moveTag(moves.get(seat));
+    lane.heading.replaceChildren(el('strong',{},mine?'我的出牌':playerName(seat)+' 出牌'),
+      ...[tag].filter(Boolean),el('span',{},play.label));
+    const stamp = [play.key,...play.cards.map(card=>card.id)].join('/');
+    if (stamp !== lane.stamp && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (play.bomb && seat === actor && !previous) {
+        const splash = el('span',{class:'power-banner','aria-hidden':'true'},play.label+' ×2');
+        board.spots.append(splash);
+        splash.animate([{opacity:0,scale:.9},{opacity:1,scale:1,offset:.15},
+          {opacity:1,scale:1.02,offset:.65},{opacity:0,scale:1.10}],{duration:720}).finished
+          .then(()=>splash.remove(),()=>splash.remove());
+      }
+      lane.area.animate([{transform:'translateY('+(mine?7:-7)+'px)'},
+        {transform:'translateY(0)'}],{duration:195,easing:'cubic-bezier(.2,.8,.2,1)'});
+    }
+    lane.stamp = stamp;
+    lane.cards.update(play.cards);
+  }
+}
+
+function showAiAdvice() {
+  const hint = state?.aiHint;
+  if (!hint?.reason) return;
+  const play = hint.play;
+  const buttons = [];
+  if (play) buttons.push(button('选中建议的牌',() => {
+    if (state?.turnVersion !== hint.turn || ownAutoplay()) return;
+    setSelection(new Set(play.cards.map(card => card.id)),play.key);
+    renderRoom();
+    dialog.close();
+  },{design:'primary'}));
+  buttons.push(button('关闭',()=>dialog.close()));
+  openDialog('AI 建议 · '+(play?.label ?? '不出'),el('p',{},hint.reason),el('div',{class:'actions'},buttons));
+}
+
+function renderSettlement(s) {
+  const summary = s.settlement;
+  board.summary.hidden = !summary;
+  board.spots.hidden = Boolean(summary);
+  if (!summary) return;
+  const rows = new Map(summary.players.map(player => [player.seat,player]));
+  const signed = value => Number(value)>0 ? '+'+value : String(value);
+  board.summary.replaceChildren(
+    el('h3',{},s.matchComplete ? '全场结算' : '第 '+s.round+' 局结算'),
+    el('small',{},'底分 '+summary.base+' · 炸弹 '+summary.bombs+' · '+summary.multiplier+' 倍'+(summary.spring?' · '+summary.spring:'')),
+    ...(s.standings ?? summary.players).map(rank => {
+      const player = rows.get(rank.seat);
+      if (!player) return null;
+      return el('div',{class:'settlement-row'},
+        el('div',{class:'settlement-head'},
+          el('b',{},player.name+(player.seat===s.you?'（你）':'')),
+          el('span',{},'本局 '+signed(player.delta)),el('strong',{},'总分 '+signed(player.total))),
+        player.cards.length ? el('div',{class:'remaining-cards'},player.cards.map(id=>face({id})))
+          : el('small',{},'已出完'));
+    }));
 }
 
 function renderRoom() {
@@ -398,30 +525,42 @@ function renderRoom() {
   const active = bidding || playing;
   const activeRuleNames = [modes[s.rules.mode],s.rules.decks+' 副'];
   activeRuleNames.push(s.rules.chainBombs ? '连炸开' : '连炸关');
+  const autoplay = ownAutoplay();
+  const preview = own && playing && !autoplay && selected.size ? activeSelectionCheck() : null;
+  board.autoButton.hidden = !active && !autoplay;
+  board.autoButton.disabled = pending;
+  board.autoButton.textContent = autoplay ? '取消托管' : '托管';
+  board.autoButton.setAttribute('aria-pressed',String(autoplay));
   const controls = [];
   if (host && !active) {
-    controls.push(button(s.phase==='finished'?'再来一局':'发牌开局',()=>act('start'),
+    controls.push(button(s.phase==='finished'?(s.matchComplete?'开始新比赛':'下一局'):'发牌开局',()=>act('start'),
       {design:'primary',disabled:pending || s.people.length!==s.rules.players}));
     controls.push(button('添加电脑玩家',()=>act('bot'),{disabled:pending || s.people.length>=s.rules.players}));
     if (s.people.some(player=>player.bot)) controls.push(button('移除电脑玩家',()=>act('removeBot'),{disabled:pending}));
     controls.push(button('调整规则',()=>rulesForm(s.rules),{disabled:pending}));
   }
-  if (own && bidding) {
+  if (own && bidding && !autoplay) {
     controls.push(button('不叫',()=>act('bid',{bid:0},s.turnVersion),{disabled:pending}));
-    for (let bid=s.bid+1;bid<=3;bid++) {
-      controls.push(button('叫 '+bid+' 分',()=>act('bid',{bid},s.turnVersion),{design:'primary',disabled:pending}));
+    const calls = s.rules.landlordCall==='call';
+    for (let bid=s.bid+1;bid<=(calls ? 1 : 3);bid++) {
+      controls.push(button(calls?'叫地主':'叫 '+bid+' 分',()=>act('bid',{bid},s.turnVersion),
+        {design:'primary',disabled:pending}));
     }
   }
-  if (own && playing) {
-    controls.push(button('不出',()=>act('pass',{},s.turnVersion),{disabled:pending || !s.last}));
-    controls.push(button('提示',hint,{disabled:pending}));
-    controls.push(button('出牌',choosePlay,{design:'primary',disabled:pending || !selected.size}));
+  if (own && playing && !autoplay) {
+    board.passButton.disabled = pending || !s.last;
+    board.hintButton.disabled = pending;
+    board.playButton.disabled = pending || checkingPlay || !selected.size || Boolean(preview?.issue);
+    board.aiButton.disabled = pending || s.aiHint?.pending === true;
+    controls.push(board.passButton,board.hintButton,board.aiButton,board.playButton);
   }
   if (board.version!==s.version) {
     board.version = s.version;
     const opponents = opponentSeats(s);
     const moves = turnMoves(s);
-    board.roomText.replaceChildren(el('b',{},s.room),el('span',{},activeRuleNames.join(' · ')));
+    board.roomText.replaceChildren(el('b',{},s.room),el('span',{},active
+      ? '第 '+(s.round ?? 1)+(s.rounds?'/'+s.rounds:'')+' 局 · '+(s.multiplier ?? 1)+' 倍'
+      : activeRuleNames.join(' · ')));
     const bottomCount = s.bottom.length || (bidding ? s.rules.bottom : 0);
     board.bottom.hidden = bottomCount === 0;
     if (bottomCount) {
@@ -432,56 +571,82 @@ function renderRoom() {
       if (bottomCount>visible) board.bottom.append(el('span',{class:'extra-bottom'},'+'+(bottomCount-visible)));
     }
     board.seats.replaceChildren(...opponents.map(player=>seatView(player,moves.get(player?.id))));
-    board.status.textContent = s.phase==='finished' ? (s.result || '牌局结束') :
+    board.status.textContent = autoplay && active ? '托管中' : s.botThinking ? playerName(s.turn)+'思考中' :
+      s.phase==='finished' ? (s.result || '牌局结束') :
       bidding ? (own?'轮到你叫分':playerName(s.turn)+'正在叫分') :
       playing ? (own?(s.last?'轮到你出牌':'轮到你先出'):playerName(s.turn)+'正在出牌') :
       (s.people.length===s.rules.players?'座位已满，可以发牌':'等待其他玩家入座');
     board.status.classList.toggle('your-turn',own && active);
-    const previousTrick = s.last ? null : s.previousTrick;
-    const played = s.last ?? previousTrick?.play;
-    const actor = s.leader ?? previousTrick?.leader;
-    board.playArea.hidden = !played;
-    if (played) {
-      const ownPlay = actor===s.you;
-      const index = opponents.findIndex(player=>player?.id===actor);
-      const anchor = ownPlay || index<0 ? .5 : (index+.5)/opponents.length;
-      board.playArea.dataset.owner = ownPlay ? 'self' : 'opponent';
-      board.playArea.dataset.seat = String(actor);
-      board.playArea.dataset.bomb = String(Boolean(played.bomb));
-      board.playArea.style.setProperty('--play-x',anchor*100+'%');
-      board.playArea.style.setProperty('--play-width',Math.min(580,Math.max(145,106+played.cards.length*19))+'px');
-      const tag = previousTrick ? el('span',{class:'move-tag move-previous'},'上轮') : moveTag(moves.get(actor));
-      board.last.replaceChildren(el('strong',{},ownPlay?'我的出牌':playerName(actor)+' 出牌'),
-        ...[tag].filter(Boolean), el('span',{},played.label));
-      const stamp = [actor,played.key,...played.cards.map(card=>card.id)].join('/');
-      if (stamp!==board.playStamp && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        board.playArea.animate([
-          {opacity:.5,transform:'translateY('+(ownPlay?8:-8)+'px) scale(.98)'},
-          {opacity:1,transform:'translateY(0) scale(1)'},
-        ],{duration:195,easing:'cubic-bezier(.2,.8,.2,1)'});
-      }
-      board.playStamp = stamp;
-    } else board.playStamp = null;
-    board.trick.update(played?.cards ?? []);
+    board.counter.hidden = !s.counter?.length;
+    board.counter.replaceChildren(el('small',{},'未见'),
+      ...(s.counter ?? []).map(({rank,count}) => el('span',{class:count===0?'exhausted':''},el('b',{},rankName(rank)),' '+count)));
+    renderTrick(s, opponents, moves);
+    renderSettlement(s);
     board.count.textContent = '我 · '+s.hand.length+' 张'+(s.you===s.landlord?' · 地主':'');
-    board.ownMove.replaceChildren(...[moveTag(moves.get(s.you))].filter(Boolean));
+    board.ownMove.replaceChildren(...[autoplay ? el('span',{class:'move-tag move-previous'},'托管') : moveTag(moves.get(s.you))].filter(Boolean));
     board.wild.textContent = playing && s.wild.length ? '癞子 '+s.wild.map(rankName).join('、') : '';
     board.wild.hidden = !board.wild.textContent;
     updateChat();
   }
   board.controls.hidden = !controls.length;
-  board.controls.replaceChildren(...controls);
-  board.countSelected.textContent = selected.size ? '已选 '+selected.size+' 张' : '';
+  if (controls.length !== board.controls.children.length ||
+      controls.some((control,index) => control !== board.controls.children[index])) {
+    board.controls.replaceChildren(...controls);
+  }
+  const options = preview?.options;
+  const pattern = options?.find(option => option.key === preferred) ??
+    (options?.length === 1 ? options[0] : null);
+  const label = pattern?.label ?? (options?.length > 1 ? options.length+' 种出法' : null);
+  const text = !selected.size ? '' : preview?.issue ??
+    (label ? label+' · '+selected.size+' 张' : '已选 '+selected.size+' 张');
+  if (board.countSelected.textContent !== text) board.countSelected.textContent = text;
+  board.countSelected.dataset.invalid = String(Boolean(preview?.issue));
+  board.countSelected.dataset.ready = String(Boolean(label));
   board.clear.hidden = !selected.size;
-  board.hand.node.hidden = !s.hand.length;
-  board.count.parentNode.hidden = !s.hand.length;
+  const coach = own && playing && !autoplay ? s.aiHint : null;
+  board.advice.hidden = !coach;
+  board.advice.disabled = !coach?.reason;
+  board.advice.textContent = !coach ? '' : coach.pending ? 'AI 正在分析牌局'
+    : coach.error ?? 'AI 建议 · '+(coach.play?.label ?? '不出')+' · '+coach.reason;
+  board.hand.node.hidden = !s.hand.length || s.phase==='finished';
+  board.count.parentNode.hidden = board.hand.node.hidden;
   board.hand.update(s.hand.map(id=>({id})),selected,new Set(s.wild),canSelectCards());
 }
 
 function isOwnTurn(seat, revision) {
   return session === seat && state?.phase === 'playing' &&
-    state.you === state.turn && state.turnVersion === revision;
+    state.you === state.turn && !ownAutoplay() && state.turnVersion === revision;
 }
+function activeSelectionCheck() {
+  const revision = state?.turnVersion;
+  if (selectionCheck && selectionCheck.turn === revision && selectionCheck.revision === selectionRevision) return selectionCheck;
+  clearTimeout(selectionTimer);
+  const check = {seat:session,turn:revision,revision:selectionRevision,cards:[...selected]};
+  selectionCheck = check;
+  selectionTimer = setTimeout(() => {
+    if (selectionCheck !== check || !isOwnTurn(check.seat, check.turn)) return;
+    loadSelectionCheck(check).catch(() => {});
+  }, 135);
+  return check;
+}
+
+function loadSelectionCheck(check) {
+  check.request ??= request('/'+check.seat.room+'/options',{
+    cards:check.cards,turnVersion:check.turn,
+  },check.seat).then(({options}) => {
+    check.options = options;
+  }).catch(error => {
+    if (error.status === 400) check.issue = error.message;
+    else {
+      check.request = null;
+      throw error;
+    }
+  }).finally(() => {
+    if (selectionCheck === check && isOwnTurn(check.seat,check.turn)) renderRoom();
+  });
+  return check.request;
+}
+
 async function hint() {
   const seat = session;
   const revision = state?.turnVersion;
@@ -521,16 +686,22 @@ async function choosePlay() {
   const seat = session;
   const revision = state?.turnVersion;
   if (!seat || !isOwnTurn(seat, revision) || pending || checkingPlay || gestureActive() || !selected.size) return;
-  const cards = [...selected];
+  const check = activeSelectionCheck();
+  const cards = check.cards;
   const suggested = preferred;
-  const choiceRevision = selectionRevision;
-  const stillSelected = () => isOwnTurn(seat, revision) && selectionRevision === choiceRevision;
-  let options;
+  const stillSelected = () => isOwnTurn(seat, revision) && selectionRevision === check.revision;
+  clearTimeout(selectionTimer);
   checkingPlay = true;
+  renderRoom();
   try {
-    ({options} = await request('/'+seat.room+'/options',{cards,turnVersion:revision},seat));
-  } finally { checkingPlay = false; }
+    await loadSelectionCheck(check);
+  } finally {
+    checkingPlay = false;
+    renderRoom();
+  }
   if (!stillSelected()) return;
+  if (check.issue) return notice(check.issue);
+  const options = check.options;
   const chosen = options.find(option => option.key === suggested) ?? (options.length === 1 ? options[0] : null);
   if (chosen) return act('play',{cards,pattern:chosen.key},revision);
   openDialog('选择出牌方式',options.map(option =>
@@ -590,6 +761,8 @@ function accept(value) {
   renderRoom();
   const tomato = events.findLast(event=>event.kind==='tomato');
   if (tomato) board.seats.querySelector('[data-seat="'+tomato.target+'"]')?.classList.add('splat');
+  const fallback = events.findLast(event=>event.kind==='botFallback');
+  if (fallback) notice(fallback.text);
   if (events.length) sound(events.at(-1).kind);
 }
 let fetching=false;

@@ -19,11 +19,13 @@ class CardTable extends StatefulWidget {
     required this.session,
     required this.view,
     required this.share,
+    this.onBotApi,
   });
 
   final CardSession session;
   final RoomJson view;
   final VoidCallback share;
+  final VoidCallback? onBotApi;
 
   @override
   State<CardTable> createState() => _CardTableState();
@@ -55,6 +57,10 @@ class _CardTableState extends State<CardTable> {
   CardRules get rules => CardRules.fromJson(view['rules'] as RoomJson);
   CardSession get session => widget.session;
   bool get ownTurn => view['turn'] == view['you'];
+  bool get autoplay => people.any(
+    (player) => player['id'] == view['you'] && player['autoplay'] == true,
+  );
+  RoomJson? get coaching => view['aiHint'] as RoomJson?;
   bool get isHost => view['host'] == view['you'];
   bool get inPlay => ['playing', 'bidding'].contains(view['phase']);
   bool get online => view['scope'] == 'online';
@@ -116,6 +122,14 @@ class _CardTableState extends State<CardTable> {
             _splash = null;
           });
         }
+      });
+    }
+    final fallback = recent
+        .where((entry) => entry['kind'] == 'botFallback')
+        .lastOrNull;
+    if (fallback != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) notify(context, fallback['text'] as String);
       });
     }
     unawaited(_sound(recent.last['kind'] as String));
@@ -194,9 +208,10 @@ class _CardTableState extends State<CardTable> {
   Future<void> _play() async {
     if (!ownTurn || blocked || view['phase'] != 'playing') return;
     final cards = hand.where((card) => _selected.contains(card.id)).toList();
-    final options = legalCardPlays(cards, wild, previous, rules: rules);
+    final selection = inspectCardSelection(cards, wild, previous, rules);
+    final options = selection.options;
     if (options.isEmpty) {
-      notify(context, disabledCardPlayMessage(cards, wild, rules) ?? '这组牌无法打出');
+      notify(context, selection.issue ?? '请先选牌');
       return;
     }
     final initialTurn = view['turnVersion'];
@@ -335,7 +350,7 @@ class _CardTableState extends State<CardTable> {
   @override
   Widget build(BuildContext context) {
     final phase = view['phase'] as String;
-    final playing = phase == 'playing' && ownTurn;
+    final playing = phase == 'playing' && ownTurn && !autoplay;
     final cards = hand;
     final chosen = [
       for (final card in cards)
@@ -343,18 +358,20 @@ class _CardTableState extends State<CardTable> {
     ];
     final roomRules = rules;
     final wildRanks = wild;
-    final legal =
-        playing &&
-        chosen.isNotEmpty &&
-        legalCardPlays(
-          chosen,
-          wildRanks,
-          previous,
-          rules: roomRules,
-        ).isNotEmpty;
-    final selectionIssue = playing && chosen.isNotEmpty && !legal
-        ? disabledCardPlayMessage(chosen, wildRanks, roomRules) ?? '这手牌不能这样出'
-        : null;
+    final selection = playing
+        ? inspectCardSelection(chosen, wildRanks, previous, roomRules)
+        : (options: const <CardPlay>[], issue: null);
+    final suggested = selection.options
+        .where((play) => play.key == _preferred)
+        .firstOrNull;
+    final pattern =
+        suggested ??
+        (selection.options.length == 1 ? selection.options.single : null);
+    final preview =
+        pattern?.label ??
+        (selection.options.length > 1
+            ? '${selection.options.length} 种出法'
+            : null);
     final moves = _turnMoves();
     final opponents = _opponents(rules.players);
     final motion = MediaQuery.disableAnimationsOf(context)
@@ -386,10 +403,11 @@ class _CardTableState extends State<CardTable> {
                   final last = _displayedPlay;
                   final actor =
                       (view['leader'] ?? _previousTrick?['leader']) as int?;
-                  final handHeight = (constraints.maxHeight * .31).clamp(
-                    74.0,
-                    142.0,
-                  );
+                  final handHeight =
+                      (constraints.maxHeight * (compact ? .29 : .32)).clamp(
+                        74.0,
+                        142.0,
+                      );
                   return Padding(
                     padding: EdgeInsets.symmetric(
                       horizontal: compact ? 8 : 25,
@@ -413,15 +431,24 @@ class _CardTableState extends State<CardTable> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Color(0xffffcab5)),
                           ),
+                        if (view['counter'] case final List counts)
+                          _counter(counts.cast<RoomJson>()),
                         if (opponents.isNotEmpty)
                           ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 1040),
                             child: Row(
                               spacing: compact ? 4 : 8,
                               children: [
-                                for (final player in opponents)
+                                for (final (index, player) in opponents.indexed)
                                   Expanded(
-                                    child: Center(
+                                    child: Align(
+                                      alignment: opponents.length == 1
+                                          ? Alignment.center
+                                          : index == 0
+                                          ? Alignment.centerLeft
+                                          : index == opponents.length - 1
+                                          ? Alignment.centerRight
+                                          : Alignment.center,
                                       child: ConstrainedBox(
                                         constraints: const BoxConstraints(
                                           maxWidth: 172,
@@ -437,15 +464,20 @@ class _CardTableState extends State<CardTable> {
                             ),
                           ),
                         Expanded(
-                          child: last == null || actor == null
+                          child: view['settlement'] is RoomJson
+                              ? Align(
+                                  child: _settlement(
+                                    view['settlement'] as RoomJson,
+                                  ),
+                                )
+                              : last == null || actor == null
                               ? const SizedBox.shrink()
-                              : _playedCards(
+                              : _trickArea(
                                   last,
                                   actor,
                                   opponents,
-                                  moves[actor],
+                                  moves,
                                   motion,
-                                  previousTrick: view['last'] == null,
                                 ),
                         ),
                         Wrap(
@@ -457,21 +489,28 @@ class _CardTableState extends State<CardTable> {
                               constraints: const BoxConstraints(maxWidth: 190),
                               child: _turnPrompt(),
                             ),
-                            _actions(phase: phase, legal: legal),
+                            _actions(
+                              phase: phase,
+                              legal: selection.options.isNotEmpty,
+                            ),
                           ],
                         ),
-                        if (cards.isNotEmpty) ...[
+                        if (playing && coaching != null)
+                          _coachingFeedback(coaching!),
+                        if (cards.isNotEmpty && phase != 'finished') ...[
                           _handLine(
                             cards.length,
                             moves[view['you']],
                             chosen.length,
-                            selectionIssue,
+                            selection.issue,
+                            preview,
                           ),
                           _HandStrip(
                             cards: cards,
                             selected: _selected,
                             wild: wild,
-                            enabled: phase == 'playing' && !blocked,
+                            enabled:
+                                phase == 'playing' && !blocked && !autoplay,
                             height: handHeight,
                             motion: motion,
                             tightSpacing:
@@ -522,8 +561,9 @@ class _CardTableState extends State<CardTable> {
                 ),
                 children: [
                   TextSpan(
-                    text:
-                        '  ${rules.mode.label} · ${rules.decks} 副 · 连炸${rules.chainBombs ? '开' : '关'}${online ? ' · 在线' : ''}',
+                    text: inPlay
+                        ? ' · 第 ${view['round'] ?? 1}${rules.matchRounds > 0 ? '/${rules.matchRounds}' : ''} 局 · ${view['multiplier']} 倍'
+                        : ' · ${rules.mode.label} · ${rules.decks} 副${online ? ' · 在线' : ''}',
                     style: const TextStyle(
                       color: Colors.white70,
                       fontWeight: FontWeight.w500,
@@ -540,6 +580,16 @@ class _CardTableState extends State<CardTable> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                if (inPlay || autoplay)
+                  IconButton(
+                    tooltip: autoplay ? '取消托管' : '托管',
+                    isSelected: autoplay,
+                    onPressed: blocked
+                        ? null
+                        : () => session.act('autoplay', {'enabled': !autoplay}),
+                    icon: const Icon(Icons.smart_toy_outlined),
+                    selectedIcon: const Icon(Icons.smart_toy, color: _gold),
+                  ),
                 IconButton(
                   tooltip: '牌桌消息',
                   onPressed: _showChat,
@@ -560,6 +610,213 @@ class _CardTableState extends State<CardTable> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _counter(List<RoomJson> counts) => Tooltip(
+    message: '未见牌张数，含未知的底牌与弃牌',
+    child: Container(
+      key: const ValueKey('card-counter'),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xe0163028),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xff6a8c7b)),
+      ),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 5,
+        children: [
+          const Text(
+            '未见',
+            style: TextStyle(fontSize: 10, color: Colors.white70),
+          ),
+          for (final count in counts)
+            Text.rich(
+              TextSpan(
+                text: PlayingCard.rankLabel(count['rank'] as int),
+                style: const TextStyle(
+                  color: _gold,
+                  fontWeight: FontWeight.w800,
+                ),
+                children: [
+                  TextSpan(
+                    text: ' ${count['count']}',
+                    style: TextStyle(
+                      color: count['count'] == 0
+                          ? Colors.white38
+                          : Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+              style: const TextStyle(fontSize: 10),
+            ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _coachingFeedback(RoomJson advice) {
+    final pending = advice['pending'] == true;
+    final explanation = advice['reason'] as String?;
+    final error = advice['error'] as String?;
+    final play = advice['play'] as RoomJson?;
+    final action = advice['pass'] == true ? '不出' : play?['label'] as String?;
+    return TextButton(
+      style: TextButton.styleFrom(
+        foregroundColor: error != null ? const Color(0xffffc9aa) : _gold,
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+        minimumSize: const Size(0, 24),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      onPressed: explanation == null
+          ? null
+          : () => _showAiAdvice(advice, explanation),
+      child: Text(
+        pending ? 'AI 正在分析牌局' : error ?? 'AI 建议${action ?? ''} · $explanation',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 12),
+      ),
+    );
+  }
+
+  void _showAiAdvice(RoomJson advice, String explanation) {
+    final play = advice['play'] as RoomJson?;
+    showDialog<void>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('AI 建议 · ${play?['label'] ?? '不出'}'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+            child: Text(explanation),
+          ),
+          if (play != null)
+            SimpleDialogOption(
+              onPressed: () {
+                Navigator.pop(context);
+                if (!mounted ||
+                    advice['turn'] != view['turnVersion'] ||
+                    autoplay) {
+                  return;
+                }
+                setState(() {
+                  _selected
+                    ..clear()
+                    ..addAll(
+                      (play['cards'] as List).cast<RoomJson>().map(
+                        (card) => card['id'] as int,
+                      ),
+                    );
+                  _preferred = play['key'] as String;
+                  _hintCursor = 0;
+                });
+              },
+              child: const Text('选中建议的牌'),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _signedScore(Object? value) {
+    final score = BigInt.tryParse('$value') ?? BigInt.zero;
+    return score > BigInt.zero ? '+$score' : '$score';
+  }
+
+  Widget _settlement(RoomJson summary) {
+    final rows = {
+      for (final player in (summary['players'] as List).cast<RoomJson>())
+        player['seat']: player,
+    };
+    final ranking = (view['standings'] as List).cast<RoomJson>();
+    final spring = summary['spring'];
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xec122c24),
+          border: Border.all(color: const Color(0xffa69365)),
+          borderRadius: BorderRadius.circular(15),
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(13),
+          children: [
+            Text(
+              view['matchComplete'] == true ? '全场结算' : '第 ${view['round']} 局结算',
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: _gold,
+              ),
+            ),
+            Text(
+              '底分 ${summary['base']} · 炸弹 ${summary['bombs']} · ${summary['multiplier']} 倍${spring == null ? '' : ' · $spring'}',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            for (final rankingRow in ranking)
+              if (rows[rankingRow['seat']] case final row?)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    spacing: 5,
+                    children: [
+                      Row(
+                        spacing: 10,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${row['name']}${row['seat'] == view['you'] ? '（你）' : ''}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            '本局 ${_signedScore(row['delta'])}',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                          Text(
+                            '总分 ${_signedScore(row['total'])}',
+                            style: const TextStyle(color: _gold),
+                          ),
+                        ],
+                      ),
+                      if ((row['cards'] as List).isNotEmpty)
+                        Wrap(
+                          spacing: 3,
+                          runSpacing: 3,
+                          alignment: WrapAlignment.start,
+                          children: [
+                            for (final id in (row['cards'] as List).cast<int>())
+                              _Face(
+                                card: PlayingCard(id),
+                                width: 28,
+                                height: 38,
+                              ),
+                          ],
+                        )
+                      else
+                        const Text(
+                          '已出完',
+                          style: TextStyle(color: Colors.white60, fontSize: 12),
+                        ),
+                    ],
+                  ),
+                ),
+          ],
+        ),
       ),
     );
   }
@@ -756,14 +1013,19 @@ class _CardTableState extends State<CardTable> {
   Widget _turnPrompt() {
     final phase = view['phase'];
     final current = view['turn'];
-    final status = switch (phase) {
-      'bidding' => ownTurn ? '轮到你叫分' : '${_person(current)}正在叫分',
-      'playing' when ownTurn && previous == null => '轮到你先出',
-      'playing' when ownTurn => '轮到你出牌',
-      'playing' => '${_person(current)}正在出牌',
-      'finished' => view['result'] as String? ?? '牌局结束',
-      _ => people.length == rules.players ? '座位已满，可以发牌' : '等待其他玩家入座',
-    };
+    final thinking = view['botThinking'] == true;
+    final status = autoplay && inPlay
+        ? '托管中'
+        : thinking
+        ? '${_person(current)}思考中'
+        : switch (phase) {
+            'bidding' => ownTurn ? '轮到你叫分' : '${_person(current)}正在叫分',
+            'playing' when ownTurn && previous == null => '轮到你先出',
+            'playing' when ownTurn => '轮到你出牌',
+            'playing' => '${_person(current)}正在出牌',
+            'finished' => view['result'] as String? ?? '牌局结束',
+            _ => people.length == rules.players ? '座位已满，可以发牌' : '等待其他玩家入座',
+          };
     final wildLabel = phase == 'playing' && wild.isNotEmpty
         ? '癞子 ${wild.map(PlayingCard.rankLabel).join('、')}'
         : null;
@@ -818,155 +1080,102 @@ class _CardTableState extends State<CardTable> {
     );
   }
 
-  Widget _playedCards(
+  Widget _trickArea(
     RoomJson last,
     int actor,
     List<RoomJson?> opponents,
-    CardMove? move,
-    Duration motion, {
-    required bool previousTrick,
-  }) {
-    final mine = actor == view['you'];
-    final seat = opponents.indexWhere((player) => player?['id'] == actor);
-    final position = mine || seat < 0 ? .5 : (seat + .5) / opponents.length;
-    final cards = (last['cards'] as List).cast<RoomJson>();
-    final bomb = last['bomb'] == true;
+    Map<int, CardMove> moves,
+    Duration motion,
+  ) {
+    final previousTrick = view['last'] == null;
+    final displayed = <int, RoomJson>{
+      if (!previousTrick)
+        for (final entry
+            in (view['tablePlays'] as List? ?? const []).cast<RoomJson>())
+          if (entry['seat'] != actor)
+            entry['seat'] as int: entry['play'] as RoomJson,
+      actor: last,
+    };
+    final me = view['you'] as int;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 1040),
       child: LayoutBuilder(
-        builder: (context, constraints) {
-          if (constraints.maxHeight < 22) return const SizedBox.shrink();
-          final width = math.min(
-            constraints.maxWidth,
-            (106 + cards.length * 19).clamp(145, 580).toDouble(),
-          );
-          final left = (constraints.maxWidth * position - width / 2).clamp(
-            0.0,
-            constraints.maxWidth - width,
-          );
-          final insetTop = mine || constraints.maxHeight < 190 ? 0.0 : 24.0;
+        builder: (context, bounds) {
+          if (bounds.maxHeight < 22) return const SizedBox.shrink();
+          final retain =
+              bounds.maxHeight >= 118 &&
+              bounds.maxWidth >= 480 &&
+              opponents.length <= 3;
+          final plays = retain ? displayed : {actor: last};
+          final bothRows = plays.containsKey(me) && plays.length > 1;
+          final height = bothRows
+              ? (bounds.maxHeight - 6) / 2
+              : bounds.maxHeight;
           return Stack(
             children: [
-              Positioned(
-                key: ValueKey(mine ? 'my-played-cards' : 'played-by-$actor'),
-                left: left,
-                top: mine ? null : insetTop,
-                bottom: mine ? 0 : null,
-                width: width,
-                height: math.min(132, constraints.maxHeight - insetTop),
-                child: TweenAnimationBuilder<double>(
-                  key: ValueKey((actor, last['key'], cards.firstOrNull?['id'])),
-                  tween: Tween(begin: 0, end: 1),
-                  duration: motion * 1.56,
-                  curve: Curves.easeOutCubic,
-                  builder: (context, value, child) => Transform.translate(
-                    offset: Offset(0, (1 - value) * (mine ? 8 : -8)),
-                    child: Opacity(opacity: .55 + value * .45, child: child),
-                  ),
-                  child: GestureDetector(
-                    onTap: () => _showPrevious(last),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: mine
-                              ? const [Color(0xff443e29), Color(0xff2a281e)]
-                              : const [Color(0xff234839), Color(0xff142c23)],
-                        ),
-                        border: Border.all(
-                          color: bomb
-                              ? const Color(0xffefc372)
-                              : mine
-                              ? const Color(0xffbe9b63)
-                              : const Color(0xff6c9d8b),
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: bomb
-                                ? const Color(0x612a210c)
-                                : const Color(0x5408120e),
-                            blurRadius: bomb ? 12 : 8,
-                            offset: const Offset(0, 3),
+              for (final item in plays.entries)
+                _playedCards(
+                  item.value,
+                  item.key,
+                  opponents,
+                  moves[item.key],
+                  motion,
+                  bounds.maxWidth,
+                  height,
+                  current: item.key == actor,
+                  previousTrick: previousTrick,
+                  separateOpponents:
+                      plays.keys.where((id) => id != me).length > 1,
+                ),
+              if (!previousTrick &&
+                  last['bomb'] == true &&
+                  motion != Duration.zero)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Align(
+                      alignment: const Alignment(0, -.30),
+                      child: TweenAnimationBuilder<double>(
+                        key: ValueKey((
+                          'bomb',
+                          actor,
+                          (last['cards'] as List).firstOrNull?['id'],
+                        )),
+                        tween: Tween(begin: 0, end: 1),
+                        duration: const Duration(milliseconds: 720),
+                        builder: (context, phase, child) => Opacity(
+                          opacity: math
+                              .min(phase * 8, (1 - phase) * 3)
+                              .clamp(0.0, 1.0),
+                          child: Transform.scale(
+                            scale: .9 + phase * .18,
+                            child: child,
                           ),
-                        ],
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(4, 2, 4, 1),
-                        child: Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              spacing: 4,
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    mine ? '我的出牌' : '${_person(actor)} 出牌',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: mine ? _gold : Colors.white,
-                                      fontWeight: FontWeight.w800,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                                if (previousTrick)
-                                  const Text(
-                                    '上轮',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  )
-                                else if (move != null)
-                                  _moveTag(move),
-                                Flexible(
-                                  child: Text(
-                                    last['label'] as String,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              ],
+                        ),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: const Color(0xf23c3022),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: _gold),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 4,
                             ),
-                            Expanded(
-                              child: LayoutBuilder(
-                                builder: (context, limits) {
-                                  if (limits.maxHeight < 20) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return _HandStrip(
-                                    cards: [
-                                      for (final card in cards)
-                                        PlayingCard(card['id'] as int),
-                                    ],
-                                    shown: {
-                                      for (final card in cards)
-                                        card['id'] as int: card['rank'] as int,
-                                    },
-                                    selected: const {},
-                                    wild: const {},
-                                    enabled: false,
-                                    height: limits.maxHeight,
-                                    motion: motion,
-                                  );
-                                },
+                            child: Text(
+                              '${last['label']} ×2',
+                              style: const TextStyle(
+                                color: _gold,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
                               ),
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
             ],
           );
         },
@@ -974,7 +1183,171 @@ class _CardTableState extends State<CardTable> {
     );
   }
 
-  Widget _handLine(int count, CardMove? move, int chosen, String? issue) {
+  Widget _playedCards(
+    RoomJson last,
+    int actor,
+    List<RoomJson?> opponents,
+    CardMove? move,
+    Duration motion,
+    double availableWidth,
+    double availableHeight, {
+    required bool current,
+    required bool previousTrick,
+    required bool separateOpponents,
+  }) {
+    final mine = actor == view['you'];
+    final seat = opponents.indexWhere((player) => player?['id'] == actor);
+    final position = mine || seat < 0 || opponents.length == 1
+        ? .5
+        : opponents.length == 2
+        ? (seat == 0 ? .16 : .84)
+        : (seat + .5) / opponents.length;
+    final cards = (last['cards'] as List).cast<RoomJson>();
+    final bomb = last['bomb'] == true;
+    final lane = !mine && separateOpponents
+        ? availableWidth / opponents.length - 6
+        : availableWidth;
+    final width = math.min(
+      lane,
+      (106 + cards.length * 19).clamp(145, 580).toDouble(),
+    );
+    final left = (availableWidth * position - width / 2).clamp(
+      0.0,
+      availableWidth - width,
+    );
+    final insetTop = mine || availableHeight < 190 ? 0.0 : 24.0;
+    return Positioned(
+      key: ValueKey(mine ? 'my-played-cards' : 'played-by-$actor'),
+      left: left,
+      top: mine ? null : insetTop,
+      bottom: mine ? 0 : null,
+      width: width,
+      height: math.min(132, availableHeight - insetTop),
+      child: TweenAnimationBuilder<double>(
+        key: ValueKey((actor, last['key'], cards.firstOrNull?['id'])),
+        tween: Tween(begin: 0, end: 1),
+        duration: motion * 1.56,
+        curve: Curves.easeOutCubic,
+        builder: (context, value, child) => Transform.translate(
+          offset: Offset(0, (1 - value) * (mine ? 8 : -8)),
+          child: Opacity(
+            opacity: (.55 + value * .45) * (current ? 1 : .77),
+            child: child,
+          ),
+        ),
+        child: GestureDetector(
+          onTap: () => _showPrevious(last),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: mine
+                    ? const [Color(0xff443e29), Color(0xff2a281e)]
+                    : const [Color(0xff234839), Color(0xff142c23)],
+              ),
+              border: Border.all(
+                color: bomb || current
+                    ? const Color(0xffefc372)
+                    : mine
+                    ? const Color(0xffbe9b63)
+                    : const Color(0xff6c9d8b),
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: bomb
+                      ? const Color(0x612a210c)
+                      : const Color(0x5408120e),
+                  blurRadius: bomb ? 12 : 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 2, 4, 1),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    spacing: 4,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          mine ? '我的出牌' : '${_person(actor)} 出牌',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: mine ? _gold : Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      if (previousTrick)
+                        const Text(
+                          '上轮',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        )
+                      else if (move != null)
+                        _moveTag(move),
+                      Flexible(
+                        child: Text(
+                          last['label'] as String,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, limits) {
+                        if (limits.maxHeight < 20) {
+                          return const SizedBox.shrink();
+                        }
+                        return _HandStrip(
+                          cards: [
+                            for (final card in cards)
+                              PlayingCard(card['id'] as int),
+                          ],
+                          shown: {
+                            for (final card in cards)
+                              card['id'] as int: card['rank'] as int,
+                          },
+                          selected: const {},
+                          wild: const {},
+                          enabled: false,
+                          height: limits.maxHeight,
+                          motion: motion,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _handLine(
+    int count,
+    CardMove? move,
+    int chosen,
+    String? issue,
+    String? pattern,
+  ) {
     final you = view['you'];
     return Wrap(
       alignment: WrapAlignment.center,
@@ -992,9 +1365,14 @@ class _CardTableState extends State<CardTable> {
         if (move != null) _moveTag(move),
         if (chosen > 0) ...[
           Text(
-            issue ?? '已选 $chosen 张',
+            issue ??
+                (pattern == null ? '已选 $chosen 张' : '$pattern · $chosen 张'),
             style: TextStyle(
-              color: issue != null ? const Color(0xffffc9aa) : Colors.white70,
+              color: issue != null
+                  ? const Color(0xffffc9aa)
+                  : pattern != null
+                  ? _gold
+                  : Colors.white70,
               fontSize: 12,
             ),
           ),
@@ -1034,7 +1412,7 @@ class _CardTableState extends State<CardTable> {
     );
     final children = <Widget>[];
     final turnVersion = view['turnVersion'];
-    if (phase == 'bidding' && ownTurn) {
+    if (phase == 'bidding' && ownTurn && !autoplay) {
       children.add(
         OutlinedButton(
           style: quiet,
@@ -1045,7 +1423,7 @@ class _CardTableState extends State<CardTable> {
           child: const Text('不叫'),
         ),
       );
-      for (var bid = (view['bid'] as int) + 1; bid <= 3; bid++) {
+      for (final bid in rules.bidsAfter(view['bid'] as int).skip(1)) {
         children.add(
           FilledButton(
             style: playStyle,
@@ -1055,12 +1433,14 @@ class _CardTableState extends State<CardTable> {
                     'bid': bid,
                     'turnVersion': turnVersion,
                   }),
-            child: Text('$bid 分'),
+            child: Text(
+              rules.landlordCall == LandlordCall.call ? '叫地主' : '$bid 分',
+            ),
           ),
         );
       }
     }
-    if (phase == 'playing' && ownTurn) {
+    if (phase == 'playing' && ownTurn && !autoplay) {
       children.addAll([
         OutlinedButton(
           style: quiet,
@@ -1073,6 +1453,13 @@ class _CardTableState extends State<CardTable> {
           style: quiet,
           onPressed: blocked ? null : _hint,
           child: const Text('提示'),
+        ),
+        OutlinedButton(
+          style: quiet,
+          onPressed: blocked || coaching?['pending'] == true
+              ? null
+              : () => session.act('aiHint', {'turnVersion': turnVersion}),
+          child: const Text('AI 提示'),
         ),
         FilledButton(
           style: playStyle,
@@ -1089,7 +1476,13 @@ class _CardTableState extends State<CardTable> {
               ? () => session.act('start')
               : null,
           icon: const Icon(Icons.play_arrow),
-          label: Text(phase == 'finished' ? '再来一局' : '发牌开局'),
+          label: Text(
+            phase != 'finished'
+                ? '发牌开局'
+                : view['matchComplete'] == true
+                ? '开始新比赛'
+                : '下一局',
+          ),
         ),
         if (!online) ...[
           OutlinedButton(
@@ -1104,6 +1497,12 @@ class _CardTableState extends State<CardTable> {
               style: quiet,
               onPressed: blocked ? null : () => session.act('removeBot'),
               child: const Text('移除电脑玩家'),
+            ),
+          if (widget.onBotApi != null)
+            OutlinedButton(
+              style: quiet,
+              onPressed: blocked ? null : widget.onBotApi,
+              child: const Text('电脑 API'),
             ),
         ],
         OutlinedButton(
@@ -1149,9 +1548,20 @@ class _CardTableState extends State<CardTable> {
     final turn = id == view['turn'];
     final tomato = _splash == id;
     final landlord = id == view['landlord'];
+    final remoteAuto = player['autoplay'] == true;
+    final called = view['phase'] == 'bidding' ? player['called'] as int? : null;
+    final caption = landlord
+        ? '地主'
+        : called == null
+        ? null
+        : called == 0
+        ? '不叫'
+        : rules.landlordCall == LandlordCall.call
+        ? '叫地主'
+        : '$called 分';
     return Semantics(
       label:
-          '$name ${player['cards']} 张${move == null ? '' : '，${move.label}'}',
+          '$name ${player['cards']} 张${remoteAuto ? '，托管中' : ''}${move == null ? '' : '，${move.label}'}',
       button: true,
       child: Material(
         color: tomato
@@ -1220,12 +1630,12 @@ class _CardTableState extends State<CardTable> {
                           ),
                           if (move != null)
                             _moveTag(move)
-                          else if (landlord)
-                            const Text(
-                              '地主',
+                          else if (caption != null)
+                            Text(
+                              caption,
                               maxLines: 1,
                               overflow: TextOverflow.clip,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: _gold,
                                 fontSize: 10,
                                 height: 1.1,
@@ -1245,7 +1655,9 @@ class _CardTableState extends State<CardTable> {
                           vertical: 2,
                         ),
                         child: Text(
-                          '${player['cards']}',
+                          remoteAuto
+                              ? '托管 · ${player['cards']}'
+                              : '${player['cards']}',
                           style: const TextStyle(
                             color: _ink,
                             fontSize: 12,

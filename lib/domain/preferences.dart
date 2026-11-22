@@ -67,6 +67,13 @@ class DormPreferences {
     this.themePalette = ThemePalette.pine,
     this.einkMode = false,
     this.penaltyOptions = penaltyPresets,
+    this.botApiEnabled = false,
+    this.botProvider = 'deepseek',
+    this.botApiBase = '',
+    this.botApiModel = '',
+    this.botEffort = 'high',
+    this.botApiKey = '',
+    this.botModelMetadata = '',
   });
 
   factory DormPreferences.fromValues(Map<String, String> values) {
@@ -99,6 +106,13 @@ class DormPreferences {
       ),
       einkMode: values['einkMode'] == 'true',
       penaltyOptions: penalties.isEmpty ? penaltyPresets : penalties,
+      botApiEnabled: values['botApiEnabled'] == 'true',
+      botProvider: _botToken(values['botProvider'], 'deepseek'),
+      botApiBase: _botToken(values['botApiBase'], ''),
+      botApiModel: _botToken(values['botApiModel'], ''),
+      botEffort: _botToken(values['botEffort'], 'high'),
+      botApiKey: _botToken(values['botApiKey'], ''),
+      botModelMetadata: values['botModelMetadata'] ?? '',
     );
   }
 
@@ -113,6 +127,13 @@ class DormPreferences {
   final ThemePalette themePalette;
   final bool einkMode;
   final List<String> penaltyOptions;
+  final bool botApiEnabled;
+  final String botProvider;
+  final String botApiBase;
+  final String botApiModel;
+  final String botEffort;
+  final String botApiKey;
+  final String botModelMetadata;
 
   DormPreferences copyWith({
     StartupPage? startupPage,
@@ -126,6 +147,13 @@ class DormPreferences {
     ThemePalette? themePalette,
     bool? einkMode,
     List<String>? penaltyOptions,
+    bool? botApiEnabled,
+    String? botProvider,
+    String? botApiBase,
+    String? botApiModel,
+    String? botEffort,
+    String? botApiKey,
+    String? botModelMetadata,
   }) => DormPreferences(
     startupPage: startupPage ?? this.startupPage,
     ledgerFilter: ledgerFilter ?? this.ledgerFilter,
@@ -138,6 +166,13 @@ class DormPreferences {
     themePalette: themePalette ?? this.themePalette,
     einkMode: einkMode ?? this.einkMode,
     penaltyOptions: penaltyOptions ?? this.penaltyOptions,
+    botApiEnabled: botApiEnabled ?? this.botApiEnabled,
+    botProvider: botProvider ?? this.botProvider,
+    botApiBase: botApiBase ?? this.botApiBase,
+    botApiModel: botApiModel ?? this.botApiModel,
+    botEffort: botEffort ?? this.botEffort,
+    botApiKey: botApiKey ?? this.botApiKey,
+    botModelMetadata: botModelMetadata ?? this.botModelMetadata,
   );
 
   Map<String, String> toValues() => {
@@ -152,7 +187,22 @@ class DormPreferences {
     'themePalette': themePalette.name,
     'einkMode': einkMode.toString(),
     'penaltyOptions': penaltyOptions.join('\n'),
+    'botApiEnabled': botApiEnabled.toString(),
+    'botProvider': botProvider,
+    'botApiBase': botApiBase,
+    'botApiModel': botApiModel,
+    'botEffort': botEffort,
+    'botApiKey': botApiKey,
+    'botModelMetadata': botModelMetadata,
   };
+}
+
+String _botToken(String? value, String fallback) {
+  final text = value?.trim() ?? '';
+  if (text.length > 400 || text.contains('\n') || text.contains('\r')) {
+    return fallback;
+  }
+  return text;
 }
 
 T _readEnum<T extends Enum>(List<T> values, String? value, T fallback) =>

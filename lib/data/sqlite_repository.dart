@@ -1121,6 +1121,9 @@ class SqliteDormRepository with _SqliteIdentity implements DormRepository {
       await _db.backup(copy).drain<void>();
       copy.execute('PRAGMA secure_delete = ON');
       copy.execute('DELETE FROM cloud_settings');
+      copy.execute(
+        "DELETE FROM local_preferences WHERE key IN ('botApiKey', 'botApiEnabled')",
+      );
       copy.execute('VACUUM');
     } finally {
       copy.close();

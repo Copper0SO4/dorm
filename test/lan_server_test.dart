@@ -133,12 +133,15 @@ void main() {
       expect(page.csp, contains("script-src 'self'"));
       expect((await request('/dorm.css')).status, 200);
       expect((await request('/dorm.js')).status, 200);
-      expect((await request('/tools.js')).status, 200);
+      final toolsScript = await request('/tools.js');
+      expect(toolsScript.status, 200);
+      expect(toolsScript.text, isNot(contains('决策盲盒')));
       expect((await request('/assets/lan/index.html')).status, 404);
       expect((await request('/api/members')).text, contains('甲'));
       final toolsJson = jsonDecode((await request('/api/tools')).text) as Map;
       expect(toolsJson['members'], ['甲', '乙', '丙']);
-      expect((toolsJson['presets'] as List), isNotEmpty);
+      expect(toolsJson.keys, unorderedEquals(['members', 'penalties']));
+      expect((toolsJson['penalties'] as List), isNotEmpty);
 
       final task = {'day': dayKey(today())};
       expect(

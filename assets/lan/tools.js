@@ -4,13 +4,7 @@
   const penaltyStorageKey = 'dorm-web-penalties';
   const toolState = {
     penaltyOptions: loadPenaltyOptions(),
-    tab: 'decide',
-    presetId: null,
-    customOptions: {},
-    spinning: false,
-    spinTimer: null,
-    litIndex: -1,
-    decisionResult: null,
+    tab: 'draw',
     bombMax: 100,
     bombLow: 1,
     bombHigh: 100,
@@ -68,137 +62,162 @@
     return copy;
   }
 
+
+  const groupColors = ['#6de6cf', '#8eb8ff', '#ffb27d', '#c9adff', '#ddeb88', '#ff9ac0', '#79dbff', '#f7db97'];
+  const groupPhase = (time, from, to) => Math.min(1, Math.max(0, (time - from) / (to - from)));
+  const smooth = (fraction) => fraction * fraction * (3 - 2 * fraction);
+
+  function makeGroupScene(groups, roster) {
+    const count = Math.min(groupColors.length, groups.length);
+    const pads = Array.from({length: count}, (_, index) => {
+      const first = Math.floor(index * groups.length / count);
+      const end = Math.floor((index + 1) * groups.length / count);
+      const members = groups.slice(first, end).flat();
+      const size = roster.length <= 18 ? 1 : Math.ceil(members.length / 3);
+      const batches = [];
+      for (let start = 0; start < members.length; start += size) {
+        batches.push(members.slice(start, start + size));
+      }
+      return {label: first + 1 === end ? String(end) : (first + 1) + '–' + end, count: members.length, batches};
+    });
+    const packets = [];
+    for (let round = 0; round < Math.max(...pads.map(pad => pad.batches.length)); round++) {
+      for (const [pad, entry] of pads.entries()) {
+        const members = entry.batches[round];
+        if (members) packets.push({pad, size: members.length, name: members[0]});
+      }
+    }
+    const source = [...packets].sort((a, b) => roster.indexOf(a.name) - roster.indexOf(b.name));
+    return {pads, packets, source, started: performance.now(), duration: 2200 + Math.min(360, packets.length * 16)};
+  }
+
+  function groupResults(result, active, helpers) {
+    const {node, button, copyText, rerender} = helpers;
+    const {groups, scene} = result;
+    const total = groups.reduce((sum, group) => sum + group.length, 0);
+    const finish = () => {
+      result.finished = true;
+      rerender();
+    };
+    const progress = node('progress', {max: total, value: 0, 'aria-label': '分组进度'});
+    const counter = node('small', {}, '已入组 0 / ' + total + ' 人');
+    let stage;
+    if (scene) {
+      const pads = scene.pads.map((entry, index) => {
+        const marker = node('div', {class: 'group-marker'});
+        marker.style.setProperty('--pad-color', groupColors[index]);
+        const count = node('span', {}, '0/' + entry.count);
+        marker.append(node('b', {}, entry.label), count);
+        return {marker, count};
+      });
+      const labels = active ? scene.packets.map(packet =>
+        node('span', {class: 'group-packet'}, packet.size > 1 ? '+' + packet.size : packet.name)) : [];
+      const space = node('div', {class: 'group-space'},
+        node('div', {class: 'group-grid'}), pads.map(pad => pad.marker), labels);
+      stage = node('div', {class: 'group-stage', 'aria-hidden': 'true', 'data-settled': active ? null : 'true'}, space);
+      const orbit = (slot, time, unit) => {
+        const angle = 2 * Math.PI * slot / scene.packets.length + 1.55 * Math.PI * smooth(groupPhase(time, 0, .66));
+        return [
+          Math.sin(angle) * unit * (1.35 + 1.36 * smooth(groupPhase(time, 0, .22))),
+          (Math.sin(angle * 2 + slot * .9) * .26 - .98) * unit,
+          Math.cos(angle) * unit * 1.35,
+        ];
+      };
+      const place = (element, [x, y, z], extra = '') => {
+        element.style.transform = 'translate3d(' + x + 'px,' + y + 'px,' + z + 'px) translate(-50%,-50%) ' + extra;
+      };
+      const render = (stamp) => {
+        if (!stage.isConnected) return;
+        const moving = active && !result.finished && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const time = moving ? groupPhase(stamp, scene.started, scene.started + scene.duration) : 1;
+        const unit = Math.min(stage.clientWidth / 8.4, stage.clientHeight / 5.5);
+        const target = pads.map((pad, index) => {
+          const split = pads.length <= 4 ? pads.length : Math.floor(pads.length / 2);
+          const front = index >= split;
+          const columns = front ? pads.length - split : split;
+          return [
+            ((front ? index - split : index) - (columns - 1) / 2) * 1.78 * unit,
+            (pads.length > 4 && !front ? 1.02 : 1.87) * unit,
+            (pads.length > 4 && !front ? -.78 : 1.1) * unit,
+          ];
+        });
+        const landed = pads.map(() => 0);
+        scene.packets.forEach((packet, index) => {
+          const spread = .42 * index / Math.max(1, scene.packets.length - 1);
+          const leave = .25 + spread;
+          const arrival = .49 + spread;
+          const label = labels[index];
+          if (time >= arrival) {
+            landed[packet.pad] += packet.size;
+            if (label) label.hidden = true;
+            return;
+          }
+          const slot = scene.source.indexOf(packet);
+          const position = orbit(slot, Math.min(time, leave), unit);
+          const flight = smooth(groupPhase(time, leave, arrival));
+          const endpoint = target[packet.pad];
+          const arc = Math.sin(Math.PI * flight);
+          const point = position.map((value, axis) => value + (endpoint[axis] - value) * flight);
+          point[1] -= .62 * unit * arc;
+          point[2] += .4 * unit * arc;
+          place(label, point, 'scale(' + (1 - .58 * flight ** 2) + ')');
+          if (time >= leave) label.style.borderColor = groupColors[packet.pad];
+        });
+        pads.forEach(({marker, count}, index) => {
+          marker.style.width = (1.54 * unit) + 'px';
+          marker.style.height = Math.max(20, .70 * unit) + 'px';
+          place(marker, target[index]);
+          count.textContent = landed[index] + '/' + scene.pads[index].count;
+          marker.classList.toggle('landed', landed[index] > 0);
+        });
+        const done = landed.reduce((sum, value) => sum + value, 0);
+        if (progress.value !== done) {
+          progress.value = done;
+          counter.textContent = '已入组 ' + done + ' / ' + total + ' 人';
+        }
+        if (moving && time < 1) requestAnimationFrame(render);
+        else if (active) finish();
+      };
+      requestAnimationFrame(render);
+      // A fresh render on resize keeps the settled 3D scene aligned.
+      if (!active && typeof ResizeObserver === 'function') {
+        const observer = new ResizeObserver(() => {
+          if (stage.isConnected) render(performance.now());
+          else observer.disconnect();
+        });
+        observer.observe(stage);
+      }
+    }
+    const results = node('div', {class: 'group-results'},
+      groups.map((group, index) => node('div', {class: 'group-result'},
+        node('b', {}, '第 ' + (index + 1) + ' 组'),
+        node('span', {}, group.join('、')))));
+    return node('div', {class: 'result-banner'},
+      node('div', {class: 'actions'}, node('b', {role: 'status'}, active ? '正在分配成员' : '分组结果'),
+        active ? button('跳过动画', finish) : node('small', {}, total + ' 人 · ' + groups.length + ' 组')),
+      stage,
+      active ? [progress, counter] : [
+        results,
+        node('div', {class: 'actions'}, button('复制分组', () =>
+          copyText(groups.map((group, i) => '第' + (i + 1) + '组：' + group.join('、')).join('\n')))),
+      ]);
+  }
+
   window.dormToolsView = function dormToolsView(data, helpers) {
     const {node, button, input, badge, message, openDialog, dialog, copyText, rerender} = helpers;
-    const presets = data.presets || [];
-    if (!toolState.presetId && presets.length) toolState.presetId = presets[0].id;
-    const activePreset = presets.find((p) => p.id === toolState.presetId) || presets[0];
-
-    function presetOptions(preset) {
-      if (!preset) return [];
-      if (toolState.customOptions[preset.id]) return toolState.customOptions[preset.id];
-      if (preset.usesMembers) {
-        return data.members.length ? data.members : ['室友甲', '室友乙', '室友丙'];
-      }
-      return preset.options;
-    }
-
     const tabs = [
-      ['decide', '决策盲盒'],
-      ['bomb', '数字炸弹'],
       ['draw', '快速抽签'],
       ['teams', '随机分组'],
       ['roll', '骰子与硬币'],
+      ['bomb', '数字炸弹'],
     ];
 
     const tabBar = node('div', {class: 'chip-row'},
       tabs.map(([id, text]) => button(text, () => {
-        if (toolState.spinning) return;
         toolState.tab = id;
         rerender();
       }, toolState.tab === id ? 'chip active' : 'chip'))
     );
-
-    if (toolState.tab === 'decide') {
-      const options = presetOptions(activePreset);
-      const presetBar = node('div', {class: 'chip-row'},
-        presets.map((p) => button(p.title, () => {
-          if (toolState.spinning) return;
-          toolState.presetId = p.id;
-          toolState.litIndex = -1;
-          toolState.decisionResult = null;
-          rerender();
-        }, p.id === activePreset?.id ? 'chip active' : 'chip'))
-      );
-
-      const pills = node('div', {class: 'chip-row'},
-        options.map((item, idx) =>
-          node('span', {class: idx === toolState.litIndex ? 'option-pill lit' : 'option-pill'}, item))
-      );
-
-      const startSpin = () => {
-        if (toolState.spinning) return;
-        if (!options.length) {
-          message('请至少保留 1 个有效选项');
-          return;
-        }
-        const chosenIndex = randomInt(options.length);
-        const chosen = options[chosenIndex];
-        if (options.length === 1) {
-          toolState.litIndex = 0;
-          toolState.decisionResult = chosen;
-          rerender();
-          return;
-        }
-        clearInterval(toolState.spinTimer);
-        toolState.spinning = true;
-        toolState.decisionResult = null;
-        toolState.litIndex = randomInt(options.length);
-        let step = 0;
-        rerender();
-        toolState.spinTimer = setInterval(() => {
-          step++;
-          if (step >= 11) {
-            clearInterval(toolState.spinTimer);
-            toolState.spinning = false;
-            toolState.litIndex = chosenIndex;
-            toolState.decisionResult = chosen;
-            rerender();
-          } else {
-            toolState.litIndex = (toolState.litIndex + 1) % options.length;
-            rerender();
-          }
-        }, 85);
-      };
-
-      const editCustom = () => {
-        const area = node('textarea', {rows: 7, maxlength: 2000}, options.join('\n'));
-        const save = button('保存选项', () => {
-          const parsed = uniqueLines(area.value);
-          if (!parsed.length) {
-            message('请至少输入 1 个选项');
-            return;
-          }
-          toolState.customOptions[activePreset.id] = parsed;
-          toolState.litIndex = -1;
-          toolState.decisionResult = null;
-          dialog.close();
-          rerender();
-        }, 'primary');
-        const resetDefault = button('恢复默认', () => {
-          delete toolState.customOptions[activePreset.id];
-          toolState.litIndex = -1;
-          toolState.decisionResult = null;
-          dialog.close();
-          rerender();
-        });
-        openDialog('编辑「' + activePreset.title + '」选项', [
-          node('div', {class: 'stack'},
-            node('small', {}, '每行一个候选项，自动去重'),
-            area,
-            node('div', {class: 'actions'}, save, resetDefault))
-        ]);
-      };
-
-      return node('div', {class: 'stack'},
-        tabBar,
-        node('section', {class: 'panel card-body'},
-          node('h3', {}, '寝室决策盲盒 · ' + (activePreset?.title || '')),
-          node('small', {}, activePreset?.description || ''),
-          presetBar,
-          pills,
-          toolState.decisionResult ? node('div', {class: 'result-banner'},
-            node('small', {}, activePreset.title + ' · 抽中结果'),
-            node('strong', {}, toolState.decisionResult),
-            node('div', {class: 'actions'},
-              button('复制结果', () => copyText(activePreset.title + '：' + toolState.decisionResult)))
-          ) : null,
-          node('div', {class: 'actions'},
-            button(toolState.spinning ? '抽取中…' : '帮我们决定', toolState.spinning ? null : startSpin, 'primary'),
-            button('编辑选项', toolState.spinning ? null : editCustom))
-        )
-      );
-    }
 
     if (toolState.tab === 'bomb') {
       const rangeBar = node('div', {class: 'chip-row'},
@@ -311,7 +330,11 @@
       const roster = data.members.length ? data.members : ['室友甲', '室友乙', '室友丙', '室友丁'];
       const isTeams = toolState.tab === 'teams';
       const count = isTeams ? toolState.teamCount : toolState.drawCount;
+      const teamResult = isTeams && toolState.drawResult?.kind === 'teams' ? toolState.drawResult : null;
+      const active = Boolean(teamResult?.scene && !teamResult.finished &&
+        performance.now() < teamResult.scene.started + teamResult.scene.duration);
       const runDraw = () => {
+        if (active) return;
         const min = isTeams ? 2 : 1;
         if (roster.length < min || count < min || count > roster.length) {
           message('候选项人数与抽取数量不匹配');
@@ -321,7 +344,9 @@
         if (isTeams) {
           const groups = Array.from({length: count}, () => []);
           pool.forEach((member, idx) => groups[idx % count].push(member));
-          toolState.drawResult = {kind: 'teams', groups};
+          const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches &&
+            document.documentElement.dataset.eink !== 'true';
+          toolState.drawResult = {kind: 'teams', groups, scene: motion ? makeGroupScene(groups, roster) : null};
         } else {
           toolState.drawResult = {kind: 'draw', picked: pool.slice(0, count)};
         }
@@ -334,7 +359,7 @@
           node('div', {class: 'chip-row'}, roster.map((m) => badge(m))),
           node('div', {class: 'actions'},
             node('span', {}, isTeams ? '分几组：' : '抽几人：'),
-            button('-', () => {
+            button('-', active ? null : () => {
               const min = isTeams ? 2 : 1;
               if (count > min) {
                 if (isTeams) toolState.teamCount--;
@@ -343,27 +368,21 @@
               }
             }),
             node('strong', {}, String(count)),
-            button('+', () => {
+            button('+', active ? null : () => {
               if (count < roster.length) {
                 if (isTeams) toolState.teamCount++;
                 else toolState.drawCount++;
                 rerender();
               }
             }),
-            button(isTeams ? '开始分组' : '开始抽签', runDraw, 'primary')),
-          toolState.drawResult && toolState.drawResult.kind === toolState.tab
+            button(isTeams ? (active ? '分组中…' : (teamResult ? '重新分组' : '开始分组')) : '开始抽签',
+              active ? null : runDraw, 'primary')),
+          teamResult ? groupResults(teamResult, active, helpers) :
+          toolState.drawResult?.kind === 'draw' && !isTeams
             ? node('div', {class: 'result-banner'},
-                toolState.drawResult.kind === 'draw'
-                  ? [
-                      node('small', {}, '抽中成员'),
-                      node('strong', {}, toolState.drawResult.picked.join('、')),
-                      button('复制结果', () => copyText('抽签结果：' + toolState.drawResult.picked.join('、'))),
-                    ]
-                  : [
-                      node('small', {}, '分组结果'),
-                      ...toolState.drawResult.groups.map((g, i) => node('div', {}, '第 ' + (i + 1) + ' 组：' + g.join('、'))),
-                      button('复制分组', () => copyText(toolState.drawResult.groups.map((g, i) => '第' + (i + 1) + '组：' + g.join('、')).join('\n'))),
-                    ])
+                node('small', {}, '抽中成员'),
+                node('strong', {}, toolState.drawResult.picked.join('、')),
+                button('复制结果', () => copyText('抽签结果：' + toolState.drawResult.picked.join('、'))))
             : null
         )
       );

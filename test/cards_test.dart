@@ -7,6 +7,7 @@ import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
 import 'package:dormos/game/card_network.dart';
+import 'package:dormos/game/bot_profile.dart';
 import 'package:dormos/game/card_mailbox.dart';
 import 'package:dormos/game/card_rooms.dart';
 import 'package:dormos/game/card_session.dart';
@@ -65,6 +66,89 @@ void main() {
     expect(hintPlays(hand, {}, bomb, rules: on).first.kind, PlayKind.chainBomb);
     expect(hintPlays(hand, {}, bomb, rules: off), isEmpty);
     expect(suggestCards(hand, {}, bomb, rules: on)?.kind, PlayKind.chainBomb);
+  });
+
+  test('thick chain bombs rank by groups, thickness, strength and rank', () {
+    final rules = CardRules(decks: 2);
+    final off = CardRules(decks: 2, chainBombs: false);
+    final rocketFirst = CardRules(decks: 2, rocketBeatsChain: true);
+    CardPlay chain(List<int> ranks, [Set<int> wild = const {}]) => cardPlays(
+      cards(ranks),
+      wild,
+      rules: rules,
+    ).singleWhere((play) => play.kind == PlayKind.chainBomb);
+    final fiveByTwo = [...List.filled(5, 5), ...List.filled(5, 6)];
+    final thick = chain(fiveByTwo);
+    final higherThanThin = chain(
+      [...List.filled(5, 5), ...List.filled(4, 6), 8],
+      {8},
+    );
+    final thin = chain([...List.filled(4, 9), ...List.filled(4, 10)]);
+    final long = chain([
+      ...List.filled(4, 7),
+      ...List.filled(4, 8),
+      ...List.filled(4, 9),
+    ]);
+    final doubleRocket = cardPlays(cards([16, 16, 17, 17]), {}).single;
+    final royal = cardPlays(cards([16, 17]), {}).single;
+    expect(thick.label, '5 张 2 连炸');
+    expect(higherThanThin.beats(thin, rules: rules), isTrue);
+    expect(thick.beats(higherThanThin, rules: rules), isTrue);
+    expect(long.beats(thick, rules: rules), isTrue);
+    expect(doubleRocket.beats(royal, rules: rules), isTrue);
+    expect(thick.beats(doubleRocket, rules: rules), isTrue);
+    expect(thick.beats(doubleRocket, rules: rocketFirst), isFalse);
+    expect(CardPlay.fromJson(thick.toJson()).chainCopies, 5);
+    expect(
+      hintPlays(
+        cards([...fiveByTwo, 9]),
+        {},
+        thin,
+        rules: rules,
+      ).map((play) => play.key),
+      contains(thick.key),
+    );
+    expect(
+      hintPlays(cards([...fiveByTwo, 9]), {}, thick, rules: rules),
+      isEmpty,
+    );
+    expect(unplayableReason(cards(fiveByTwo), {}, thin, off), '本房间未开启连炸');
+    expect(unplayableReason(cards(fiveByTwo), {}, long, rules), '压不过上家的牌');
+    for (final ranks in [
+      [...List.filled(4, 5), ...List.filled(5, 6)],
+      [...List.filled(5, 5), ...List.filled(5, 7)],
+      [...List.filled(5, 14), ...List.filled(5, 15)],
+    ]) {
+      expect(
+        cardPlays(
+          cards(ranks),
+          {},
+          rules: rules,
+        ).where((play) => play.kind == PlayKind.chainBomb),
+        isEmpty,
+      );
+    }
+  });
+
+  test('four-with-two disabled feedback covers singles and pairs', () {
+    final rules = CardRules(fourWithTwo: false);
+    for (final ranks in [
+      [5, 5, 5, 5, 8, 9],
+      [5, 5, 5, 5, 8, 8, 9, 9],
+    ]) {
+      expect(unplayableReason(cards(ranks), {}, null, rules), '本房间未开启四带二');
+    }
+    expect(unplayableReason(cards([5, 5, 6]), {}, null, rules), '这组牌无法打出');
+  });
+
+  test('offline bot leads a long ordinary play before isolated singles', () {
+    final suggestion = suggestCards(
+      cards([3, 4, 5, 6, 7, 9, 9, 9, 9]),
+      {},
+      null,
+    );
+    expect(suggestion?.kind, PlayKind.straight);
+    expect(suggestion?.cards, hasLength(5));
   });
 
   for (final chainEnabled in [true, false]) {
@@ -319,6 +403,127 @@ void main() {
       tester.getRect(leftSide).center.dx,
       lessThan(ownRect.center.dx - 60),
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('出牌前显示牌型，宽桌保留各座位出牌，矮窗口聚焦当前牌', (tester) async {
+    final (session, guests) = await _openGame(
+      tester,
+      size: const Size(1280, 760),
+    );
+    final hand = (session.view!['hand'] as List)
+        .cast<int>()
+        .map(PlayingCard.new)
+        .toList();
+    final first = hand.first;
+    final different = hand.firstWhere((card) => card.rank != first.rank);
+    final play = find.widgetWithText(FilledButton, '出牌');
+    Future<void> select(PlayingCard card) async {
+      final rect = tester.getRect(find.byKey(ValueKey(card.id)));
+      await tester.tapAt(rect.topLeft + const Offset(10, 14));
+      await tester.pumpAndSettle();
+    }
+
+    await select(first);
+    expect(find.text('单张 · 1 张'), findsOneWidget);
+    expect(tester.widget<FilledButton>(play).onPressed, isNotNull);
+    await select(different);
+    expect(find.text('这组牌无法打出'), findsOneWidget);
+    expect(tester.widget<FilledButton>(play).onPressed, isNull);
+    await tester.tap(find.text('清空'));
+    await tester.pumpAndSettle();
+    await select(first);
+    await tester.tap(play);
+    await tester.pumpAndSettle();
+    final guest = guests.firstWhere(
+      (guest) => session.rooms.state(guest)['you'] == session.view!['turn'],
+    );
+    final guestView = session.rooms.state(guest);
+    final higher = (guestView['hand'] as List).cast<int>().firstWhere(
+      (id) => PlayingCard(id).rank > first.rank,
+    );
+    session.rooms.action(guest, 'play', {
+      'cards': [higher],
+      'turnVersion': guestView['turnVersion'],
+    });
+    await tester.pumpAndSettle();
+    final mine = find.byKey(const ValueKey('my-played-cards'));
+    final theirs = find.byKey(ValueKey('played-by-${guestView['you']}'));
+    expect(
+      tester.getRect(mine).top,
+      greaterThan(tester.getRect(theirs).bottom),
+    );
+    expect(
+      (session.view!['tablePlays'] as List).map((play) => play['seat']),
+      unorderedEquals([session.view!['you'], guestView['you']]),
+    );
+    await tester.binding.setSurfaceSize(const Size(640, 320));
+    await tester.pumpAndSettle();
+    expect(mine, findsNothing);
+    expect(theirs, findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('原生牌桌支持叫地主、AI 建议与赛后余牌和总分', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final rooms = CardRooms(
+      random: Random(8),
+      coach: (turn, _) async => BotAdvice.play(
+        cardPlays(turn.hand, {}, rules: turn.rules).single,
+        '这一手可以出完手牌。',
+      ),
+    );
+    final session = CardSession(() => null, rooms: rooms);
+    addTearDown(session.dispose);
+    await session.create(
+      CardRules(
+        players: 2,
+        bottom: 0,
+        discard: 52,
+        matchRounds: 1,
+        landlordCall: LandlordCall.call,
+        cardCounter: true,
+      ),
+      '甲',
+      CardLocation.local,
+    );
+    final opponent = rooms.join(session.view!['room'] as String, name: '乙');
+    await session.act('start');
+    if (session.view!['turn'] != session.view!['you']) {
+      rooms.action(opponent, 'bid', {
+        'bid': 0,
+        'turnVersion': session.view!['turnVersion'],
+      });
+    }
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListenableBuilder(
+            listenable: session,
+            builder: (context, _) =>
+                CardTable(session: session, view: session.view!, share: () {}),
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('card-counter')), findsOneWidget);
+    expect(find.text('3 分'), findsNothing);
+    await tester.tap(find.text('叫地主'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('AI 提示'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('这一手可以出完手牌。'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('选中建议的牌'));
+    await tester.pumpAndSettle();
+    expect(find.text('单张 · 1 张'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '出牌'));
+    await tester.pumpAndSettle();
+    expect(find.text('全场结算'), findsOneWidget);
+    expect(find.text('总分 +2'), findsOneWidget);
+    expect(find.text('总分 -2'), findsOneWidget);
+    expect(find.text('开始新比赛'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

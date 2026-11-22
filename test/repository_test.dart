@@ -258,6 +258,14 @@ void main() {
       addTearDown(() => temp.deleteSync(recursive: true));
       final backup = '${temp.path}${Platform.pathSeparator}copy.dormbak';
       repo.saveAppearanceMode(AppearanceMode.dark);
+      const key = 'backup-regression-test-key';
+      repo.savePreferences(
+        repo.preferences.copyWith(
+          botApiKey: key,
+          botApiEnabled: true,
+          botApiModel: 'custom-model',
+        ),
+      );
       repo.cloud.saveSettings(
         CloudSettings(repository: 'owner/private', operator: '填写人'),
       );
@@ -277,13 +285,17 @@ void main() {
       expect(restored.billDetail(id).transfers.single.amount, 1500);
       expect(restored.appearanceMode, AppearanceMode.dark);
       expect(restored.cloud.settings, isNull);
+      expect(restored.preferences.botApiEnabled, isFalse);
+      expect(restored.preferences.botApiKey, isEmpty);
+      expect(restored.preferences.botApiModel, 'custom-model');
+      expect(repo.preferences.botApiKey, key);
       expect(
         repo.cloud.settings!.repository,
         'git@github.com:owner/private.git',
       );
       expect(
         File(backup).readAsStringSync(encoding: latin1),
-        isNot(contains('owner/private')),
+        allOf(isNot(contains('owner/private')), isNot(contains(key))),
       );
     },
   );

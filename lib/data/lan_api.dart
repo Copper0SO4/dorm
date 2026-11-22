@@ -275,16 +275,6 @@ class LanApi {
       for (final member in repository.members())
         if (member.active) member.name,
     ],
-    'presets': [
-      for (final preset in decisionPresets)
-        {
-          'id': preset.id,
-          'title': preset.title,
-          'description': preset.description,
-          'usesMembers': preset.usesMembers,
-          'options': preset.options,
-        },
-    ],
     'penalties': penaltyPresets,
   };
 

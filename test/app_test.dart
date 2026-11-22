@@ -15,6 +15,7 @@ import 'package:dormos/ui/tools/dice_scene.dart';
 import 'package:dormos/ui/tools/draw_card.dart';
 import 'package:dormos/ui/tools/draw_ceremony.dart';
 import 'package:dormos/ui/tools/group_board.dart';
+import 'package:dormos/ui/tools/group_scene.dart';
 import 'package:dormos/ui/tools_page.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -118,7 +119,9 @@ void main() {
     await tester.pump();
     expect(find.byType(DrawCeremony), findsNothing);
     expect(find.text('正在分配成员'), findsOneWidget);
-    await tester.pump(const Duration(milliseconds: 260));
+    final sceneElement = tester.element(find.byType(GroupScene));
+    expect(find.text('已入组 0 / 4 人'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1380));
     final partial = tester.widget<GroupBoard>(find.byType(GroupBoard));
     expect(partial.progress, inExclusiveRange(0, 1));
     expect(find.text('复制分组'), findsNothing);
@@ -128,12 +131,18 @@ void main() {
         (item) => item is Text && ['甲', '乙', '丙', '丁'].contains(item.data),
       ),
     );
-    expect(names.evaluate().length, inExclusiveRange(0, 4));
+    expect(names.evaluate(), isEmpty);
+    expect(find.text('已入组 1 / 4 人'), findsOneWidget);
     await tester.pumpAndSettle();
     expect(find.text('第 1 组'), findsOneWidget);
     expect(find.text('第 2 组'), findsOneWidget);
     expect(names.evaluate().length, 4);
     expect(find.text('复制分组'), findsOneWidget);
+    expect(tester.element(find.byType(GroupScene)), same(sceneElement));
+    expect(
+      tester.widget<GroupBoard>(find.byType(GroupBoard)).groups,
+      partial.groups,
+    );
     final tools = find.byType(ToolsPage);
     final tabs = tester.getRect(
       find.descendant(
@@ -266,6 +275,7 @@ void main() {
     await tester.pump();
     expect(find.text('分组结果'), findsOneWidget);
     expect(find.text('正在分配成员'), findsNothing);
+    expect(find.byType(GroupScene), findsNothing);
     await tester.tap(find.text('抽签'));
     await tester.pump();
     await tester.tap(find.text('开始抽签'));
@@ -294,6 +304,62 @@ void main() {
     await tester.tap(find.text('随机分组'));
     await tester.pumpAndSettle();
     expect(find.text('分组结果'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('large grouping scenes batch the members and preserve the total', () {
+    final roster = List.generate(100, (i) => '成员${i + 1}');
+    final groups = [
+      for (final name in roster.reversed) [name],
+    ];
+    final plan = GroupScenePlan(groups, roster);
+    expect(plan.markerCount, 8);
+    expect(plan.packetCount, lessThanOrEqualTo(24));
+    expect(plan.assignedAt(.25), 0);
+    expect(plan.assignedAt(.7), inExclusiveRange(0, 100));
+    expect(plan.assignedAt(1), 100);
+  });
+
+  testWidgets('skipping a 3D group scene reveals the same split on a phone', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(360, 770));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final roster = List.generate(7, (i) => '成员${i + 1}');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: DrawCard(
+              mode: DrawMode.teams,
+              members: roster,
+              panelWidth: 416,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('开始分组'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final preview = tester.widget<GroupBoard>(find.byType(GroupBoard));
+    expect(preview.progress, inExclusiveRange(0, 1));
+    expect(preview.groups.map((group) => group.length), [4, 3]);
+    expect(preview.groups.expand((group) => group), unorderedEquals(roster));
+    final stage = tester.getRect(find.byType(GroupScene));
+    expect(stage.width, lessThan(360));
+    expect(stage.height, greaterThanOrEqualTo(200));
+    await tester.ensureVisible(find.text('跳过动画'));
+    await tester.tap(find.text('跳过动画'));
+    await tester.pumpAndSettle();
+    final result = tester.widget<GroupBoard>(find.byType(GroupBoard));
+    expect(result.groups, preview.groups);
+    expect(
+      tester.getRect(find.byType(GroupScene)).height,
+      lessThan(stage.height),
+    );
+    expect(find.text('复制分组'), findsOneWidget);
+    expect(find.text('跳过动画'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -829,38 +895,32 @@ void main() {
     },
   );
 
-  testWidgets('tools page supports decision wheel and number bomb', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(1280, 900));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    repo.saveMember('室友甲');
-    repo.saveMember('室友乙');
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: ToolsPage(controller: controller)),
-      ),
-    );
-    await tester.pumpAndSettle();
+  testWidgets(
+    'tools page opens number bomb after removing the decision wheel',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      repo.saveMember('室友甲');
+      repo.saveMember('室友乙');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ToolsPage(controller: controller)),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('决策盲盒'));
-    await tester.pumpAndSettle();
-    expect(find.text('寝室决策盲盒'), findsOneWidget);
-    await tester.tap(find.text('谁去跑腿'));
-    await tester.pumpAndSettle();
-    expect(find.text('室友甲'), findsOneWidget);
-    await tester.tap(find.text('帮我们决定'));
-    await tester.pump(const Duration(milliseconds: 1300));
-    expect(find.text('谁去跑腿 · 抽中结果'), findsOneWidget);
+      expect(find.text('决策盲盒'), findsNothing);
+      expect(find.text('开始抽签'), findsOneWidget);
 
-    await tester.tap(find.text('数字炸弹'));
-    await tester.pumpAndSettle();
-    expect(find.text('当前安全区间'), findsOneWidget);
-    await tester.enterText(find.byType(TextField), '50');
-    await tester.tap(find.widgetWithText(FilledButton, '报数'));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-  });
+      await tester.tap(find.text('数字炸弹'));
+      await tester.pumpAndSettle();
+      expect(find.text('当前安全区间'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '50');
+      await tester.tap(find.widgetWithText(FilledButton, '报数'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('appearance settings switch palette and e-ink mode live', (
     tester,

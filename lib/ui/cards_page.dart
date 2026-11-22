@@ -9,6 +9,7 @@ import '../data/qr_image.dart';
 import '../domain/ledger.dart';
 import '../game/card_session.dart';
 import '../game/cards.dart';
+import 'bot_api_dialog.dart';
 import 'card_table.dart';
 import 'common.dart';
 import 'me_page.dart';
@@ -198,7 +199,12 @@ class _CardsPageState extends State<CardsPage> {
     builder: (context, _) {
       final view = session.view;
       if (session.opened && view != null) {
-        final table = CardTable(session: session, view: view, share: _share);
+        final table = CardTable(
+          session: session,
+          view: view,
+          share: _share,
+          onBotApi: () => showBotApiDialog(context, widget.controller),
+        );
         return Scaffold(
           resizeToAvoidBottomInset: false,
           body: SafeArea(
@@ -242,12 +248,18 @@ class _CardsPageState extends State<CardsPage> {
                   children: [
                     PageHeading(
                       '斗地主牌桌',
-                      '本机练手、局域网组局，或加入同一 GitHub 仓库的在线房间。',
+                      '本机练手、局域网组局，或加入同一 GitHub 仓库的在线房间。电脑玩家可以改用 API。',
                       actions: [
                         OutlinedButton.icon(
                           onPressed: session.working ? null : _joinLink,
                           icon: const Icon(Icons.link),
                           label: const Text('用链接加入'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () =>
+                              showBotApiDialog(context, widget.controller),
+                          icon: const Icon(Icons.smart_toy_outlined),
+                          label: const Text('电脑 API'),
                         ),
                         FilledButton.icon(
                           onPressed: session.working ? null : _create,
@@ -391,6 +403,13 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
   late int bottom = widget.current?.bottom ?? 3;
   late bool landlord = widget.current?.landlord ?? true;
   late bool reserve = bottom != 0;
+  late int matchRounds = widget.current?.matchRounds ?? 0;
+  late LandlordCall landlordCall =
+      widget.current?.landlordCall ?? LandlordCall.score;
+  late FirstCaller firstCaller =
+      widget.current?.firstCaller ?? FirstCaller.random;
+  late bool cardCounter = widget.current?.cardCounter ?? false;
+  late final _rounds = TextEditingController(text: '$matchRounds');
   late final _discard = TextEditingController(text: '$discard');
   late final _bottom = TextEditingController(
     text: '${bottom == 0 ? 3 : bottom}',
@@ -400,6 +419,7 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
   void dispose() {
     _discard.dispose();
     _bottom.dispose();
+    _rounds.dispose();
     super.dispose();
   }
 
@@ -470,7 +490,7 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('连炸'),
-            subtitle: const Text('两组或更多相邻点数的四张牌'),
+            subtitle: const Text('两组或更多相邻点数，每组张数相同且至少四张'),
             value: chainBombs,
             onChanged: (value) => setState(() => chainBombs = value),
           ),
@@ -501,6 +521,33 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
               landlord = value;
               issue = null;
             }),
+          ),
+          if (landlord)
+            _select(
+              '地主产生方式',
+              landlordCall,
+              LandlordCall.values,
+              (value) => value.label,
+              (value) => landlordCall = value,
+            ),
+          _select(
+            '首个行动的座位',
+            firstCaller,
+            FirstCaller.values,
+            (value) => value.label,
+            (value) => firstCaller = value,
+          ),
+          _number(
+            '比赛局数（0 为不限，最多 30 局）',
+            _rounds,
+            (value) => matchRounds = value,
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('全员记牌器'),
+            subtitle: const Text('显示各点数未见张数，包含未知的底牌和弃牌'),
+            value: cardCounter,
+            onChanged: (value) => setState(() => cardCounter = value),
           ),
           if (landlord)
             SwitchListTile(
@@ -570,6 +617,10 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
         chainBombs: chainBombs,
         rocketBeatsChain: rocketBeatsChain,
         fourWithTwo: fourWithTwo,
+        landlordCall: landlordCall,
+        firstCaller: firstCaller,
+        matchRounds: matchRounds,
+        cardCounter: cardCounter,
       );
       Navigator.pop(context, (rules: rules, where: where));
     } on InputException catch (e) {

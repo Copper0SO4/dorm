@@ -3,21 +3,11 @@ import 'package:material_ui/material_ui.dart';
 import '../domain/draw.dart';
 import 'common.dart';
 import 'cards_page.dart';
-import 'tools/decision_wheel_card.dart';
 import 'tools/draw_card.dart';
 import 'tools/number_bomb_card.dart';
 import 'tools/quick_roll_card.dart';
 
-enum _Tool {
-  draw('抽签'),
-  teams('随机分组'),
-  roll('骰子与硬币'),
-  decide('决策盲盒'),
-  bomb('数字炸弹');
-
-  const _Tool(this.label);
-  final String label;
-}
+enum _Tool { draw, teams, roll, bomb }
 
 class ToolsPage extends StatefulWidget {
   const ToolsPage({super.key, required this.controller});
@@ -80,10 +70,7 @@ class _ToolsPageState extends State<ToolsPage> {
                       ButtonSegment(value: _Tool.teams, label: Text('随机分组')),
                       ButtonSegment(value: _Tool.roll, label: Text('骰子与硬币')),
                     ],
-                    selected: switch (_selected) {
-                      _Tool.draw || _Tool.teams || _Tool.roll => {_selected},
-                      _Tool.decide || _Tool.bomb => const {},
-                    },
+                    selected: _selected == _Tool.bomb ? const {} : {_selected},
                     onSelectionChanged: (choice) {
                       if (choice.isNotEmpty) {
                         setState(() => _selected = choice.single);
@@ -92,12 +79,11 @@ class _ToolsPageState extends State<ToolsPage> {
                   ),
                 ),
               ),
-              for (final tool in const [_Tool.decide, _Tool.bomb])
-                ChoiceChip(
-                  label: Text(tool.label),
-                  selected: _selected == tool,
-                  onSelected: (_) => setState(() => _selected = tool),
-                ),
+              ChoiceChip(
+                label: const Text('数字炸弹'),
+                selected: _selected == _Tool.bomb,
+                onSelected: (_) => setState(() => _selected = _Tool.bomb),
+              ),
             ],
           ),
           const SizedBox(height: panelGap),
@@ -131,14 +117,6 @@ class _ToolsPageState extends State<ToolsPage> {
                     constraints: const BoxConstraints(maxWidth: _panelWidth),
                     child: const QuickRollCard(showTitle: false),
                   ),
-                ),
-              ),
-              Visibility(
-                visible: _selected == _Tool.decide,
-                maintainState: true,
-                child: DecisionWheelCard(
-                  members: members,
-                  panelWidth: _panelWidth,
                 ),
               ),
               Visibility(

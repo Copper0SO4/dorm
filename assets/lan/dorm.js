@@ -12,7 +12,7 @@ const sections = {
   supplies: ['公共物资', '管理库存、筛选缺货采购状态、记账或清理物资。'],
   matters: ['寝室事务', '跟进报修、活动准备和其他共同事项。'],
   members: ['寝室成员', '管理室友名单，支持新增、改名、停用与安全删除成员。'],
-  tools: ['娱乐工具', '寝室决策盲盒、数字炸弹、抽签分组与骰子硬币，局域网随时开玩。'],
+  tools: ['娱乐工具', '抽签、随机分组、骰子与硬币、数字炸弹。'],
 };
 const purchaseStates = {stocked: '已入库', needed: '待采购', ordered: '采购中'};
 const matterStates = {open: '待处理', doing: '进行中', done: '已完成'};

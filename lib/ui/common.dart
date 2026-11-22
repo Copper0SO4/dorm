@@ -8,6 +8,9 @@ import '../data/lan_server.dart';
 import '../domain/ledger.dart';
 import '../domain/preferences.dart';
 import '../domain/repository.dart';
+import '../game/bot_api.dart';
+import '../game/bot_profile.dart';
+import '../game/card_rooms.dart';
 import '../game/card_session.dart';
 
 class DormController extends ChangeNotifier {
@@ -20,7 +23,21 @@ class DormController extends ChangeNotifier {
   final DormDataLocation? dataLocation;
   DormLanServer? _lan;
   CardSession? _cards;
-  CardSession get cards => _cards ??= CardSession(() => cloud?.cardMailbox);
+  CardSession get cards =>
+      _cards ??= CardSession(() => cloud?.cardMailbox, rooms: _cardRooms());
+
+  CardRooms _cardRooms() {
+    final engine = ApiBotAdvisor(
+      () => BotProfile.fromPreferences(repository.preferences),
+    );
+    return CardRooms(
+      advisor: engine.choose,
+      coach: engine.coach,
+      apiEnabled: () =>
+          BotProfile.fromPreferences(repository.preferences).usable,
+    );
+  }
+
   DormLanServer get lan =>
       _lan ??= DormLanServer(LanApi(repository, write), rootBundle.loadString);
 

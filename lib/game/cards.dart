@@ -13,6 +13,22 @@ enum CardMode {
 
 enum DealRemainder { equal, extra }
 
+enum LandlordCall {
+  score('叫分'),
+  call('叫地主');
+
+  const LandlordCall(this.label);
+  final String label;
+}
+
+enum FirstCaller {
+  random('每局随机'),
+  previousWinner('上局最先出完');
+
+  const FirstCaller(this.label);
+  final String label;
+}
+
 class CardRules {
   static const defaultRocketBeatsChain = false;
 
@@ -27,7 +43,14 @@ class CardRules {
     this.chainBombs = true,
     this.rocketBeatsChain = defaultRocketBeatsChain,
     this.fourWithTwo = true,
+    this.landlordCall = LandlordCall.score,
+    this.firstCaller = FirstCaller.random,
+    this.matchRounds = 0,
+    this.cardCounter = false,
   }) {
+    if (matchRounds < 0 || matchRounds > 30) {
+      throw const InputException('对局局数须为 1 至 30 局，或设为不限');
+    }
     if (players < 2 || players > 8 || decks < 1 || decks > 4) {
       throw const InputException('支持 2 至 8 人，1 至 4 副牌');
     }
@@ -61,6 +84,14 @@ class CardRules {
             (values['rocketBeatsChain'] as bool?) ??
             (newRoom ? defaultRocketBeatsChain : true),
         fourWithTwo: (values['fourWithTwo'] as bool?) ?? true,
+        landlordCall: LandlordCall.values.byName(
+          values['landlordCall'] as String? ?? 'score',
+        ),
+        firstCaller: FirstCaller.values.byName(
+          values['firstCaller'] as String? ?? 'random',
+        ),
+        matchRounds: values['matchRounds'] as int? ?? 0,
+        cardCounter: values['cardCounter'] as bool? ?? false,
       );
     } on ArgumentError {
       throw const InputException('房间规则格式有误');
@@ -79,6 +110,21 @@ class CardRules {
   final bool chainBombs;
   final bool rocketBeatsChain;
   final bool fourWithTwo;
+  final LandlordCall landlordCall;
+  final FirstCaller firstCaller;
+  final int matchRounds;
+  final bool cardCounter;
+
+  List<int> bidsAfter(int current) => [
+    0,
+    for (
+      var bid = current + 1;
+      bid <= (landlordCall == LandlordCall.call ? 1 : 3);
+      bid++
+    )
+      bid,
+  ];
+
   int get available => 54 * decks - discard - bottom;
 
   Map<String, Object> toJson() => {
@@ -92,6 +138,10 @@ class CardRules {
     'chainBombs': chainBombs,
     'rocketBeatsChain': rocketBeatsChain,
     'fourWithTwo': fourWithTwo,
+    'landlordCall': landlordCall.name,
+    'firstCaller': firstCaller.name,
+    'matchRounds': matchRounds,
+    'cardCounter': cardCounter,
   };
 }
 
@@ -102,6 +152,8 @@ class PlayingCard {
   int get face => id % 54;
   int get rank => face < 52 ? 3 + face ~/ 4 : 16 + face - 52;
   int? get suit => face < 52 ? face % 4 : null;
+
+  static int copiesPerDeck(int rank) => rank <= 15 ? 4 : 1;
 
   static String rankLabel(int rank) => switch (rank) {
     11 => 'J',
@@ -172,6 +224,9 @@ enum PlayKind {
   final String label;
 }
 
+int _chainStrength(int copies, {required bool hard}) =>
+    (copies - 4) * 2 + (hard ? 1 : 0);
+
 class CardPlay {
   const CardPlay(
     this.kind,
@@ -231,9 +286,14 @@ class CardPlay {
         high > earlier.high;
   }
 
+  /// Four-card chains stay at 0 (soft) and 1 (hard). Each extra card per
+  /// group adds 2, so a thicker chain outranks a thinner one before firmness.
+  int get chainCopies => kind == PlayKind.chainBomb ? 4 + strength ~/ 2 : 0;
+
   String get label => switch (kind) {
     PlayKind.bomb => '$width 张${['软炸', '硬炸', '纯癞子炸弹'][strength]}',
-    PlayKind.chainBomb => '$width 连炸',
+    PlayKind.chainBomb =>
+      chainCopies == 4 ? '$width 连炸' : '$chainCopies 张 $width 连炸',
     PlayKind.rocket => switch (width) {
       2 => '王炸',
       4 => '双王炸',
@@ -342,9 +402,10 @@ List<CardPlay> _matchingPlays(
     for (final (i, card) in unmatched.indexed) {
       conversion[card.id] = deficits[i];
     }
+    final copies = kind == PlayKind.chainBomb ? core.values.first : 4;
     final strength = switch (kind) {
       PlayKind.bomb => wild.isEmpty ? 1 : (fixed.isEmpty ? 2 : 0),
-      PlayKind.chainBomb => wild.isEmpty ? 1 : 0,
+      PlayKind.chainBomb => _chainStrength(copies, hard: wild.isEmpty),
       _ => 0,
     };
     final play = CardPlay(kind, high, width, strength, cards, conversion);
@@ -406,7 +467,30 @@ List<CardPlay> _matchingPlays(
   sequence(PlayKind.plane, 3, 0, 2);
   sequence(PlayKind.planeSingles, 3, 1, 2);
   sequence(PlayKind.planePairs, 3, 2, 2);
-  if (chainBombs) sequence(PlayKind.chainBomb, 4, 0, 2);
+  if (chainBombs &&
+      size >= 8 &&
+      fixed.keys.every((rank) => rank >= 3 && rank <= 14)) {
+    // The whole selection must be one run. Windows that leave a rank out
+    // cannot be a chain, so only ranges covering every natural rank are tried.
+    final anchors = fixed.keys.toList()..sort();
+    for (var copies = 4; copies <= size ~/ 2; copies++) {
+      if (size % copies != 0) continue;
+      final groups = size ~/ copies;
+      if (groups < 2 || groups > 12) continue;
+      final lastStart = 14 - groups + 1;
+      var start = 3;
+      var end = lastStart;
+      if (anchors.isNotEmpty) {
+        start = max(3, anchors.last - groups + 1);
+        end = min(anchors.first, lastStart);
+      }
+      for (var from = start; from <= end; from++) {
+        add(PlayKind.chainBomb, from + groups - 1, groups, {
+          for (var i = 0; i < groups; i++) from + i: copies,
+        });
+      }
+    }
+  }
   return result.values.toList();
 }
 
@@ -415,18 +499,28 @@ String? disabledCardPlayMessage(
   Set<int> wildRanks,
   CardRules rules,
 ) {
-  if (rules.chainBombs || chosen.length < 8 || chosen.length % 4 != 0) {
+  if ((rules.chainBombs || chosen.length < 8) &&
+      (rules.fourWithTwo || (chosen.length != 6 && chosen.length != 8))) {
     return null;
   }
   final matches = _matchingPlays(
     chosen,
     wildRanks,
     chainBombs: true,
-    fourWithTwo: false,
+    fourWithTwo: true,
   );
-  return matches.any((play) => play.kind == PlayKind.chainBomb)
-      ? '本房间未开启连炸'
-      : null;
+  for (final play in matches) {
+    if (!rules.chainBombs && play.kind == PlayKind.chainBomb) return '本房间未开启连炸';
+  }
+  if (!rules.fourWithTwo &&
+      matches.any(
+        (play) =>
+            play.kind == PlayKind.fourSingles ||
+            play.kind == PlayKind.fourPairs,
+      )) {
+    return '本房间未开启四带二';
+  }
+  return null;
 }
 
 /// The room and both clients validate the same declared play.
@@ -441,6 +535,33 @@ List<CardPlay> legalCardPlays(
   rules: rules,
 ).where((play) => play.beats(previous, rules: rules)).toList();
 
+/// Resolve legal patterns and feedback from the same card classification.
+({List<CardPlay> options, String? issue}) inspectCardSelection(
+  List<PlayingCard> chosen,
+  Set<int> wild,
+  CardPlay? previous,
+  CardRules rules,
+) {
+  if (chosen.isEmpty) return (options: const [], issue: null);
+  final matches = cardPlays(chosen, wild, rules: rules);
+  final options = matches
+      .where((play) => play.beats(previous, rules: rules))
+      .toList();
+  final issue = options.isNotEmpty
+      ? null
+      : matches.isNotEmpty
+      ? '压不过上家的牌'
+      : disabledCardPlayMessage(chosen, wild, rules) ?? '这组牌无法打出';
+  return (options: options, issue: issue);
+}
+
+String? unplayableReason(
+  List<PlayingCard> chosen,
+  Set<int> wild,
+  CardPlay? previous,
+  CardRules rules,
+) => inspectCardSelection(chosen, wild, previous, rules).issue;
+
 /// Bots prefer an immediate win, then the smallest available response.
 CardPlay? suggestCards(
   List<PlayingCard> hand,
@@ -451,13 +572,29 @@ CardPlay? suggestCards(
   if (hand.isEmpty) return null;
   final finish = legalCardPlays(hand, wild, previous, rules: rules).firstOrNull;
   if (finish != null) return finish;
-  if (previous == null) {
-    final lowest = hand.reduce(
-      (a, b) => PlayingCard.compare(a, b) <= 0 ? a : b,
-    );
-    return cardPlays([lowest], wild).single;
+  final hints = hintPlays(hand, wild, previous, rules: rules);
+  if (previous != null) return hints.firstOrNull;
+  // Keep formed bombs intact when possible, then shed the longest shape.
+  final counts = <int, int>{};
+  for (final card in hand) {
+    counts.update(card.rank, (count) => count + 1, ifAbsent: () => 1);
   }
-  return hintPlays(hand, wild, previous, rules: rules).firstOrNull;
+  final hasRocket = counts.containsKey(16) && counts.containsKey(17);
+  CardPlay? lead;
+  var breaksBomb = true;
+  for (final play in hints) {
+    if (play.bomb) break;
+    final splits = play.cards.any(
+      (card) => (counts[card.rank] ?? 0) >= 4 || (hasRocket && card.rank >= 16),
+    );
+    if (lead == null ||
+        (breaksBomb && !splits) ||
+        (breaksBomb == splits && play.cards.length > lead.cards.length)) {
+      lead = play;
+      breaksBomb = splits;
+    }
+  }
+  return lead;
 }
 
 const _hintShapes = [
@@ -630,17 +767,46 @@ List<CardPlay> hintPlays(
   }
   if (rules?.chainBombs == true &&
       (previous?.kind != PlayKind.rocket || rules?.rocketBeatsChain == false)) {
-    final first = previous?.kind == PlayKind.chainBomb ? previous!.width : 2;
-    for (var width = first; width <= min(12, hand.length ~/ 4); width++) {
-      for (var high = width + 2; high <= 14; high++) {
-        add(
-          choose({
-            for (var rank = high - width + 1; rank <= high; rank++) rank: 4,
-          }),
-          PlayKind.chainBomb,
-          high,
-          width,
-        );
+    final minGroups = previous?.kind == PlayKind.chainBomb
+        ? previous!.width
+        : 2;
+    final richest =
+        naturals.entries
+            .where((entry) => entry.key >= 3 && entry.key <= 14)
+            .fold<int>(0, (best, entry) => max(best, entry.value.length)) +
+        wildCards.length;
+    int missingCards(int start, int groups, int copies) {
+      var missing = 0;
+      for (var rank = start; rank < start + groups; rank++) {
+        final have = naturals[rank]?.length ?? 0;
+        if (have < copies) missing += copies - have;
+      }
+      return missing;
+    }
+
+    for (var copies = 4; copies <= richest; copies++) {
+      final maxGroups = min(12, hand.length ~/ copies);
+      for (var groups = minGroups; groups <= maxGroups; groups++) {
+        for (var high = groups + 2; high <= 14; high++) {
+          final start = high - groups + 1;
+          final missing = missingCards(start, groups, copies);
+          if (missing > wildCards.length) continue;
+          final candidate = CardPlay(
+            PlayKind.chainBomb,
+            high,
+            groups,
+            _chainStrength(copies, hard: missing == 0),
+            const [],
+            const {},
+          );
+          if (!candidate.beats(previous, rules: rules)) continue;
+          add(
+            choose({for (var rank = start; rank <= high; rank++) rank: copies}),
+            PlayKind.chainBomb,
+            high,
+            groups,
+          );
+        }
       }
     }
   }

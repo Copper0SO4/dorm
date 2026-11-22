@@ -2,55 +2,6 @@ import 'dart:math';
 
 import 'ledger.dart';
 
-typedef DecisionPreset = ({
-  String id,
-  String title,
-  String description,
-  bool usesMembers,
-  List<String> options,
-});
-
-const decisionPresets = <DecisionPreset>[
-  (
-    id: 'meal',
-    title: '今天吃什么',
-    description: '纠结午饭、晚饭或夜宵时快速拍板',
-    usesMembers: false,
-    options: [
-      '食堂一楼自选',
-      '食堂二楼麻辣烫',
-      '黄焖鸡米饭',
-      '猪脚饭',
-      '轻食减脂餐',
-      '兰州拉面',
-      '烧烤夜宵',
-      '点外卖换换口味',
-    ],
-  ),
-  (
-    id: 'errand',
-    title: '谁去跑腿',
-    description: '拿快递、下楼取外卖、倒垃圾一抽定音',
-    usesMembers: true,
-    options: [],
-  ),
-  (
-    id: 'weekend',
-    title: '周末去哪玩',
-    description: '寝室聚会或周末放松快速挑一个安排',
-    usesMembers: false,
-    options: [
-      '宿舍开黑组局',
-      '看场电影',
-      '下馆子聚餐',
-      '操场夜跑打球',
-      '桌面小游戏局',
-      '图书馆刷自习',
-      '宿舍躺平补觉',
-    ],
-  ),
-];
-
 const penaltyPresets = <String>[
   '承包今天寝室倒垃圾',
   '给每位室友带一瓶饮料/矿泉水',

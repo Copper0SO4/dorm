@@ -8,6 +8,7 @@ import '../../domain/ledger.dart';
 import '../common.dart';
 import 'draw_ceremony.dart';
 import 'group_board.dart';
+import 'group_scene.dart';
 
 class DrawCard extends StatefulWidget {
   const DrawCard({
@@ -36,6 +37,7 @@ class _DrawCardState extends State<DrawCard>
   List<List<String>>? _pending;
   List<List<String>>? _result;
   bool _showCeremony = false;
+  GroupScenePlan? _groupScene;
   List<int> _pickedSlots = const [];
   String? _error;
 
@@ -60,7 +62,10 @@ class _DrawCardState extends State<DrawCard>
     setState(() {
       _custom = roster;
       _requested = count;
-      if (_teams) _result = null;
+      if (_teams) {
+        _result = null;
+        _groupScene = null;
+      }
       _error = null;
     });
   }
@@ -102,6 +107,9 @@ class _DrawCardState extends State<DrawCard>
         _result = animate ? null : result;
         _pending = animate ? result : null;
         _showCeremony = !_teams && animate;
+        _groupScene = _teams && animate
+            ? GroupScenePlan(result, _roster)
+            : null;
         if (_showCeremony) {
           final visible = min(
             result.single.length,
@@ -118,12 +126,12 @@ class _DrawCardState extends State<DrawCard>
       if (animate) {
         _motion.duration = Duration(
           milliseconds: _teams
-              ? 680 + min(660, _roster.length * 42)
+              ? 2200 + min(360, (_groupScene?.packetCount ?? 0) * 16)
               : 2400 + (_pickedSlots.length - 1) * 150,
         );
         _motion.forward(from: 0);
       }
-      if (_showCeremony && MediaQuery.sizeOf(context).width < 740) {
+      if (animate && MediaQuery.sizeOf(context).width < 740) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_stageKey.currentContext case final stage?) {
             Scrollable.ensureVisible(
@@ -331,14 +339,15 @@ class _DrawCardState extends State<DrawCard>
     if (draw == null) return null;
 
     if (_teams) {
-      if (_pending != null) {
-        return AnimatedBuilder(
-          animation: _motion,
-          builder: (context, _) =>
-              GroupBoard(groups: draw, progress: _motion.value),
-        );
-      }
-      return GroupBoard(groups: draw, progress: 1, onCopy: () => _copy(draw));
+      final running = _pending != null;
+      return GroupBoard(
+        key: _stageKey,
+        groups: draw,
+        animation: _motion,
+        scene: _groupScene,
+        onSkip: running ? () => _motion.value = 1 : null,
+        onCopy: running ? null : () => _copy(draw),
+      );
     }
 
     return Card(
