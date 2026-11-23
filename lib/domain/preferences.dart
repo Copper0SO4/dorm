@@ -71,7 +71,7 @@ class DormPreferences {
     this.botProvider = 'deepseek',
     this.botApiBase = '',
     this.botApiModel = '',
-    this.botEffort = 'high',
+    this.botEffort = 'low',
     this.botApiKey = '',
     this.botModelMetadata = '',
   });
@@ -110,7 +110,7 @@ class DormPreferences {
       botProvider: _botToken(values['botProvider'], 'deepseek'),
       botApiBase: _botToken(values['botApiBase'], ''),
       botApiModel: _botToken(values['botApiModel'], ''),
-      botEffort: _botToken(values['botEffort'], 'high'),
+      botEffort: _botToken(values['botEffort'], 'low'),
       botApiKey: _botToken(values['botApiKey'], ''),
       botModelMetadata: values['botModelMetadata'] ?? '',
     );

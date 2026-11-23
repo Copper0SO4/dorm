@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -527,6 +528,62 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('API 托管等待时可在牌桌上立即接管出牌', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final answer = Completer<BotAdvice>();
+    var cancelled = false;
+    const delay = Duration(milliseconds: 10);
+    final rooms = CardRooms(
+      random: Random(8),
+      botDelay: delay,
+      advisor: (turn) {
+        unawaited(turn.cancelled!.then((_) => cancelled = true));
+        return answer.future;
+      },
+    );
+    final session = CardSession(() => null, rooms: rooms);
+    addTearDown(session.dispose);
+    await session.create(
+      CardRules(players: 2, landlord: false, bottom: 0),
+      '甲',
+      CardLocation.local,
+    );
+    final other = rooms.join(session.view!['room'] as String, name: '乙');
+    await session.act('start');
+    if (session.view!['turn'] != session.view!['you']) {
+      final state = rooms.state(other);
+      rooms.action(other, 'play', {
+        'turnVersion': state['turnVersion'],
+        'cards': [(state['hand'] as List).first],
+      });
+    }
+    await session.act('autoplay', {'enabled': true, 'mode': 'api'});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListenableBuilder(
+            listenable: session,
+            builder: (_, _) =>
+                CardTable(session: session, view: session.view!, share: () {}),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(delay);
+    expect(find.textContaining('AI 代打思考中', findRichText: true), findsOneWidget);
+    expect(find.textContaining('最多 45s', findRichText: true), findsOneWidget);
+    await tester.tap(find.text('接管出牌'));
+    await tester.pumpAndSettle();
+    expect(cancelled, isTrue);
+    expect(session.view!['turn'], session.view!['you']);
+    expect(find.text('出牌'), findsOneWidget);
+    answer.complete(const BotAdvice.failed('过期请求', timedOut: true));
+    await tester.pump();
+    expect(session.view!['apiTimeouts'], 0);
+    expect(tester.takeException(), isNull);
+  });
+
   test('房间规则兼容旧快照，一个开关控制两种四带二', () {
     final switches = CardRules(chainBombs: true, fourWithTwo: false);
     final decoded = CardRules.fromJson(switches.toJson());
@@ -1028,9 +1085,91 @@ void main() {
       );
       expect(find.text('添加电脑玩家'), findsOneWidget);
       await tester.tap(find.text('添加电脑玩家'));
-      await tester.pump();
-      expect(find.text('电脑 2'), findsOneWidget);
+      await tester.pumpAndSettle();
+      expect(find.text('本地电脑'), findsOneWidget);
+      expect(find.text('API 电脑'), findsOneWidget);
+      await tester.tap(find.text('本地电脑'));
+      await tester.pumpAndSettle();
+      expect(find.text('本地电脑 2'), findsOneWidget);
       expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+    },
+  );
+
+  testWidgets(
+    'CardTable distinguishes local/API autoplay and auto-selects AI play hints but not pass hints',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      var advisePass = false;
+      final rooms = CardRooms(
+        random: Random(12),
+        botDelay: const Duration(milliseconds: 50),
+        apiEnabled: () => true,
+        coach: (turn, _) async => advisePass
+            ? const BotAdvice.pass('手牌暂无优势，建议不出')
+            : BotAdvice.play(
+                cardPlays([turn.hand.first], {}, rules: turn.rules).single,
+                '先出单张试探',
+              ),
+      );
+      final session = CardSession(() => null, rooms: rooms);
+      await session.create(
+        CardRules(players: 2, discard: 48, landlord: false, bottom: 0),
+        '房主',
+        CardLocation.local,
+      );
+      final hostId = session.view!['you'];
+      await session.act('bot', {'mode': 'local'});
+      await session.act('start');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: session,
+              builder: (context, _) => CardTable(
+                session: session,
+                view: session.view!,
+                share: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(session.view!['turn'], hostId);
+
+      // AI 提示建议出牌时，自动选中对应牌面。
+      await tester.tap(find.text('AI 提示'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('AI 建议 · 单张 · 先出单张试探'), findsOneWidget);
+      expect(find.text('清空'), findsOneWidget);
+
+      // 打出选中的牌并等本地电脑走一步，随后测试建议「不出」时不自动选牌。
+      await tester.tap(find.text('出牌'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(find.text('清空'), findsNothing);
+
+      advisePass = true;
+      await tester.tap(find.text('AI 提示'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('AI 建议 · 不出 · 手牌暂无优势，建议不出'), findsOneWidget);
+      expect(find.text('清空'), findsNothing);
+
+      // 托管按钮明确区分本地托管和 API 托管。
+      await tester.tap(find.byTooltip('开启托管'));
+      await tester.pumpAndSettle();
+      expect(find.text('本地托管'), findsOneWidget);
+      expect(find.text('API 托管'), findsOneWidget);
+      await tester.tap(find.text('本地托管'));
+      await tester.pump();
+      expect(find.textContaining('本地托管中', findRichText: true), findsOneWidget);
+      expect(find.byTooltip('取消托管'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 200));
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },

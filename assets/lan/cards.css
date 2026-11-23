@@ -192,6 +192,15 @@ dialog::backdrop { background: #040c0bbd; }
 .turn-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #96c9ab; }
 .turn-status.your-turn { color: #fff0c8; background: #473b22e6; border-color: #dcb774; }
 .turn-status.your-turn::before { background: #ffe5a2; box-shadow: 0 0 6px #ffda8066; }
+.turn-status.thinking::before {
+  flex: 0 0 auto; width: 8px; height: 8px;
+  background: transparent; border: 1px solid #ffdb97;
+  border-right-color: transparent; animation: wait-spin .75s linear infinite;
+}
+@keyframes wait-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .turn-status.thinking::before { animation: none; border-right-color: #ffdb97; }
+}
 .wild-status { font-size: 12px; color: #ffe4aa; }
 .play-spots { position: relative; min-height: 0; margin-top: 4px; container-type: size; }
 .play-area {
@@ -307,7 +316,7 @@ dialog::backdrop { background: #040c0bbd; }
   .turn-status { padding: 3px 8px; }
   .play-controls { padding: 2px; }
   .action-row { gap: 5px; }
-  .action-status .turn-status { max-width: 165px; overflow: hidden; white-space: nowrap; }
+  .action-status .turn-status { max-width: min(66vw, 245px); overflow: hidden; white-space: nowrap; }
   .hand-line { min-height: 21px; }
   .play-area { padding: 3px 4px 2px; }
   .play-spots { margin-top: 2px; }

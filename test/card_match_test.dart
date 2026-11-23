@@ -278,4 +278,66 @@ void main() {
     expect(calls.last.turn.playedBySeat, isEmpty);
     expect(calls.last.turn.deal, greaterThan(calls.first.turn.deal));
   });
+
+  testWidgets(
+    'local vs API modes for bot seats and autoplay are strictly separated',
+    (tester) async {
+      var apiOn = false;
+      var advisorCalls = 0;
+      final rooms = CardRooms(
+        random: Random(11),
+        botDelay: const Duration(milliseconds: 10),
+        apiEnabled: () => apiOn,
+        advisor: (turn) async {
+          advisorCalls++;
+          if (turn.bidding) return const BotAdvice.bid(0);
+          return const BotAdvice.pass();
+        },
+      );
+      addTearDown(rooms.dispose);
+      final rules = CardRules(
+        players: 2,
+        discard: 50,
+        landlord: false,
+        bottom: 0,
+      );
+      final host = rooms.create(rules);
+
+      // 未启用 API 时，不能添加 API 电脑或开启 API 托管，但本地电脑与本地托管可用。
+      expect(
+        () => rooms.action(host, 'bot', {'mode': 'api'}),
+        throwsA(isA<InputException>()),
+      );
+      final withLocalBot = rooms.action(host, 'bot', {'mode': 'local'});
+      final botSeat = (withLocalBot['people'] as List).last as RoomJson;
+      expect(botSeat['name'], '本地电脑 2');
+      expect(botSeat['botMode'], 'local');
+      expect(withLocalBot['apiAvailable'], isFalse);
+
+      rooms.action(host, 'start', {});
+      expect(
+        () => act(rooms, host, 'autoplay', {'enabled': true, 'mode': 'api'}),
+        throwsA(isA<InputException>()),
+      );
+      await tester.pump(const Duration(milliseconds: 15));
+      expect(advisorCalls, 0);
+
+      // 启用 API 后，可以添加 API 电脑和开启 API 托管，本地电脑仍不走 API。
+      apiOn = true;
+      rooms.syncCapabilities();
+      expect(rooms.state(host)['apiAvailable'], isTrue);
+      act(rooms, host, 'autoplay', {'enabled': true, 'mode': 'api'});
+      expect((rooms.state(host)['people'] as List).first['botMode'], 'api');
+      await tester.pump(const Duration(milliseconds: 15));
+      await tester.pump(const Duration(milliseconds: 15));
+      expect(advisorCalls, greaterThanOrEqualTo(1));
+
+      // 在新房间中验证 API 电脑可明确添加并标记为 api。
+      final apiRoom = rooms.create(rules);
+      final addedApiBot = rooms.action(apiRoom, 'bot', {'mode': 'api'});
+      final apiSeat = (addedApiBot['people'] as List).last as RoomJson;
+      expect(apiSeat['name'], 'API 电脑 2');
+      expect(apiSeat['botMode'], 'api');
+    },
+  );
 }

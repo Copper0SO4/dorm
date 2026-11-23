@@ -11,12 +11,25 @@ import 'package:dormos/game/cards.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('defaults to DeepSeek Flash and migrates obsolete official aliases', () {
+  test('defaults to DeepSeek Flash with low thinking and migrates obsolete official aliases', () {
     final profile = BotProfile.fromPreferences(const DormPreferences());
     expect(profile.provider, BotProvider.deepseek);
     expect(profile.model, 'deepseek-flash');
     expect(profile.baseUrl, 'https://api.deepseek.com');
-    expect(profile.effort, BotEffort.high);
+    expect(profile.effort, BotEffort.low);
+    expect(profile.effectiveEffort, BotEffort.low);
+    for (final provider in BotProvider.values) {
+      expect(provider.defaultEffort, BotEffort.low);
+      final providerProfile = BotProfile.fromPreferences(
+        DormPreferences(botProvider: provider.name),
+      );
+      expect(providerProfile.effectiveEffort, BotEffort.low);
+    }
+    expect(
+      BotProfile.fromPreferences(const DormPreferences(botEffort: 'off'))
+          .effectiveEffort,
+      BotEffort.off,
+    );
     expect(profile.usable, isFalse);
     expect(botEndpoint(profile).path, '/chat/completions');
     expect(
@@ -88,7 +101,10 @@ void main() {
     expect(advice.explanation, '用小牌接手，保留大牌。');
     expect(advice.play?.cards, hasLength(1));
     expect(prompts.single, contains('共 108 张'));
-    expect(prompts.single, contains('座位 2 已出 3 张：3×2 A'));
+    expect(prompts.single, contains('座位 2 已出 3 张：2张3 A'));
+    expect(prompts.single, isNot(contains('×')));
+    expect(formatBotRanks([4, 4, 15, 15, 15, 15]), '2张4 4张2');
+    expect(botCoachPrompt, contains('禁止使用“4*2”“4×2”'));
     expect(prompts.single, contains('当前座位的上一条建议'));
     expect((await coach.coach(turn, [])).failure, isNotNull);
   });
@@ -173,7 +189,7 @@ void main() {
       expect(turns.last.log.length, lessThanOrEqualTo(1));
       expect(botUserPrompt(turns.last, const []), isNot(contains('这条聊天只留在牌桌')));
       final current = rooms.state(seat);
-      pending.first.complete(const BotAdvice.failed('过期回复'));
+      pending.first.complete(const BotAdvice.failed('过期回复', timedOut: true));
       await tester.pump();
       expect(rooms.state(seat), equals(current));
       pending.last.complete(const BotAdvice.failed('测试回退'));
@@ -183,7 +199,7 @@ void main() {
       expect(after['turn'], after['you']);
       expect(
         (after['events'] as List).lastWhere(
-          (event) => event['kind'] == 'botFallback',
+          (event) => event['kind'] == 'botTurnFallback',
         )['text'],
         contains('测试回退'),
       );
@@ -199,8 +215,77 @@ void main() {
       }
       expect(after['turn'], isNot(after['you']));
       await tester.pump(const Duration(milliseconds: 10));
-      expect(turns, hasLength(2));
-      expect(rooms.state(seat)['turn'], after['you']);
+      expect(turns, hasLength(3));
+      expect(rooms.state(seat)['botThinking'], isTrue);
+      expect(rooms.state(seat)['apiTimeouts'], 0);
+      rooms.action(seat, 'abort', {});
+      await tester.pump();
+    },
+  );
+
+  testWidgets(
+    'only the third timeout suspends API play for the current round',
+    (tester) async {
+      const botDelay = Duration(milliseconds: 10);
+      final pending = <Completer<BotAdvice>>[];
+      final rooms = CardRooms(
+        random: Random(11),
+        botDelay: botDelay,
+        advisor: (_) {
+          final reply = Completer<BotAdvice>();
+          pending.add(reply);
+          return reply.future;
+        },
+      );
+      addTearDown(rooms.dispose);
+      final seat = rooms.create(
+        CardRules(players: 2, decks: 2, landlord: false, bottom: 0),
+      );
+      rooms.action(seat, 'bot', {'mode': 'api'});
+
+      Future<void> reachBot() async {
+        final state = rooms.state(seat);
+        if (state['turn'] == state['you']) {
+          final input = {'turnVersion': state['turnVersion']};
+          if (state['last'] == null) {
+            rooms.action(seat, 'play', {
+              ...input,
+              'cards': [(state['hand'] as List).first],
+            });
+          } else {
+            rooms.action(seat, 'pass', input);
+          }
+        }
+        await tester.pump(botDelay);
+      }
+
+      rooms.action(seat, 'start', {});
+      for (var attempt = 1; attempt <= botTimeoutLimit; attempt++) {
+        await reachBot();
+        expect(pending, hasLength(attempt));
+        await tester.pump(botDecisionTimeout - const Duration(seconds: 1));
+        expect(rooms.state(seat)['botThinking'], isTrue);
+        expect(rooms.state(seat)['apiTimeouts'], attempt - 1);
+        await tester.pump(const Duration(seconds: 1));
+        expect(rooms.state(seat)['apiTimeouts'], attempt);
+        expect(rooms.state(seat)['apiSuspended'], attempt == botTimeoutLimit);
+      }
+      await reachBot();
+      expect(pending, hasLength(botTimeoutLimit));
+      expect(rooms.state(seat)['botThinking'], isFalse);
+      final fallback = (rooms.state(seat)['events'] as List).where(
+        (event) => event['kind'] == 'botFallback',
+      );
+      expect(fallback, hasLength(1));
+
+      rooms.action(seat, 'abort', {});
+      rooms.action(seat, 'start', {});
+      await reachBot();
+      expect(rooms.state(seat)['apiTimeouts'], 0);
+      expect(rooms.state(seat)['botThinking'], isTrue);
+      expect(pending, hasLength(botTimeoutLimit + 1));
+      rooms.action(seat, 'abort', {});
+      await tester.pump();
     },
   );
 
@@ -346,7 +431,9 @@ void main() {
     );
     final pending = _chooseOverHttp(bot);
     await listening.future.timeout(const Duration(seconds: 3));
-    expect((await pending).failure, '电脑 API 响应超时');
+    final advice = await pending;
+    expect(advice.failure, '电脑 API 响应超时');
+    expect(advice.timedOut, isTrue);
   });
 }
 

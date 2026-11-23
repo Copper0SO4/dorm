@@ -6,12 +6,15 @@ import 'cards.dart';
 
 export 'bot_models.dart' show BotEffort, BotModel, BotThinking;
 
+const botDecisionTimeout = Duration(seconds: 45);
+const botTimeoutLimit = 3;
+
 enum BotProvider {
   deepseek(
     'DeepSeek',
     'https://api.deepseek.com',
     'deepseek-flash',
-    BotEffort.high,
+    BotEffort.low,
   ),
   openai('OpenAI 兼容', 'https://api.openai.com/v1', 'gpt-6-luna', BotEffort.low),
   anthropic(
@@ -153,6 +156,7 @@ class BotProfile {
           BotEffort.max,
         ],
       BotProvider.openai => const [
+        BotEffort.off,
         BotEffort.minimal,
         BotEffort.low,
         BotEffort.medium,
@@ -230,6 +234,7 @@ class BotTurn {
     this.leader,
     this.bottom = const [],
     this.playedBySeat = const {},
+    this.cancelled,
   });
 
   final String room;
@@ -247,6 +252,7 @@ class BotTurn {
   final List<BotSeat> players;
   final List<String> log;
   final Map<int, List<int>> playedBySeat;
+  final Future<void>? cancelled;
 }
 
 class BotAdvice {
@@ -254,10 +260,11 @@ class BotAdvice {
     : explanation = null,
       ready = false,
       failure = null,
+      timedOut = false,
       bid = null,
       play = null,
       pass = false;
-  const BotAdvice.failed(this.failure)
+  const BotAdvice.failed(this.failure, {this.timedOut = false})
     : explanation = null,
       ready = false,
       bid = null,
@@ -267,20 +274,24 @@ class BotAdvice {
     : explanation = null,
       ready = true,
       failure = null,
+      timedOut = false,
       play = null,
       pass = false;
   const BotAdvice.pass([this.explanation])
     : ready = true,
       failure = null,
+      timedOut = false,
       bid = null,
       play = null,
       pass = true;
   const BotAdvice.play(this.play, [this.explanation])
     : ready = true,
       failure = null,
+      timedOut = false,
       bid = null,
       pass = false;
 
+  final bool timedOut;
   final bool ready;
   final String? failure;
   final String? explanation;
@@ -336,6 +347,7 @@ const botSystemPrompt = '''
 const botCoachPrompt = '''
 你是当前斗地主玩家的教练，只根据这一玩家自己的手牌和公开信息推荐一项可选动作。
 考虑各座位剩余张数、队友领出、已出的牌、对手走完的风险和拆牌代价。
+描述牌面时请用“2张4”“对4”“4张2”“单张A”等明确中文表达，禁止使用“4*2”“4×2”这类易混淆写法。
 没有足够信息时说明不确定性。只回 JSON，例如 {"i":0,"reason":"简短的中文理由"}。理由最多 100 字。
 ''';
 
@@ -516,6 +528,6 @@ String formatBotRanks(Iterable<int> ranks) {
     for (final rank in ordered)
       counts[rank] == 1
           ? PlayingCard.rankLabel(rank)
-          : '${PlayingCard.rankLabel(rank)}×${counts[rank]}',
+          : '${counts[rank]}张${PlayingCard.rankLabel(rank)}',
   ].join(' ');
 }

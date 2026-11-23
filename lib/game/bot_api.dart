@@ -12,22 +12,18 @@ typedef BotTransport = Future<String> Function(
   String user,
 );
 
-const botDecisionTimeout = Duration(seconds: 8);
-
 /// Stateless requests contain only the current deal. The room owns the
 /// turn revision and decides whether a completed answer can still be used.
 class ApiBotAdvisor {
   ApiBotAdvisor(
     this._profile, {
-    BotTransport? transport,
-    Duration timeout = botDecisionTimeout,
-  }) : _transport =
-           transport ??
-           ((profile, system, user) =>
-               _complete(profile, system, user, timeout));
+    this._transport,
+    this._timeout = botDecisionTimeout,
+  });
 
   final BotProfile Function() _profile;
-  final BotTransport _transport;
+  final BotTransport? _transport;
+  final Duration _timeout;
 
   Future<BotAdvice> choose(BotTurn turn) => _decide(turn);
 
@@ -62,14 +58,23 @@ class ApiBotAdvisor {
           : BotAdvice.pass(explain ? '你的手牌没有能压过当前牌的组合，建议不出，保留手牌。' : null);
     }
     try {
-      final text = await _transport(
-        profile,
-        explain ? botCoachPrompt : botSystemPrompt,
-        botUserPrompt(turn, options, coachingHistory: history),
-      );
+      final system = explain ? botCoachPrompt : botSystemPrompt;
+      final user = botUserPrompt(turn, options, coachingHistory: history);
+      final transport = _transport;
+      final text = transport == null
+          ? await _complete(
+              profile,
+              system,
+              user,
+              _timeout,
+              cancelled: turn.cancelled,
+            )
+          : await transport(profile, system, user).timeout(_timeout);
       return interpretBotText(text, turn, options, explain: explain);
     } on BotHttpException catch (error) {
-      return BotAdvice.failed(error.message);
+      return BotAdvice.failed(error.message, timedOut: error.timedOut);
+    } on TimeoutException {
+      return const BotAdvice.failed('电脑 API 响应超时', timedOut: true);
     } catch (_) {
       return const BotAdvice.failed('电脑 API 暂时不可用');
     }
@@ -77,8 +82,9 @@ class ApiBotAdvisor {
 }
 
 class BotHttpException implements Exception {
-  const BotHttpException(this.message);
+  const BotHttpException(this.message, {this.timedOut = false});
   final String message;
+  final bool timedOut;
 }
 
 class BotApiSettings {
@@ -152,13 +158,17 @@ class BotApiSettings {
 
 Future<T> _withClient<T>(
   Duration timeout,
-  Future<T> Function(HttpClient) work,
-) async {
+  Future<T> Function(HttpClient) work, {
+  Future<void>? cancelled,
+}) async {
   final client = HttpClient()..connectionTimeout = timeout;
+  if (cancelled != null) {
+    unawaited(cancelled.then((_) => client.close(force: true)));
+  }
   try {
     return await work(client).timeout(timeout);
   } on TimeoutException {
-    throw const BotHttpException('电脑 API 响应超时');
+    throw const BotHttpException('电脑 API 响应超时', timedOut: true);
   } on SocketException {
     throw const BotHttpException('无法连接电脑 API');
   } on HandshakeException {
@@ -174,8 +184,9 @@ Future<String> _complete(
   BotProfile profile,
   String system,
   String user,
-  Duration timeout,
-) => _withClient(timeout, (client) async {
+  Duration timeout, {
+  Future<void>? cancelled,
+}) => _withClient(timeout, cancelled: cancelled, (client) async {
   final decoded = await _jsonRequest(
     client,
     profile,
@@ -222,7 +233,11 @@ Future<Map<String, dynamic>> _jsonRequest(
         }.contains(response.statusCode)) {
       throw const BotHttpException('当前地址未提供模型列表接口，可手动填写模型');
     }
-    throw BotHttpException(_httpFailure(response.statusCode));
+    final status = response.statusCode;
+    throw BotHttpException(
+      _httpFailure(status),
+      timedOut: status == 408 || status == 504,
+    );
   }
   final maxBytes = catalog ? 1024 * 1024 : 256 * 1024;
   final bytes = BytesBuilder(copy: false);
@@ -319,5 +334,6 @@ String _httpFailure(int status) => switch (status) {
   401 || 403 => '电脑 API 鉴权失败（HTTP $status）',
   400 || 404 || 422 => '电脑 API 地址、模型或参数有误（HTTP $status）',
   429 => '电脑 API 请求受限（HTTP $status）',
+  408 || 504 => '电脑 API 响应超时（HTTP $status）',
   _ => '电脑 API 返回 HTTP $status',
 };

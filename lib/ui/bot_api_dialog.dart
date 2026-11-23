@@ -145,7 +145,9 @@ class _BotApiDialogState extends State<_BotApiDialog> {
       _model.text = model.id;
       final profile = _draft(key: '', enabled: false);
       if (!profile.effortOptions.contains(_effort)) {
-        _effort = model.defaultEffort ?? BotEffort.automatic;
+        _effort = profile.effortOptions.contains(BotEffort.low)
+            ? BotEffort.low
+            : (model.defaultEffort ?? BotEffort.automatic);
       }
       _clearMessage();
     });
@@ -209,11 +211,14 @@ class _BotApiDialogState extends State<_BotApiDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           spacing: 12,
           children: [
-            const Text('电脑出牌、托管和 AI 提示都使用房主的 API 设置。连接测试会发送一条简短消息。'),
+            Text(
+              'AI 出牌和提示使用房主的 API，单次最多等待 ${botDecisionTimeout.inSeconds} 秒。'
+              '一局内第 $botTimeoutLimit 次超时后，自动出牌由本地电脑接管。连接测试会发送一条简短消息。',
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('用 API 驱动电脑玩家'),
-              subtitle: const Text('响应超过 8 秒或调用失败时，本局改用本地电脑'),
+              title: const Text('启用电脑 API'),
+              subtitle: const Text('开启后可添加 API 电脑、选择 API 托管并使用 AI 提示'),
               value: _enabled,
               onChanged: busy
                   ? null

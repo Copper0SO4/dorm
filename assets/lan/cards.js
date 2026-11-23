@@ -18,6 +18,7 @@ let selectionCheck = null;
 let selectionTimer;
 let hintCursor = 0;
 let preferred = null;
+let appliedAiHintId = null;
 let currentEvents = 0;
 let pending = false;
 let noticeTimer;
@@ -121,6 +122,7 @@ function enter(next) {
   releaseFan();
   setSelection(new Set());
   hints = null;
+  appliedAiHintId = null;
   try { sessionStorage.setItem('dorm-cards:' + next.room, next.token); } catch (_) {}
   const target = new URL(location.href);
   target.searchParams.set('room', next.room);
@@ -246,16 +248,17 @@ function seatView(player, move) {
   const called = state.phase==='bidding' && player.called != null
     ? (player.called === 0 ? '不叫' : state.rules.landlordCall==='call' ? '叫地主' : player.called+' 分') : '';
   const automatic = player.autoplay === true;
+  const autoLabel = player.botMode === 'api' && !state.apiSuspended ? 'API 托管' : '本地托管';
   const seat = button('',()=>openDialog(player.name,
     button('🍅 丢番茄',async()=>{await act('tomato',{target:player.id});dialog.close();}),
     button('关闭',()=>dialog.close())),{design:'seat'+(player.id===state.turn?' turn':'')});
   seat.dataset.seat = player.id;
   if (moveLabels[move]) seat.dataset.move = move;
-  seat.title = [player.name,role,called,moveLabels[move],automatic?'托管中':'',player.cards+' 张'].filter(Boolean).join(' · ');
-  seat.append(el('span',{class:'seat-avatar','aria-hidden':'true'},player.bot?'机':Array.from(player.name)[0]),
+  seat.title = [player.name,role,called,moveLabels[move],automatic?autoLabel+'中':'',player.cards+' 张'].filter(Boolean).join(' · ');
+  seat.append(el('span',{class:'seat-avatar','aria-hidden':'true'},player.bot?(player.botMode==='api'?'AI':'机'):Array.from(player.name)[0]),
     el('span',{class:'seat-text'},el('b',{},player.name),
       el('span',{class:'seat-meta'},role || called ? el('small',{},role || called) : null,moveTag(move))),
-    el('strong',{class:'seat-count','aria-label': (automatic?'托管中，':'')+player.cards+' 张'},automatic?'托管 · '+player.cards:player.cards));
+    el('strong',{class:'seat-count','aria-label': (automatic?autoLabel+'中，':'')+player.cards+' 张'},automatic?autoLabel+' · '+player.cards:player.cards));
   return seat;
 }
 
@@ -269,6 +272,20 @@ function opponentSeats(s) {
 
 function ownAutoplay() {
   return state?.people.find(player => player.id===state.you)?.autoplay === true;
+}
+function ownAutoMode() {
+  return state?.people.find(player => player.id===state.you)?.botMode ?? 'local';
+}
+function chooseBotMode(title, localLabel, apiLabel, unavailableText, onChosen) {
+  const apiReady = state?.apiAvailable === true;
+  openDialog(title,
+    el('div',{class:'stack'},
+      button(localLabel,async()=>{dialog.close();await onChosen('local');}),
+      button(apiLabel,async()=>{dialog.close();await onChosen('api');},{disabled:!apiReady}),
+      el('small',{class:'muted'},apiReady
+        ? '模型单次最多等 '+(state.apiWaitSeconds ?? 45)+' 秒，同局 '+(state.apiTimeoutLimit ?? 3)+' 次超时后本地接管'
+        : unavailableText)),
+    el('div',{class:'actions'},button('取消',()=>dialog.close())));
 }
 function canSelectCards() {
   return session && state?.phase==='playing' && !pending && !ownAutoplay();
@@ -380,7 +397,9 @@ function mountBoard() {
   fullscreen.hidden = !document.fullscreenEnabled;
   const seats = el('div',{class:'opponents','aria-label':'其他玩家'});
   const counter = el('div',{class:'rank-counter',title:'未见牌，含未知的底牌和弃牌',hidden:true});
-  const autoButton = button('托管',()=>act('autoplay',{enabled:!ownAutoplay()}));
+  const autoButton = button('托管',() => ownAutoplay()
+    ? act('autoplay',{enabled:false})
+    : chooseBotMode('选择托管模式','本地托管（内置规则）','API 托管（模型出牌）','需房主先启用电脑 API',mode=>act('autoplay',{enabled:true,mode})));
   const summary = el('div',{class:'settlement',hidden:true});
   const advice = button('',showAiAdvice,{design:'ai-advice'});
   advice.hidden = true;
@@ -526,18 +545,23 @@ function renderRoom() {
   const activeRuleNames = [modes[s.rules.mode],s.rules.decks+' 副'];
   activeRuleNames.push(s.rules.chainBombs ? '连炸开' : '连炸关');
   const autoplay = ownAutoplay();
+  const autoMode = ownAutoMode();
+  const autoLabel = autoMode === 'api' && !s.apiSuspended ? 'API 托管' : '本地托管';
   const preview = own && playing && !autoplay && selected.size ? activeSelectionCheck() : null;
   board.autoButton.hidden = !active && !autoplay;
   board.autoButton.disabled = pending;
-  board.autoButton.textContent = autoplay ? '取消托管' : '托管';
+  board.autoButton.textContent = autoplay ? '取消'+autoLabel : '托管';
   board.autoButton.setAttribute('aria-pressed',String(autoplay));
   const controls = [];
   if (host && !active) {
     controls.push(button(s.phase==='finished'?(s.matchComplete?'开始新比赛':'下一局'):'发牌开局',()=>act('start'),
       {design:'primary',disabled:pending || s.people.length!==s.rules.players}));
-    controls.push(button('添加电脑玩家',()=>act('bot'),{disabled:pending || s.people.length>=s.rules.players}));
+    controls.push(button('添加电脑玩家',()=>chooseBotMode('添加电脑玩家','本地电脑（内置规则）','API 电脑（模型出牌）','需房主先启用电脑 API',mode=>act('bot',{mode})),{disabled:pending || s.people.length>=s.rules.players}));
     if (s.people.some(player=>player.bot)) controls.push(button('移除电脑玩家',()=>act('removeBot'),{disabled:pending}));
     controls.push(button('调整规则',()=>rulesForm(s.rules),{disabled:pending}));
+  }
+  if (own && active && autoplay) {
+    controls.push(button('接管出牌',()=>act('autoplay',{enabled:false}),{disabled:pending}));
   }
   if (own && bidding && !autoplay) {
     controls.push(button('不叫',()=>act('bid',{bid:0},s.turnVersion),{disabled:pending}));
@@ -571,11 +595,18 @@ function renderRoom() {
       if (bottomCount>visible) board.bottom.append(el('span',{class:'extra-bottom'},'+'+(bottomCount-visible)));
     }
     board.seats.replaceChildren(...opponents.map(player=>seatView(player,moves.get(player?.id))));
-    board.status.textContent = autoplay && active ? '托管中' : s.botThinking ? playerName(s.turn)+'思考中' :
+    const callLabel = s.rules.landlordCall==='call' ? '叫地主' : '叫分';
+    const turnText = s.botThinking ? (own?'AI 代打思考中':playerName(s.turn)+' 思考中') :
+      autoplay && own && active ? autoLabel+'中' :
       s.phase==='finished' ? (s.result || '牌局结束') :
-      bidding ? (own?'轮到你叫分':playerName(s.turn)+'正在叫分') :
+      bidding ? (own?'轮到你'+callLabel:playerName(s.turn)+'正在'+callLabel) :
       playing ? (own?(s.last?'轮到你出牌':'轮到你先出'):playerName(s.turn)+'正在出牌') :
       (s.people.length===s.rules.players?'座位已满，可以发牌':'等待其他玩家入座');
+    const apiText = s.botThinking ? '最多 '+(s.apiWaitSeconds ?? 45)+'s' :
+      active && s.apiSuspended ? '本局本地接管' :
+      active && s.apiTimeouts>0 ? '超时 '+s.apiTimeouts+'/'+(s.apiTimeoutLimit ?? 3) : '';
+    board.status.textContent = turnText+(apiText?' · '+apiText:'');
+    board.status.classList.toggle('thinking',s.botThinking === true);
     board.status.classList.toggle('your-turn',own && active);
     board.counter.hidden = !s.counter?.length;
     board.counter.replaceChildren(el('small',{},'未见'),
@@ -583,7 +614,7 @@ function renderRoom() {
     renderTrick(s, opponents, moves);
     renderSettlement(s);
     board.count.textContent = '我 · '+s.hand.length+' 张'+(s.you===s.landlord?' · 地主':'');
-    board.ownMove.replaceChildren(...[autoplay ? el('span',{class:'move-tag move-previous'},'托管') : moveTag(moves.get(s.you))].filter(Boolean));
+    board.ownMove.replaceChildren(...[autoplay ? el('span',{class:'move-tag move-previous'},autoLabel) : moveTag(moves.get(s.you))].filter(Boolean));
     board.wild.textContent = playing && s.wild.length ? '癞子 '+s.wild.map(rankName).join('、') : '';
     board.wild.hidden = !board.wild.textContent;
     updateChat();
@@ -606,7 +637,7 @@ function renderRoom() {
   const coach = own && playing && !autoplay ? s.aiHint : null;
   board.advice.hidden = !coach;
   board.advice.disabled = !coach?.reason;
-  board.advice.textContent = !coach ? '' : coach.pending ? 'AI 正在分析牌局'
+  board.advice.textContent = !coach ? '' : coach.pending ? 'AI 分析中 · 最多 '+(s.apiWaitSeconds ?? 45)+' 秒'
     : coach.error ?? 'AI 建议 · '+(coach.play?.label ?? '不出')+' · '+coach.reason;
   board.hand.node.hidden = !s.hand.length || s.phase==='finished';
   board.count.parentNode.hidden = board.hand.node.hidden;
@@ -727,6 +758,7 @@ async function act(action, data = {}, revision = state?.turnVersion) {
       try { sessionStorage.removeItem('dorm-cards:'+seat.room); } catch (_) {}
       releaseFan();
       state = session = null;
+      appliedAiHintId = null;
       setSelection(new Set());
       clearBoard();
       await refresh(true);
@@ -757,11 +789,25 @@ function accept(value) {
   }
   const events = state ? value.events.filter(item => item.id>currentEvents) : [];
   state = value;
+  const hint = state.aiHint;
+  if (state.phase==='playing' && state.you===state.turn && !ownAutoplay() &&
+      hint && !hint.pending && !hint.error && hint.turn===state.turnVersion &&
+      hint.id!==appliedAiHintId) {
+    appliedAiHintId = hint.id;
+    if (!hint.pass && hint.play?.cards?.length) {
+      const owned = new Set(state.hand);
+      const ids = hint.play.cards.map(card => card.id);
+      if (ids.every(id => owned.has(id))) {
+        releaseFan();
+        setSelection(new Set(ids), hint.play.key);
+      }
+    }
+  }
   currentEvents = value.events.at(-1)?.id ?? 0;
   renderRoom();
   const tomato = events.findLast(event=>event.kind==='tomato');
   if (tomato) board.seats.querySelector('[data-seat="'+tomato.target+'"]')?.classList.add('splat');
-  const fallback = events.findLast(event=>event.kind==='botFallback');
+  const fallback = events.findLast(event=>['botFallback','botTurnFallback'].includes(event.kind));
   if (fallback) notice(fallback.text);
   if (events.length) sound(events.at(-1).kind);
 }

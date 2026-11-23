@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../game/bot_profile.dart' show botDecisionTimeout, botTimeoutLimit;
 import '../game/card_rooms.dart';
 import '../game/card_session.dart';
 import '../game/cards.dart';
@@ -52,11 +53,18 @@ class _CardTableState extends State<CardTable> {
   int? _hintTurn;
   int _hintCursor = 0;
   List<CardPlay>? _hints;
+  int? _appliedAiHintId;
 
   RoomJson get view => widget.view;
   CardRules get rules => CardRules.fromJson(view['rules'] as RoomJson);
   CardSession get session => widget.session;
   bool get ownTurn => view['turn'] == view['you'];
+  bool get apiAvailable => view['apiAvailable'] == true;
+  String? get _ownAutoMode =>
+      people
+              .where((player) => player['id'] == view['you'])
+              .firstOrNull?['botMode']
+          as String?;
   bool get autoplay => people.any(
     (player) => player['id'] == view['you'] && player['autoplay'] == true,
   );
@@ -105,6 +113,32 @@ class _CardTableState extends State<CardTable> {
       _hintTurn = null;
       _hintCursor = 0;
     }
+    final hint = coaching;
+    if (view['phase'] == 'playing' &&
+        ownTurn &&
+        !autoplay &&
+        hint != null &&
+        hint['pending'] != true &&
+        hint['error'] == null &&
+        hint['turn'] == view['turnVersion'] &&
+        hint['id'] != _appliedAiHintId) {
+      _appliedAiHintId = hint['id'] as int?;
+      if (hint['pass'] != true && hint['play'] is RoomJson) {
+        final play = hint['play'] as RoomJson;
+        final ids = (play['cards'] as List)
+            .cast<RoomJson>()
+            .map((card) => card['id'] as int)
+            .toList();
+        final owned = hand.map((card) => card.id).toSet();
+        if (ids.isNotEmpty && ids.every(owned.contains)) {
+          _selected
+            ..clear()
+            ..addAll(ids);
+          _preferred = play['key'] as String?;
+          _hintCursor = 0;
+        }
+      }
+    }
     final recent = events
         .where((entry) => (entry['id'] as int) > _event)
         .toList();
@@ -125,7 +159,10 @@ class _CardTableState extends State<CardTable> {
       });
     }
     final fallback = recent
-        .where((entry) => entry['kind'] == 'botFallback')
+        .where(
+          (entry) =>
+              const {'botFallback', 'botTurnFallback'}.contains(entry['kind']),
+        )
         .lastOrNull;
     if (fallback != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -257,6 +294,84 @@ class _CardTableState extends State<CardTable> {
       await session.act('rules', {'rules': setup.rules.toJson()});
     }
   }
+
+  Future<void> _chooseBot() => _chooseBotMode(
+    title: '添加电脑玩家',
+    localTitle: '本地电脑',
+    localSubtitle: '按内置规则出牌，不调用模型 API',
+    apiTitle: 'API 电脑',
+    apiSubtitle: '由房主的模型出牌，单次最多等 ${botDecisionTimeout.inSeconds} 秒',
+    unavailableSubtitle: '需先在「电脑 API」中启用并配置密钥',
+    onChosen: (mode) => session.act('bot', {'mode': mode}),
+  );
+
+  Future<void> _chooseAutoplay() => _chooseBotMode(
+    title: '选择托管模式',
+    localTitle: '本地托管',
+    localSubtitle: '按内置规则自动出牌，不调用模型 API',
+    apiTitle: 'API 托管',
+    apiSubtitle: '由房主的模型代打，牌桌可随时取消托管',
+    unavailableSubtitle: '需房主先启用电脑 API',
+    onChosen: (mode) =>
+        session.act('autoplay', {'enabled': true, 'mode': mode}),
+  );
+
+  Future<void> _chooseBotMode({
+    required String title,
+    required String localTitle,
+    required String localSubtitle,
+    required String apiTitle,
+    required String apiSubtitle,
+    required String unavailableSubtitle,
+    required Future<void> Function(String mode) onChosen,
+  }) => showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      scrollable: true,
+      title: Text(title),
+      contentPadding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.memory),
+            title: Text(localTitle),
+            subtitle: Text(localSubtitle),
+            onTap: () {
+              Navigator.pop(dialogContext);
+              unawaited(onChosen('local'));
+            },
+          ),
+          ListTile(
+            enabled: apiAvailable,
+            leading: const Icon(Icons.auto_awesome),
+            title: Text(apiTitle),
+            subtitle: Text(apiAvailable ? apiSubtitle : unavailableSubtitle),
+            onTap: !apiAvailable
+                ? null
+                : () {
+                    Navigator.pop(dialogContext);
+                    unawaited(onChosen('api'));
+                  },
+          ),
+        ],
+      ),
+      actions: [
+        if (!apiAvailable && isHost && widget.onBotApi != null)
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              widget.onBotApi!();
+            },
+            child: const Text('配置电脑 API'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('取消'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _leave() async {
     if (inPlay) {
@@ -582,11 +697,13 @@ class _CardTableState extends State<CardTable> {
               children: [
                 if (inPlay || autoplay)
                   IconButton(
-                    tooltip: autoplay ? '取消托管' : '托管',
+                    tooltip: autoplay ? '取消托管' : '开启托管',
                     isSelected: autoplay,
                     onPressed: blocked
                         ? null
-                        : () => session.act('autoplay', {'enabled': !autoplay}),
+                        : autoplay
+                        ? () => session.act('autoplay', {'enabled': false})
+                        : _chooseAutoplay,
                     icon: const Icon(Icons.smart_toy_outlined),
                     selectedIcon: const Icon(Icons.smart_toy, color: _gold),
                   ),
@@ -675,7 +792,9 @@ class _CardTableState extends State<CardTable> {
           ? null
           : () => _showAiAdvice(advice, explanation),
       child: Text(
-        pending ? 'AI 正在分析牌局' : error ?? 'AI 建议${action ?? ''} · $explanation',
+        pending
+            ? 'AI 分析中 · 最多 ${botDecisionTimeout.inSeconds} 秒'
+            : error ?? 'AI 建议 · ${action ?? ''} · $explanation',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontSize: 12),
@@ -1014,18 +1133,29 @@ class _CardTableState extends State<CardTable> {
     final phase = view['phase'];
     final current = view['turn'];
     final thinking = view['botThinking'] == true;
-    final status = autoplay && inPlay
-        ? '托管中'
-        : thinking
-        ? '${_person(current)}思考中'
+    final waitSeconds = view['apiWaitSeconds'] ?? botDecisionTimeout.inSeconds;
+    final apiTimeouts = view['apiTimeouts'] as int? ?? 0;
+    final apiSuspended = inPlay && view['apiSuspended'] == true;
+    final call = rules.landlordCall.label;
+    final status = thinking
+        ? (ownTurn ? 'AI 代打思考中' : '${_person(current)} 思考中')
+        : autoplay && ownTurn && inPlay
+        ? (apiSuspended || _ownAutoMode != 'api' ? '本地托管中' : 'API 托管中')
         : switch (phase) {
-            'bidding' => ownTurn ? '轮到你叫分' : '${_person(current)}正在叫分',
+            'bidding' => ownTurn ? '轮到你$call' : '${_person(current)}正在$call',
             'playing' when ownTurn && previous == null => '轮到你先出',
             'playing' when ownTurn => '轮到你出牌',
             'playing' => '${_person(current)}正在出牌',
             'finished' => view['result'] as String? ?? '牌局结束',
             _ => people.length == rules.players ? '座位已满，可以发牌' : '等待其他玩家入座',
           };
+    final apiStatus = thinking
+        ? '最多 ${waitSeconds}s'
+        : apiSuspended
+        ? '本局本地接管'
+        : inPlay && apiTimeouts > 0
+        ? '超时 $apiTimeouts/${view['apiTimeoutLimit'] ?? botTimeoutLimit}'
+        : null;
     final wildLabel = phase == 'playing' && wild.isNotEmpty
         ? '癞子 ${wild.map(PlayingCard.rankLabel).join('、')}'
         : null;
@@ -1045,11 +1175,17 @@ class _CardTableState extends State<CardTable> {
           mainAxisSize: MainAxisSize.min,
           spacing: 6,
           children: [
-            Icon(
-              Icons.circle,
-              size: 6,
-              color: ownTurn ? _gold : const Color(0xff98c6a6),
-            ),
+            if (thinking)
+              const SizedBox.square(
+                dimension: 10,
+                child: CircularProgressIndicator(strokeWidth: 2, color: _gold),
+              )
+            else
+              Icon(
+                Icons.circle,
+                size: 6,
+                color: ownTurn ? _gold : const Color(0xff98c6a6),
+              ),
             Flexible(
               child: Text.rich(
                 TextSpan(
@@ -1059,6 +1195,14 @@ class _CardTableState extends State<CardTable> {
                     fontWeight: FontWeight.w800,
                   ),
                   children: [
+                    if (apiStatus != null)
+                      TextSpan(
+                        text: '  ·  $apiStatus',
+                        style: const TextStyle(
+                          color: Color(0xffffd59a),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
                     if (wildLabel != null)
                       TextSpan(
                         text: '  ·  $wildLabel',
@@ -1412,6 +1556,18 @@ class _CardTableState extends State<CardTable> {
     );
     final children = <Widget>[];
     final turnVersion = view['turnVersion'];
+    if (inPlay && ownTurn && autoplay) {
+      children.add(
+        OutlinedButton.icon(
+          style: quiet,
+          onPressed: blocked
+              ? null
+              : () => session.act('autoplay', {'enabled': false}),
+          icon: const Icon(Icons.front_hand_outlined, size: 16),
+          label: const Text('接管出牌'),
+        ),
+      );
+    }
     if (phase == 'bidding' && ownTurn && !autoplay) {
       children.add(
         OutlinedButton(
@@ -1489,7 +1645,7 @@ class _CardTableState extends State<CardTable> {
             style: quiet,
             onPressed: blocked || people.length >= rules.players
                 ? null
-                : () => session.act('bot'),
+                : _chooseBot,
             child: const Text('添加电脑玩家'),
           ),
           if (people.any((person) => person['bot'] == true))
@@ -1549,6 +1705,10 @@ class _CardTableState extends State<CardTable> {
     final tomato = _splash == id;
     final landlord = id == view['landlord'];
     final remoteAuto = player['autoplay'] == true;
+    final botMode = player['botMode'] as String?;
+    final autoLabel = botMode == 'api' && view['apiSuspended'] != true
+        ? 'API 托管'
+        : '本地托管';
     final called = view['phase'] == 'bidding' ? player['called'] as int? : null;
     final caption = landlord
         ? '地主'
@@ -1561,7 +1721,7 @@ class _CardTableState extends State<CardTable> {
         : '$called 分';
     return Semantics(
       label:
-          '$name ${player['cards']} 张${remoteAuto ? '，托管中' : ''}${move == null ? '' : '，${move.label}'}',
+          '$name ${player['cards']} 张${remoteAuto ? '，$autoLabel中' : ''}${move == null ? '' : '，${move.label}'}',
       button: true,
       child: Material(
         color: tomato
@@ -1601,7 +1761,7 @@ class _CardTableState extends State<CardTable> {
                           tomato
                               ? '🍅'
                               : player['bot'] == true
-                              ? '机'
+                              ? (botMode == 'api' ? 'AI' : '机')
                               : String.fromCharCode(
                                   name.runes.firstOrNull ?? 0x5ba2,
                                 ),
@@ -1656,7 +1816,7 @@ class _CardTableState extends State<CardTable> {
                         ),
                         child: Text(
                           remoteAuto
-                              ? '托管 · ${player['cards']}'
+                              ? '$autoLabel · ${player['cards']}'
                               : '${player['cards']}',
                           style: const TextStyle(
                             color: _ink,

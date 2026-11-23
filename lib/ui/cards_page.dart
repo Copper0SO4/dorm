@@ -203,7 +203,10 @@ class _CardsPageState extends State<CardsPage> {
           session: session,
           view: view,
           share: _share,
-          onBotApi: () => showBotApiDialog(context, widget.controller),
+          onBotApi: () async {
+            await showBotApiDialog(context, widget.controller);
+            session.rooms.syncCapabilities();
+          },
         );
         return Scaffold(
           resizeToAvoidBottomInset: false,

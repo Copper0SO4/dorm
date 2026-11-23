@@ -7,6 +7,7 @@ import '../domain/identity.dart';
 import '../domain/ledger.dart';
 import 'bot_profile.dart';
 import 'cards.dart';
+import 'local_bot.dart';
 
 const _alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 final roomCodePattern = RegExp(r'^[2-9A-HJ-NP-Z]{7}$');
@@ -28,7 +29,16 @@ class CardRooms extends ChangeNotifier {
   final BotCoach? coach;
   final bool Function()? apiEnabled;
   final _rooms = <String, _CardRoom>{};
-  final _bots = <String, ({int revision, Timer timer})>{};
+  final _bots =
+      <String, ({int revision, Timer timer, Completer<void> cancel})>{};
+
+  bool get _apiReady => advisor != null && (apiEnabled?.call() ?? true);
+
+  void syncCapabilities() {
+    for (final room in _rooms.values) {
+      _changed(room);
+    }
+  }
 
   List<RoomJson> publicRooms({String scope = 'lan'}) {
     _prune();
@@ -80,7 +90,7 @@ class CardRooms extends ChangeNotifier {
     final room = _room(seat.room);
     final player = room.player(seat.token);
     if (since == room.version) return {'version': room.version};
-    return room.view(player);
+    return room.view(player, apiAvailable: _apiReady);
   }
 
   List<RoomJson> options(CardSeat seat, RoomJson data) {
@@ -112,7 +122,7 @@ class CardRooms extends ChangeNotifier {
       if (room.inProgress) room.abort('${player.name}离开了牌桌');
       room.people.remove(player);
       if (room.people.every((entry) => entry.bot)) {
-        _bots.remove(room.code)?.timer.cancel();
+        _cancelBot(room.code);
         _rooms.remove(room.code);
         notifyListeners();
       } else {
@@ -131,11 +141,11 @@ class CardRooms extends ChangeNotifier {
       if (room._hintFor(player)?['pending'] != true) {
         unawaited(_advise(room, player, hint));
       }
-      return room.view(player);
+      return room.view(player, apiAvailable: _apiReady);
     }
-    room.act(player, action, data, _random);
+    room.act(player, action, data, _random, apiReady: _apiReady);
     _changed(room);
-    return room.view(player);
+    return room.view(player, apiAvailable: _apiReady);
   }
 
   Future<void> _advise(_CardRoom room, _Person player, BotCoach coach) async {
@@ -186,15 +196,16 @@ class CardRooms extends ChangeNotifier {
     final pending = _bots[room.code];
     if (pending != null &&
         (pending.revision != room.turnVersion ||
-            room.current?.automatic != true)) {
-      _bots.remove(room.code);
-      pending.timer.cancel();
+            room.current?.automatic != true ||
+            (room.thinking && !_apiReady))) {
+      _cancelBot(room.code);
       room.thinking = false;
     }
     _publish(room);
     final bot = room.current;
     if (bot == null || !bot.automatic || _bots.containsKey(room.code)) return;
     final revision = room.turnVersion;
+    final cancel = Completer<void>();
     late final Timer timer;
     bool current() =>
         _rooms[room.code] == room &&
@@ -206,30 +217,46 @@ class CardRooms extends ChangeNotifier {
       if (!current()) return;
       final remote = advisor;
       var applied = false;
-      if (remote != null && !room.apiFailed && (apiEnabled?.call() ?? true)) {
-        final turn = room._botTurn(bot);
+      if (bot.effectiveBotMode == BotMode.api &&
+          remote != null &&
+          !room.apiSuspended &&
+          (apiEnabled?.call() ?? true)) {
+        final turn = room._botTurn(bot, cancelled: cancel.future);
         room.thinking = true;
         _publish(room);
         if (!current()) return;
         BotAdvice advice;
         try {
-          advice = await remote(turn);
+          advice = await Future.any([
+            remote(turn),
+            cancel.future.then((_) => const BotAdvice.off()),
+          ]).timeout(botDecisionTimeout);
+        } on TimeoutException {
+          advice = const BotAdvice.failed('电脑 API 响应超时', timedOut: true);
         } catch (_) {
           advice = const BotAdvice.failed('电脑 API 暂时不可用');
         }
         if (!current()) return;
         room.thinking = false;
-        if (advice.failure case final failure?) room._noteApi(failure);
+        if (advice.failure case final failure?) {
+          room._noteApi(failure, timedOut: advice.timedOut);
+        }
         if (advice.ready) {
           applied = room._applyAdvice(bot, advice, _random);
           if (!applied) room._noteApi('电脑 API 返回了不可用的动作');
         }
       }
       if (!applied) room._localBot(bot, _random);
-      _bots.remove(room.code);
+      _cancelBot(room.code);
       _changed(room);
     });
-    _bots[room.code] = (revision: revision, timer: timer);
+    _bots[room.code] = (revision: revision, timer: timer, cancel: cancel);
+  }
+
+  void _cancelBot(String code) {
+    final pending = _bots.remove(code);
+    pending?.timer.cancel();
+    pending?.cancel.complete();
   }
 
   void _publish(_CardRoom room) {
@@ -248,7 +275,7 @@ class CardRooms extends ChangeNotifier {
     final now = DateTime.now();
     _rooms.removeWhere((code, room) {
       if (now.difference(room.updated) < const Duration(hours: 4)) return false;
-      _bots.remove(code)?.timer.cancel();
+      _cancelBot(code);
       return true;
     });
   }
@@ -262,6 +289,7 @@ class CardRooms extends ChangeNotifier {
   void dispose() {
     for (final pending in _bots.values) {
       pending.timer.cancel();
+      pending.cancel.complete();
     }
     _bots.clear();
     _rooms.clear();
@@ -280,19 +308,31 @@ enum CardMove {
   final String label;
 }
 
+enum BotMode {
+  local('本地电脑'),
+  api('API 电脑');
+
+  const BotMode(this.label);
+  final String label;
+}
+
 class _Person {
-  _Person(this.id, this.name, {this.bot = false}) : token = newIdentityCode();
+  _Person(this.id, this.name, {this.bot = false, this.botMode = BotMode.local})
+    : token = newIdentityCode();
   final int id;
   final String name;
   final String token;
   final bool bot;
+  final BotMode botMode;
   List<PlayingCard> cards = [];
   DateTime? lastTomato;
   DateTime? lastChat;
   BigInt points = BigInt.zero;
   bool autoplay = false;
+  BotMode autoplayMode = BotMode.local;
   int? called;
   bool get automatic => bot || autoplay;
+  BotMode get effectiveBotMode => bot ? botMode : autoplayMode;
   int wins = 0;
   int moves = 0;
   CardMove? lastMove;
@@ -302,6 +342,7 @@ class _Person {
     'name': name,
     'cards': cards.length,
     'bot': bot,
+    'botMode': effectiveBotMode.name,
     'points': _scoreValue(points),
     'autoplay': autoplay,
     'called': called,
@@ -327,7 +368,8 @@ class _CardRoom {
   int turnVersion = 0;
   int deal = 0;
   bool thinking = false;
-  bool apiFailed = false;
+  int apiTimeouts = 0;
+  bool get apiSuspended => apiTimeouts >= botTimeoutLimit;
   final _botLog = <String>[];
   final _coachingHistory = <int, List<String>>{};
   final _hints = <int, RoomJson>{};
@@ -427,7 +469,11 @@ class _CardRoom {
     'landlord': rules.landlord,
   };
 
-  _Person join(String? name, {bool bot = false}) {
+  _Person join(
+    String? name, {
+    bool bot = false,
+    BotMode botMode = BotMode.local,
+  }) {
     if (!canJoin) throw const InputException('牌局已开始或座位已满');
     final id = ++_nextPerson;
     final choice = name?.trim() ?? '';
@@ -435,11 +481,10 @@ class _CardRoom {
         RegExp(r'[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]').hasMatch(choice)) {
       throw const InputException('昵称最多 20 个字，不可包含控制字符');
     }
-    final person = _Person(
-      id,
-      bot ? '电脑 $id' : (choice.isEmpty ? '访客 $id' : choice),
-      bot: bot,
-    );
+    final defaultName = bot
+        ? (botMode == BotMode.api ? 'API 电脑 $id' : '本地电脑 $id')
+        : (choice.isEmpty ? '访客 $id' : choice);
+    final person = _Person(id, defaultName, bot: bot, botMode: botMode);
     people.add(person);
     event('join', '${person.name}加入了房间');
     return person;
@@ -464,13 +509,14 @@ class _CardRoom {
     if (events.length > 48) events.removeAt(0);
   }
 
-  RoomJson view(_Person person) => {
+  RoomJson view(_Person person, {bool apiAvailable = false}) => {
     'room': code,
     'version': version,
     'turnVersion': turnVersion,
     'phase': phase.name,
     'host': people.first.id,
     'you': person.id,
+    'apiAvailable': apiAvailable,
     'rules': rules.toJson(),
     'scope': scope,
     'people': [for (final player in people) player.publicView()],
@@ -509,13 +555,23 @@ class _CardRoom {
           .map((entry) => {'rank': entry.key, 'count': entry.value})
           .toList(),
     'botThinking': thinking,
+    'apiTimeouts': apiTimeouts,
+    'apiTimeoutLimit': botTimeoutLimit,
+    'apiSuspended': apiSuspended,
+    'apiWaitSeconds': botDecisionTimeout.inSeconds,
     if (_hintFor(person) case final hint?)
       'aiHint': Map<String, dynamic>.of(hint),
     'result': result,
     'events': events.map((event) => Map<String, dynamic>.of(event)).toList(),
   };
 
-  void act(_Person person, String action, RoomJson input, Random random) {
+  void act(
+    _Person person,
+    String action,
+    RoomJson input,
+    Random random, {
+    bool apiReady = false,
+  }) {
     switch (action) {
       case 'rules':
         requireHost(person);
@@ -530,7 +586,13 @@ class _CardRoom {
       case 'bot':
         requireHost(person);
         if (scope == 'online') throw const InputException('在线房间使用真人座位');
-        join(null, bot: true);
+        final mode = _readBotMode(
+          input['mode'],
+          fallback: apiReady ? BotMode.api : BotMode.local,
+          apiReady: apiReady,
+          errorMessage: '请房主先在「电脑 API」中启用并配置密钥',
+        );
+        join(null, bot: true, botMode: mode);
       case 'removeBot':
         requireHost(person);
         if (inProgress) throw const InputException('请先结束当前牌局');
@@ -564,12 +626,24 @@ class _CardRoom {
         if (enabled is! bool || (enabled && !inProgress)) {
           throw const InputException('牌局进行中才可以开启托管');
         }
-        if (person.autoplay != enabled) {
+        final mode = enabled
+            ? _readBotMode(
+                input['mode'],
+                fallback: BotMode.local,
+                apiReady: apiReady,
+                errorMessage: '请房主先启用电脑 API',
+              )
+            : BotMode.local;
+        if (person.autoplay != enabled ||
+            (enabled && person.autoplayMode != mode)) {
           person.autoplay = enabled;
+          person.autoplayMode = mode;
           if (current == person) turnVersion++;
           event(
             'note',
-            enabled ? '${person.name}开启托管' : '${person.name}接管手牌',
+            enabled
+                ? '${person.name}开启${mode == BotMode.api ? 'API 托管' : '本地托管'}'
+                : '${person.name}取消托管',
             from: person.id,
           );
         }
@@ -624,6 +698,23 @@ class _CardRoom {
     return rule;
   }
 
+  static BotMode _readBotMode(
+    Object? value, {
+    required BotMode fallback,
+    required bool apiReady,
+    required String errorMessage,
+  }) {
+    final mode = switch (value) {
+      null => fallback,
+      String name =>
+        BotMode.values.where((item) => item.name == name).firstOrNull,
+      _ => null,
+    };
+    if (mode == null) throw const InputException('请选择本地电脑或 API 模式');
+    if (mode == BotMode.api && !apiReady) throw InputException(errorMessage);
+    return mode;
+  }
+
   static DateTime _throttle(DateTime? previous, int milliseconds) {
     final now = DateTime.now();
     if (previous != null &&
@@ -644,7 +735,7 @@ class _CardRoom {
 
   void _deal(Random random, {bool repeat = false}) {
     deal++;
-    apiFailed = false;
+    if (!repeat) apiTimeouts = 0;
     _botLog.clear();
     _coachingHistory.clear();
     _hints.clear();
@@ -691,6 +782,7 @@ class _CardRoom {
       person.points = BigInt.zero;
       person.wins = 0;
       person.autoplay = false;
+      person.autoplayMode = BotMode.local;
     }
   }
 
@@ -867,7 +959,10 @@ class _CardRoom {
           BigInt.from((won ? 1 : -1) * (paired ? people.length - 1 : 1));
       person.points += delta;
       if (won) person.wins++;
-      if (matchComplete) person.autoplay = false;
+      if (matchComplete) {
+        person.autoplay = false;
+        person.autoplayMode = BotMode.local;
+      }
       rows.add({
         'seat': person.id,
         'name': person.name,
@@ -909,6 +1004,7 @@ class _CardRoom {
       person.cards = [];
       person.lastMove = null;
       person.autoplay = false;
+      person.autoplayMode = BotMode.local;
       person.called = null;
     }
     turnVersion++;
@@ -920,7 +1016,8 @@ class _CardRoom {
     _botLog.add('座位 ${person.id} $move');
   }
 
-  BotTurn _botTurn(_Person bot) => BotTurn(
+  BotTurn _botTurn(_Person bot, {Future<void>? cancelled}) => BotTurn(
+    cancelled: cancelled,
     room: code,
     deal: deal,
     bidding: phase == _Phase.bidding,
@@ -975,28 +1072,22 @@ class _CardRoom {
     return true;
   }
 
-  void _noteApi(String text) {
-    apiFailed = true;
-    event('botFallback', '$text，本局改用本地电脑');
+  void _noteApi(String text, {bool timedOut = false}) {
+    if (timedOut) apiTimeouts++;
+    if (apiSuspended) {
+      event('botFallback', '本局电脑 API 已超时 $apiTimeouts 次，余下回合由本地电脑接管');
+    } else {
+      final count = timedOut ? '（$apiTimeouts/$botTimeoutLimit）' : '';
+      event('botTurnFallback', '$text$count，本手由本地电脑处理');
+    }
   }
 
   void _localBot(_Person bot, Random random) {
+    final turn = _botTurn(bot);
     if (phase == _Phase.bidding) {
-      final knownWild = publicWild;
-      final strong = bot.cards
-          .where((card) => card.rank >= 15 || knownWild.contains(card.rank))
-          .length;
-      final call = strong >= 4
-          ? 3
-          : strong >= 2
-          ? 2
-          : 1;
-      final value = rules.landlordCall == LandlordCall.call
-          ? (strong >= 2 ? 1 : 0)
-          : call;
-      _bid(bot, value > topBid ? value : 0, random);
+      _bid(bot, localBid(turn), random);
     } else if (phase == _Phase.playing) {
-      final suggestion = suggestCards(bot.cards, wild, last, rules: rules);
+      final suggestion = localPlay(turn);
       if (suggestion == null) {
         _pass(bot);
       } else {
