@@ -17,6 +17,7 @@ import 'package:dormos/ui/tools/draw_ceremony.dart';
 import 'package:dormos/ui/tools/group_board.dart';
 import 'package:dormos/ui/tools/group_scene.dart';
 import 'package:dormos/ui/tools_page.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -951,6 +952,55 @@ void main() {
     expect(Theme.of(einkContext).colorScheme.surface, const Color(0xffffffff));
     expect(Theme.of(einkContext).colorScheme.primary, const Color(0xff111111));
     expect(MediaQuery.disableAnimationsOf(einkContext), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ui scale updates via settings and Ctrl +/-/0 shortcuts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(DormApp(controller: controller));
+    await tester.pumpAndSettle();
+
+    expect(
+      DormPreferences.fromValues(const {'uiScale': '2.5'}).uiScale,
+      maxUiScale,
+    );
+    expect(
+      DormPreferences.fromValues(const {'uiScale': '0.4'}).uiScale,
+      minUiScale,
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.equal);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.equal);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(repo.preferences.uiScale, closeTo(1.05, 0.001));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.minus);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.minus);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.minus);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.minus);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(repo.preferences.uiScale, closeTo(0.95, 0.001));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.digit0);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.digit0);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(repo.preferences.uiScale, closeTo(1.0, 0.001));
+
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('放大界面'));
+    await tester.pumpAndSettle();
+    expect(repo.preferences.uiScale, closeTo(1.05, 0.001));
+    expect(find.text('105%'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

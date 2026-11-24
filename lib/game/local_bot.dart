@@ -40,7 +40,11 @@ CardPlay? localPlay(BotTurn turn) {
     rules: turn.rules,
   ).firstOrNull;
   if (finish != null) return finish;
-  final options = hintPlays(hand, turn.wild, previous, rules: turn.rules);
+  final options = preserveBombs(
+    hand,
+    hintPlays(hand, turn.wild, previous, rules: turn.rules),
+    rules: turn.rules,
+  );
   if (options.isEmpty) return null;
 
   bool teammate(int id) =>

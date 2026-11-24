@@ -6,6 +6,9 @@ const dialog = byId('dialog');
 const viewerSelect = byId('viewer-select');
 const paletteSelect = byId('palette-select');
 const einkToggle = byId('eink-toggle');
+const scaleDown = byId('scale-down');
+const scaleReset = byId('scale-reset');
+const scaleUp = byId('scale-up');
 const sections = {
   ledger: ['公共账本', '查看账单、成员余额与待付汇总，支持新建开销与一键批量结算。'],
   chores: ['卫生排班', '查看每天的值日安排、完成打卡或临时换人改派。'],
@@ -31,6 +34,8 @@ let renderId = 0;
 let toastTimer;
 let browserDevice;
 let lastToolsData = null;
+let hasRendered = false;
+let dialogBackdropArmed = false;
 
 function readInitialSection() {
   const key = location.hash.replace(/^#/, '');
@@ -87,9 +92,11 @@ function button(label, action, kind = '') {
   return element;
 }
 
-function message(text) {
+function message(text, isError = false) {
   const toast = byId('toast');
   toast.textContent = text;
+  if (isError) toast.dataset.tone = 'error';
+  else delete toast.dataset.tone;
   toast.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.hidden = true; }, 2600);
@@ -109,7 +116,7 @@ async function copyText(text) {
 }
 
 async function run(action) {
-  try { await action(); } catch (error) { message(error.message); }
+  try { await action(); } catch (error) { message(error.message || '操作失败', true); }
 }
 
 async function request(path, data) {
@@ -153,6 +160,16 @@ function openDialog(title, children) {
   if (!dialog.open) dialog.showModal();
 }
 
+dialog.addEventListener('pointerdown', (event) => {
+  dialogBackdropArmed = event.target === dialog;
+});
+dialog.addEventListener('click', (event) => {
+  if (dialogBackdropArmed && event.target === dialog && !dialog.querySelector('form.dialog-form')) {
+    dialog.close();
+  }
+  dialogBackdropArmed = false;
+});
+
 function editor(title, fields, saveLabel, submit, kind = 'primary') {
   const ok = node('button', {type: 'submit', class: kind}, saveLabel);
   const error = node('p', {class: 'error', role: 'alert'});
@@ -168,12 +185,16 @@ function editor(title, fields, saveLabel, submit, kind = 'primary') {
       await render();
     } catch (problem) {
       if (dialog.open) error.textContent = problem.message;
-      else message(problem.message);
+      else message(problem.message, true);
     } finally {
       ok.disabled = false;
     }
   });
   openDialog(title, [form]);
+  if (matchMedia('(pointer: fine)').matches) {
+    const first = form.querySelector('input:not([type="checkbox"]), textarea, select');
+    if (first) first.focus();
+  }
 }
 
 function syncViewerOptions(members) {
@@ -230,6 +251,43 @@ function applyWebTheme(palette, eink) {
       applyWebTheme(document.documentElement.dataset.palette, next);
     });
   }
+  const clampScale = value => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 1;
+    return Math.min(1.5, Math.max(0.75, Math.round(num * 20) / 20));
+  };
+  let webScale = 1;
+  try { webScale = clampScale(localStorage.getItem('dorm-web-scale') || 1); } catch (_) {}
+  const applyScale = (next, persist = true) => {
+    webScale = clampScale(next);
+    document.documentElement.style.setProperty('--ui-scale', String(webScale));
+    const scaled = Math.abs(webScale - 1) > 0.001 ? 'true' : 'false';
+    document.documentElement.dataset.scaled = scaled;
+    document.body.dataset.scaled = scaled;
+    if (scaleReset) scaleReset.textContent = `${Math.round(webScale * 100)}%`;
+    if (scaleDown) scaleDown.disabled = webScale <= 0.751;
+    if (scaleUp) scaleUp.disabled = webScale >= 1.499;
+    if (persist) {
+      try { localStorage.setItem('dorm-web-scale', webScale.toFixed(2)); } catch (_) {}
+    }
+  };
+  applyScale(webScale, false);
+  if (scaleDown) scaleDown.addEventListener('click', () => applyScale(webScale - 0.05));
+  if (scaleReset) scaleReset.addEventListener('click', () => applyScale(1));
+  if (scaleUp) scaleUp.addEventListener('click', () => applyScale(webScale + 0.05));
+  document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
+      event.preventDefault();
+      applyScale(webScale + 0.05);
+    } else if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') {
+      event.preventDefault();
+      applyScale(webScale - 0.05);
+    } else if (event.key === '0' || event.code === 'Numpad0') {
+      event.preventDefault();
+      applyScale(1);
+    }
+  });
 })();
 
 byId('refresh').addEventListener('click', () => run(render));
@@ -290,13 +348,15 @@ async function render() {
       tools: renderToolsSection,
     }[section];
     content.replaceChildren(view(data));
+    hasRendered = true;
     status.textContent = '局域网连接';
     status.classList.add('online');
   } catch (error) {
     if (id !== renderId) return;
     status.textContent = '连接异常';
     status.classList.remove('online');
-    content.replaceChildren(empty(error.message));
+    if (!hasRendered) content.replaceChildren(empty(error.message));
+    else message(error.message, true);
   }
 }
 
@@ -322,17 +382,28 @@ function renderToolsSection(data) {
 
 function ledgerView(data) {
   const viewerId = getViewerId();
-  const search = node('form', {},
-    input('query', filters.query, {placeholder: '搜索账单或付款人', 'aria-label': '搜索账单', maxlength: 80}),
-    label('仅待结清', input('unpaid', 'yes', {type: 'checkbox', checked: filters.unpaid})),
-    node('button', {type: 'submit'}, '筛选'));
-  search.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const form = new FormData(search);
+  const unpaidCheck = input('unpaid', 'yes', {type: 'checkbox', checked: filters.unpaid});
+  const applyLedgerFilter = (searchForm) => {
+    const form = new FormData(searchForm);
     filters.query = form.get('query');
     filters.unpaid = form.has('unpaid');
     filters.page = 0;
     run(render);
+  };
+  const search = node('form', {},
+    input('query', filters.query, {placeholder: '搜索账单或付款人', 'aria-label': '搜索账单', maxlength: 80}),
+    label('仅待结清', unpaidCheck),
+    node('button', {type: 'submit'}, '筛选'),
+    (filters.query || filters.unpaid) ? button('清空', () => {
+      filters.query = '';
+      filters.unpaid = false;
+      filters.page = 0;
+      return render();
+    }) : null);
+  unpaidCheck.addEventListener('change', () => applyLedgerFilter(search));
+  search.addEventListener('submit', (event) => {
+    event.preventDefault();
+    applyLedgerFilter(search);
   });
 
   const metric = (caption, value, extra = '') => node('article', {class: 'metric ' + extra}, node('small', {}, caption), node('strong', {}, value));
@@ -368,12 +439,18 @@ function ledgerView(data) {
   const table = data.bills.length === 0 ? empty('没有符合条件的账单') :
     node('div', {class: 'panel table'}, node('table', {},
       node('thead', {}, node('tr', {}, ['账单', '付款人', '金额', '待结清', '创建时间'].map((text) => node('th', {scope: 'col'}, text)))),
-      node('tbody', {}, data.bills.map((bill) => node('tr', {},
-        node('td', {}, button(bill.title, () => billDetails(bill.id), 'name-button')),
-        node('td', {}, bill.payer),
-        node('td', {}, money(bill.total)),
-        node('td', {}, bill.outstanding ? badge(money(bill.outstanding), true) : badge('已结清')),
-        node('td', {}, time(bill.createdAt)))))));
+      node('tbody', {}, data.bills.map((bill) => {
+        const row = node('tr', {class: 'bill-row'},
+          node('td', {}, button(bill.title, () => billDetails(bill.id), 'name-button')),
+          node('td', {}, bill.payer),
+          node('td', {}, money(bill.total)),
+          node('td', {}, bill.outstanding ? badge(money(bill.outstanding), true) : badge('已结清')),
+          node('td', {}, time(bill.createdAt)));
+        row.addEventListener('click', (event) => {
+          if (!event.target.closest('button, a, input, select')) run(() => billDetails(bill.id));
+        });
+        return row;
+      }))));
 
   return node('div', {class: 'stack'},
     node('div', {class: 'metrics'},
@@ -502,12 +579,19 @@ function transferEditor(bill, share) {
 function choreView(data) {
   const viewerId = getViewerId();
   const viewerName = viewerId ? viewerSelect?.selectedOptions?.[0]?.textContent?.replace(/^我是 /, '') : null;
+  const shiftDay = (ymd, delta) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10);
+  };
   const day = input('day', data.day, {type: 'date', min: '1900-01-01', max: '9999-12-31', 'aria-label': '排班日期'});
   day.addEventListener('change', () => {
     if (day.value) { filters.day = day.value; run(render); }
   });
   return node('div', {class: 'stack'},
-    node('div', {class: 'toolbar'}, node('div', {class: 'actions'}, day,
+    node('div', {class: 'toolbar'}, node('div', {class: 'actions'},
+      button('前一天', async () => { filters.day = shiftDay(data.day, -1); await render(); }),
+      day,
+      button('后一天', async () => { filters.day = shiftDay(data.day, 1); await render(); }),
       button('今天', async () => { filters.day = ''; await render(); })),
       button('生成至选中日期', async () => {
         await request('/api/chores/generate', {day: data.day});
@@ -546,29 +630,17 @@ async function reassignShiftDialog(shift) {
 }
 
 function supplyView(items) {
-  const queryText = filters.supplyQuery.trim().toLowerCase();
-  const visible = items.filter((item) => {
-    if (filters.supplyNeedOnly && item.status === 'stocked') return false;
-    if (!queryText) return true;
-    return [item.name, item.category, item.location, item.note].some((v) => String(v || '').toLowerCase().includes(queryText));
-  });
-  const search = node('form', {class: 'actions'},
-    input('supplyQuery', filters.supplyQuery, {placeholder: '搜索物资/分类/位置', maxlength: 40}),
-    label('仅看采购/缺货', input('needOnly', 'yes', {type: 'checkbox', checked: filters.supplyNeedOnly})),
-    node('button', {type: 'submit'}, '筛选'));
-  search.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const form = new FormData(search);
-    filters.supplyQuery = form.get('supplyQuery');
-    filters.supplyNeedOnly = form.has('needOnly');
-    run(render);
-  });
-
-  return node('div', {class: 'stack'},
-    node('div', {class: 'toolbar'},
-      search,
-      button('新增物资', () => supplyEditor(), 'primary')),
-    visible.length ? node('div', {class: 'cards'}, visible.map((item) =>
+  const listHost = node('div', {});
+  const queryInput = input('supplyQuery', filters.supplyQuery, {placeholder: '搜索物资/分类/位置', maxlength: 40});
+  const needInput = input('needOnly', 'yes', {type: 'checkbox', checked: filters.supplyNeedOnly});
+  const renderList = () => {
+    const queryText = filters.supplyQuery.trim().toLowerCase();
+    const visible = items.filter((item) => {
+      if (filters.supplyNeedOnly && item.status === 'stocked') return false;
+      if (!queryText) return true;
+      return [item.name, item.category, item.location, item.note].some((v) => String(v || '').toLowerCase().includes(queryText));
+    });
+    listHost.replaceChildren(visible.length ? node('div', {class: 'cards'}, visible.map((item) =>
       node('section', {class: 'panel card-body'},
         node('h3', {}, item.name),
         node('p', {}, item.category + ' · 库存 ' + item.quantity),
@@ -584,6 +656,38 @@ function supplyView(items) {
           button('补货入库', () => receiveEditor(item), 'primary'),
           button('删除', () => deleteSupplyDialog(item), 'danger-outline')))))
       : empty(items.length ? '没有符合条件的物资' : '还没有物资'));
+  };
+  const search = node('form', {class: 'actions'},
+    queryInput,
+    label('仅看采购/缺货', needInput));
+  queryInput.addEventListener('input', () => {
+    filters.supplyQuery = queryInput.value;
+    renderList();
+  });
+  needInput.addEventListener('change', () => {
+    filters.supplyNeedOnly = needInput.checked;
+    renderList();
+  });
+  search.addEventListener('submit', (e) => {
+    e.preventDefault();
+    filters.supplyQuery = queryInput.value;
+    filters.supplyNeedOnly = needInput.checked;
+    renderList();
+  });
+  const shoppingList = items.filter((item) => item.status !== 'stocked');
+  renderList();
+
+  return node('div', {class: 'stack'},
+    node('div', {class: 'toolbar'},
+      search,
+      node('div', {class: 'actions'},
+        shoppingList.length ? button('复制采购清单', () => copyText(
+          'Dorm 待采购清单：\n' + shoppingList.map((item) =>
+            '· ' + item.name + '（' + (purchaseStates[item.status] || item.status) + '，库存 ' + item.quantity + '）'
+          ).join('\n')
+        )) : null,
+        button('新增物资', () => supplyEditor(), 'primary'))),
+    listHost);
 }
 
 function deleteSupplyDialog(item) {
@@ -693,6 +797,12 @@ function memberView(members) {
         node('h3', {}, member.name + (viewerId === member.id ? '（我的视角）' : '')),
         member.active ? badge('在用') : badge('已停用', true),
         node('div', {class: 'actions'},
+          member.active && viewerId !== member.id ? button('设为我的视角', async () => {
+            setViewerId(member.id);
+            syncViewerOptions(members);
+            await render();
+            message('已切换视角为 ' + member.name);
+          }) : null,
           button('改名', () => memberEditor(member)),
           button(member.active ? '停用' : '启用', async () => {
             await request('/api/members/active', {id: member.id, active: !member.active});
@@ -726,4 +836,9 @@ setInterval(() => {
     run(render);
   }
 }, 20000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !dialog.open && current !== 'tools' && !content.contains(document.activeElement)) {
+    run(render);
+  }
+});
 run(render);

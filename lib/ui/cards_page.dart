@@ -501,9 +501,7 @@ class _CardRulesDialogState extends State<CardRulesDialog> {
             contentPadding: const EdgeInsets.only(left: 16),
             title: const Text('王炸大于连炸'),
             subtitle: Text(
-              rocketBeatsChain
-                  ? '普通炸弹 ＜ 连炸 ＜ 王炸 ＜ 双王炸'
-                  : '普通炸弹 ＜ 王炸 ＜ 双王炸 ＜ 连炸',
+              rocketBeatsChain ? '王炸优先，其余炸弹按总张数比较' : '按总张数比较，王炸相当于 8 张，同等级连炸优先',
             ),
             value: rocketBeatsChain,
             onChanged: chainBombs

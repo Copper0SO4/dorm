@@ -115,7 +115,7 @@ function paintFace(ctx, rank, suit, path, width, height, ink) {
   ctx.restore();
 }
 
-function paintCard(ctx, box, wild) {
+function paintCard(ctx, box, wild, hovered = false) {
   const {card,left,width,height,peek,raised} = box;
   const y = box.top-box.lift;
   const rank = card.rank ?? rankOf(card.id);
@@ -128,17 +128,17 @@ function paintCard(ctx, box, wild) {
   ctx.translate(left,y);
   ctx.beginPath();
   ctx.roundRect(0,2,width,height,radius);
-  ctx.fillStyle = '#08110970';
+  ctx.fillStyle = raised ? '#08110996' : '#08110970';
   ctx.fill();
   ctx.beginPath();
   ctx.roundRect(0,0,width,height,radius);
   const paper=ctx.createLinearGradient(0,0,width,height);
-  paper.addColorStop(0,raised?'#fff6d3':'#fffff9');
-  paper.addColorStop(1,raised?'#f0cea0':'#eee3cc');
+  paper.addColorStop(0,raised?'#fff6d3':hovered?'#fffdf2':'#fffff9');
+  paper.addColorStop(1,raised?'#f0cea0':hovered?'#f6ebd3':'#eee3cc');
   ctx.fillStyle = paper;
   ctx.fill();
-  ctx.strokeStyle = raised ? '#ffbf51' : marked ? '#c6813d' : '#9aab97';
-  ctx.lineWidth = raised ? 1.8 : 1;
+  ctx.strokeStyle = raised ? '#ffbf51' : hovered ? '#e5c47e' : marked ? '#c6813d' : '#9aab97';
+  ctx.lineWidth = raised ? 2 : hovered ? 1.5 : 1;
   ctx.stroke();
 
   if (peek>=width*.58 && width>=29) {
@@ -172,6 +172,7 @@ class CardSurface {
     this.boxes = [];
     this.enabled = false;
     this.gesture = null;
+    this.hoverIndex = -1;
     this.frame = 0;
     this.canvas = document.createElement('canvas');
     this.canvas.setAttribute('aria-hidden','true');
@@ -184,6 +185,7 @@ class CardSurface {
       node.addEventListener('pointerdown',event=>this.down(event));
       node.addEventListener('pointermove',event=>this.move(event));
       node.addEventListener('pointerup',event=>this.up(event));
+      node.addEventListener('pointerleave',()=>this.clearHover());
       node.addEventListener('pointercancel',event=>this.cancelPointer(event));
       node.addEventListener('lostpointercapture',event=>this.cancelPointer(event));
       this.keys.addEventListener('click',event=>{
@@ -202,7 +204,10 @@ class CardSurface {
   update(cards,selected=new Set(),wild=new Set(),enabled=false) {
     const changed = cards.length!==this.cards.length ||
       cards.some((card,i)=>card.id!==this.cards[i].id || card.rank!==this.cards[i].rank);
-    if (changed || !enabled) this.cancel();
+    if (changed || !enabled) {
+      this.cancel();
+      this.hoverIndex = -1;
+    }
     this.selected = selected;
     this.wild = wild;
     this.enabled = enabled;
@@ -228,7 +233,8 @@ class CardSurface {
     const width = this.node.clientWidth;
     const height = this.node.clientHeight;
     if (!width || !height) return;
-    const scale = Math.min(devicePixelRatio || 1,3);
+    const uiScale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-scale')) || 1;
+    const scale = Math.min((devicePixelRatio || 1) * Math.max(1, uiScale),3);
     if (width===this.width && height===this.height && this.laidOut===this.cards && scale===this.scale) return;
     this.cancel();
     const former = new Map(this.boxes.map(box=>[box.card.id,box.lift]));
@@ -289,24 +295,42 @@ class CardSurface {
       moving ||= box.lift!==target;
     }
     this.ctx.clearRect(0,0,this.width,this.height);
-    for (const box of this.boxes) paintCard(this.ctx,box,this.wild);
+    for (const box of this.boxes) paintCard(this.ctx,box,this.wild,this.enabled && box.index===this.hoverIndex);
     if (moving) this.schedule();
+  }
+
+  hitBox(event) {
+    const point = this.point(event);
+    return this.boxes.findLast(box=>point.x>=box.left && point.x<=box.left+box.width &&
+      point.y>=box.top-box.lift && point.y<=box.top-box.lift+box.height);
+  }
+
+  clearHover() {
+    if (this.hoverIndex !== -1) {
+      this.hoverIndex = -1;
+      this.schedule();
+    }
   }
 
   point(event) {
     const rect = this.canvas.getBoundingClientRect();
-    if (isRotatedTable()) return {x:event.clientY-rect.top,y:rect.right-event.clientX};
-    return {x:event.clientX-rect.left,y:event.clientY-rect.top};
+    if (isRotatedTable()) {
+      const rx = this.width / (rect.height || this.width || 1);
+      const ry = this.height / (rect.width || this.height || 1);
+      return {x:(event.clientY-rect.top)*rx,y:(rect.right-event.clientX)*ry};
+    }
+    const sx = this.width / (rect.width || this.width || 1);
+    const sy = this.height / (rect.height || this.height || 1);
+    return {x:(event.clientX-rect.left)*sx,y:(event.clientY-rect.top)*sy};
   }
 
   down(event) {
     if (!this.enabled || this.gesture || event.button!==0) return;
-    const point = this.point(event);
-    const hit = this.boxes.findLast(box=>point.x>=box.left && point.x<=box.left+box.width &&
-      point.y>=box.top-box.lift && point.y<=box.top-box.lift+box.height);
+    const hit = this.hitBox(event);
     if (!hit) return;
+    this.hoverIndex = -1;
     this.node.setPointerCapture(event.pointerId);
-    this.gesture = {pointer:event.pointerId,anchor:hit.index,end:hit.index,start:point,
+    this.gesture = {pointer:event.pointerId,anchor:hit.index,end:hit.index,start:this.point(event),
       raising:!this.selected.has(hit.card.id),dragging:false};
     this.schedule();
   }
@@ -326,7 +350,17 @@ class CardSurface {
   }
 
   move(event) {
-    if (this.gesture?.pointer!==event.pointerId) return;
+    if (!this.gesture) {
+      if (!this.enabled || event.pointerType === 'touch') return;
+      const hit = this.hitBox(event);
+      const next = hit ? hit.index : -1;
+      if (next !== this.hoverIndex) {
+        this.hoverIndex = next;
+        this.schedule();
+      }
+      return;
+    }
+    if (this.gesture.pointer!==event.pointerId) return;
     const end = this.locate(event);
     if (this.gesture.end!==end) {
       this.gesture.end = end;

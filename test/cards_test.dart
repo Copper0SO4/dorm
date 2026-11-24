@@ -7,6 +7,7 @@ import 'package:dormos/data/lan_server.dart';
 import 'package:dormos/data/ssh_vault.dart';
 import 'package:dormos/domain/cloud.dart';
 import 'package:dormos/domain/ledger.dart';
+import 'package:dormos/domain/preferences.dart';
 import 'package:dormos/game/card_network.dart';
 import 'package:dormos/game/bot_profile.dart';
 import 'package:dormos/game/card_mailbox.dart';
@@ -15,6 +16,8 @@ import 'package:dormos/game/card_session.dart';
 import 'package:dormos/game/cards.dart';
 import 'package:dormos/game/online_cards.dart';
 import 'package:dormos/ui/card_table.dart';
+import 'package:dormos/ui/common.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git2dart/git2dart.dart' as git;
 import 'package:material_ui/material_ui.dart';
@@ -48,7 +51,7 @@ void main() {
     final high = chain([4, 4, 4, 4, 5, 5, 5, 5]);
     final soft = chain([5, 5, 5, 5, 6, 6, 6, 8], {8});
     final three = chain([...ranks, 5, 5, 5, 5]);
-    final bomb = cardPlays(cards(List.filled(9, 15)), {}).single;
+    final bomb = cardPlays(cards(List.filled(8, 15)), {}).single;
     final rocket = cardPlays(cards([16, 17]), {}).single;
     expect(low.label, '2 连炸');
     expect(low.beats(bomb), isTrue);
@@ -246,6 +249,137 @@ void main() {
     );
   }
 
+  test('带牌只比较主牌，牌型或长度不同时无法互压', () {
+    final rules = CardRules(decks: 2);
+    CardPlay shape(List<int> ranks, PlayKind kind) => cardPlays(
+      cards(ranks),
+      {},
+      rules: rules,
+    ).singleWhere((play) => play.kind == kind);
+    final low = shape([3, 3, 3, 4, 4, 4, 14, 15], PlayKind.planeSingles);
+    final high = shape([4, 4, 4, 5, 5, 5, 6, 7], PlayKind.planeSingles);
+    final sameBody = shape([4, 4, 4, 5, 5, 5, 14, 15], PlayKind.planeSingles);
+    final pairs = shape([4, 4, 4, 5, 5, 5, 6, 6, 7, 7], PlayKind.planePairs);
+    final longer = shape([
+      3,
+      3,
+      3,
+      4,
+      4,
+      4,
+      5,
+      5,
+      5,
+      6,
+      7,
+      8,
+    ], PlayKind.planeSingles);
+    expect(high.beats(low, rules: rules), isTrue);
+    expect(sameBody.compareStrengthTo(high, rules: rules), 0);
+    expect(sameBody.beats(high, rules: rules), isFalse);
+    expect(pairs.compareStrengthTo(low, rules: rules), isNull);
+    expect(longer.compareStrengthTo(low, rules: rules), isNull);
+    expect(unplayableReason(pairs.cards, {}, low, rules), '需跟相同牌型和长度，或使用炸弹');
+  });
+
+  test('同一组癞子牌的不同合法出法进入提示，可按声明点数比较', () {
+    final rules = CardRules(mode: CardMode.doubleWild);
+    final selected = cards([6, 9]);
+    final wild = {6, 9};
+    final earlier = cardPlays(cards([7, 7]), {}, rules: rules).single;
+    final classified = inspectCardSelection(selected, wild, earlier, rules);
+    final hints = hintPlays(selected, wild, earlier, rules: rules);
+    expect(classified.options.map((play) => play.high), [
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+    ]);
+    expect(
+      hints.map((play) => play.key),
+      classified.options.map((play) => play.key),
+    );
+    expect(hints.last.beats(hints.first, rules: rules), isTrue);
+  });
+
+  test('癞子按本身点数出连炸属于硬炸，提示能压同级软连炸', () {
+    final rules = CardRules(decks: 2, mode: CardMode.wild);
+    final wild = {8};
+    final earlier = cardPlays(
+      cards([10, 10, 10, 10, 11, 11, 11, 8]),
+      wild,
+      rules: rules,
+    ).singleWhere((play) => play.kind == PlayKind.chainBomb);
+    final hand = cards([7, 7, 7, 7, 8, 8, 8, 8]);
+    final allowed = legalCardPlays(hand, wild, earlier, rules: rules).single;
+    expect(allowed.high, 8);
+    expect(allowed.ranks, isEmpty);
+    expect(allowed.strength, 1);
+    expect(earlier.strength, 0);
+    expect(
+      hintPlays(hand, wild, earlier, rules: rules).map((play) => play.key),
+      contains(allowed.key),
+    );
+  });
+
+  test('四副牌 13 张硬炸能接 8 张连炸，提示和出牌判定一致', () {
+    final rules = CardRules(players: 2, decks: 4, landlord: false, bottom: 0);
+    final chain = cardPlays(
+      cards([...List.filled(4, 9), ...List.filled(4, 10)]),
+      {},
+      rules: rules,
+    ).single;
+    final hardBomb = cards(List.filled(13, 8));
+    final allowed = legalCardPlays(hardBomb, {}, chain, rules: rules).single;
+    expect(allowed.kind, PlayKind.bomb);
+    expect(
+      hintPlays(
+        [...hardBomb, dealt(7)],
+        {},
+        chain,
+        rules: rules,
+      ).map((play) => play.key),
+      contains(allowed.key),
+    );
+    expect(chain.beats(allowed, rules: rules), isFalse);
+
+    final thin = cardPlays(
+      cards([...List.filled(4, 3), ...List.filled(4, 4), ...List.filled(4, 5)]),
+      {},
+      rules: rules,
+    ).single;
+    final thick = cards([...List.filled(7, 6), ...List.filled(7, 7)]);
+    expect(legalCardPlays(thick, {}, thin, rules: rules).single.chainCopies, 7);
+    expect(
+      hintPlays(thick, {}, thin, rules: rules).any(
+        (play) =>
+            play.kind == PlayKind.chainBomb &&
+            play.width == 2 &&
+            play.chainCopies == 7,
+      ),
+      isTrue,
+    );
+  });
+
+  test('炸弹按等级翻倍，王对数越多倍率越大', () {
+    final rules = CardRules(players: 2, decks: 4, landlord: false, bottom: 0);
+    CardPlay bomb(List<int> ranks) => cardPlays(
+      cards(ranks),
+      {},
+      rules: rules,
+    ).singleWhere((play) => play.bomb);
+    expect(bomb(List.filled(4, 8)).bombMultiplier, BigInt.two);
+    expect(bomb(List.filled(6, 8)).bombMultiplier, BigInt.from(4));
+    expect(bomb([3, 3, 3, 3, 4, 4, 4, 4]).bombMultiplier, BigInt.from(8));
+    expect(bomb(List.filled(13, 8)).bombMultiplier, BigInt.from(32));
+    expect(bomb([16, 17]).bombMultiplier, BigInt.from(8));
+    expect(bomb([16, 16, 17, 17]).bombMultiplier, BigInt.from(16));
+  });
+
   test('炸弹大小遵守房间开关，双王炸大于王炸', () {
     final chainFirst = CardRules();
     final royalFirst = CardRules(rocketBeatsChain: true);
@@ -259,7 +393,7 @@ void main() {
     );
     final chainCards = cards([3, 3, 3, 3, 4, 4, 4, 4]);
     final chain = cardPlays(chainCards, {}, rules: royalFirst).single;
-    final bomb = cardPlays(cards(List.filled(12, 15)), {}).single;
+    final bomb = cardPlays(cards(List.filled(8, 15)), {}).single;
     final rocket = cardPlays(cards([16, 17]), {}).single;
     final doubleRocket = cardPlays(cards([16, 16, 17, 17]), {}).single;
     final tripleRocket = cardPlays(cards([16, 16, 16, 17, 17, 17]), {}).single;
@@ -313,7 +447,7 @@ void main() {
     );
   });
 
-  testWidgets('对手出牌与过牌状态保留到新一轮领出', (tester) async {
+  testWidgets('保留其他座位的出牌，轮到对手时清空面前的旧牌', (tester) async {
     final (session, guests) = await _openGame(
       tester,
       size: const Size(740, 360),
@@ -378,12 +512,9 @@ void main() {
     });
     expect(find.text('不要'), findsNWidgets(2));
     await tester.pump(const Duration(seconds: 5));
-    expect(side, findsOneWidget);
-    expect(find.text('上轮'), findsOneWidget);
-    expect(
-      find.descendant(of: side, matching: find.byKey(ValueKey(higher))),
-      findsOneWidget,
-    );
+    expect(side, findsNothing);
+    expect(find.text('上轮'), findsNothing);
+    expect(find.text('管上'), findsNothing);
     final lead = (session.rooms.state(right)['hand'] as List).first as int;
     playGuest(right, lead);
     await tester.pumpAndSettle();
@@ -512,19 +643,86 @@ void main() {
     expect(find.text('3 分'), findsNothing);
     await tester.tap(find.text('叫地主'));
     await tester.pumpAndSettle();
+    expect(find.text('地主'), findsOneWidget);
     await tester.tap(find.text('AI 提示'));
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining('这一手可以出完手牌。'));
     await tester.pumpAndSettle();
+    expect(find.text('AI 出牌建议'), findsOneWidget);
+    expect(find.textContaining('建议动作　出牌 · 单张'), findsOneWidget);
+    expect(find.textContaining('出牌牌面　'), findsOneWidget);
+    expect(find.textContaining('判断理由　这一手可以出完手牌。'), findsOneWidget);
     await tester.tap(find.text('选中建议的牌'));
     await tester.pumpAndSettle();
     expect(find.text('单张 · 1 张'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, '出牌'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('你率先出完', findRichText: true), findsOneWidget);
+    expect(find.text('我的出牌'), findsOneWidget);
+    expect(find.text('全场结算'), findsNothing);
+    expect(find.text('开始新比赛'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 850));
     await tester.pumpAndSettle();
     expect(find.text('全场结算'), findsOneWidget);
+    expect(find.text('地主'), findsOneWidget);
     expect(find.text('总分 +2'), findsOneWidget);
     expect(find.text('总分 -2'), findsOneWidget);
     expect(find.text('开始新比赛'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对手地主出牌后仍有身份标识，最后一手保留后再结算', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(640, 320));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final rooms = CardRooms(random: Random(8));
+    final session = CardSession(() => null, rooms: rooms);
+    addTearDown(session.dispose);
+    await session.create(
+      CardRules(
+        players: 2,
+        bottom: 0,
+        discard: 52,
+        landlordCall: LandlordCall.call,
+      ),
+      '房主',
+      CardLocation.local,
+    );
+    final other = rooms.join(session.view!['room'] as String, name: '乙');
+    await session.act('start');
+    if (session.view!['turn'] == session.view!['you']) {
+      await session.act('bid', {'bid': 0});
+    }
+    var opponent = rooms.state(other);
+    rooms.action(other, 'bid', {
+      'bid': 1,
+      'turnVersion': opponent['turnVersion'],
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListenableBuilder(
+            listenable: session,
+            builder: (_, _) =>
+                CardTable(session: session, view: session.view!, share: () {}),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('地主'), findsOneWidget);
+    opponent = rooms.state(other);
+    rooms.action(other, 'play', {
+      'cards': opponent['hand'],
+      'turnVersion': opponent['turnVersion'],
+    });
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('地主'), findsOneWidget);
+    expect(find.text('乙 出牌'), findsOneWidget);
+    expect(find.text('乙率先出完', findRichText: true), findsOneWidget);
+    expect(find.text('第 1 局结算'), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('第 1 局结算'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -539,6 +737,7 @@ void main() {
       botDelay: delay,
       advisor: (turn) {
         unawaited(turn.cancelled!.then((_) => cancelled = true));
+        turn.onProgress?.call(BotProgress.waiting);
         return answer.future;
       },
     );
@@ -572,7 +771,17 @@ void main() {
     );
     await tester.pump(delay);
     expect(find.textContaining('AI 代打思考中', findRichText: true), findsOneWidget);
-    expect(find.textContaining('最多 45s', findRichText: true), findsOneWidget);
+    expect(find.textContaining('模型正在分析', findRichText: true), findsOneWidget);
+    expect(
+      find.textContaining('剩余最多 45 秒', findRichText: true),
+      findsOneWidget,
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(
+      find.textContaining('剩余最多 44 秒', findRichText: true),
+      findsOneWidget,
+    );
+    expect(find.text('本手用本地'), findsOneWidget);
     await tester.tap(find.text('接管出牌'));
     await tester.pumpAndSettle();
     expect(cancelled, isTrue);
@@ -669,9 +878,174 @@ void main() {
     final felt = tester.getRect(
       find.byKey(const ValueKey('dorm-card-table-frame')),
     );
-    expect(felt.size, const Size(1400, 720));
+    expect(felt.size, const Size(2200, 1200));
     expect(felt.center, const Offset(1100, 600));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('牌桌通知只计入别人发的聊天，打开后清除未读', (tester) async {
+    final (session, guests) = await _openGame(tester);
+    final room = session.rooms;
+    final other = guests.first;
+    final me = session.view!['you'];
+    final guest = room.state(other);
+    final sender = (guest['people'] as List).cast<RoomJson>().firstWhere(
+      (player) => player['id'] == guest['you'],
+    )['name'];
+    room.action(other, 'tomato', {'target': me});
+    await tester.pump();
+    final button = find.byTooltip('牌桌消息');
+    final unread = find.descendant(of: button, matching: find.text('1'));
+    expect(unread, findsNothing);
+
+    room.action(other, 'chat', {'text': '这局结束下楼吃饭'});
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(unread, findsOneWidget);
+    expect(find.text('$sender · 这局结束下楼吃饭'), findsOneWidget);
+
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(unread, findsNothing);
+    room.action(guests.last, 'chat', {'text': '我也一起去'});
+    await tester.pumpAndSettle();
+    expect(find.textContaining('我也一起去'), findsOneWidget);
+    await tester.tap(find.text('系统'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('我也一起去'), findsNothing);
+    await tester.tap(find.text('聊天'));
+    await tester.pumpAndSettle();
+    expect(find.text('我也一起去'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭'));
+    await tester.pumpAndSettle();
+    expect(unread, findsNothing);
+  });
+
+  testWidgets('Cheats 从调试启用后可选座位、批量加牌和删牌', (tester) async {
+    final (session, _) = await _openGame(tester);
+    expect(find.text('Cheats'), findsNothing);
+    await tester.tap(find.byTooltip('牌桌菜单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('调试'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '/gui on');
+    await tester.tap(find.text('执行'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cheats'));
+    await tester.pumpAndSettle();
+    final seat = session.view!['debug']['seats']['A'] as int;
+    await tester.tap(find.byKey(ValueKey(('cheats-seat', seat))));
+    await tester.pumpAndSettle();
+    final before = (session.view!['debug']['editor']['cards'] as List).length;
+    final input = find.byKey(const ValueKey('cheats-ranks'));
+    await tester.ensureVisible(input);
+    await tester.enterText(input, '45245234');
+    final add = find.text('添加牌');
+    await tester.ensureVisible(add);
+    await tester.tap(add);
+    await tester.pumpAndSettle();
+    final after = (session.view!['debug']['editor']['cards'] as List)
+        .cast<int>();
+    expect(after, hasLength(before + 8));
+    final ids = after.take(2).toList();
+    for (final id in ids) {
+      final card = find.byKey(ValueKey(('cheats-card', id)));
+      await tester.ensureVisible(card);
+      await tester.tap(card);
+      await tester.pumpAndSettle();
+      final semantics = find.descendant(
+        of: card,
+        matching: find.byType(Semantics),
+      );
+      expect(
+        tester
+            .widgetList<Semantics>(semantics)
+            .any((item) => item.properties.selected == true),
+        isTrue,
+      );
+    }
+    final delete = find.text('删除 2 张牌');
+    await tester.ensureVisible(delete);
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+    final remaining = session.view!['debug']['editor']['cards'] as List;
+    expect(remaining, hasLength(before + 6));
+    expect(remaining.toSet().intersection(ids.toSet()), isEmpty);
+    await tester.tap(find.text('隐藏 Cheats'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cheats'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('房主可用菜单查看并删除指定手牌', (tester) async {
+    final (session, _) = await _openGame(tester);
+    await tester.tap(find.byTooltip('牌桌菜单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('调试'));
+    await tester.pumpAndSettle();
+    final input = tester.widget<TextField>(find.byType(TextField));
+    expect(input.controller?.text, isEmpty);
+    expect(input.decoration?.hintText, isNull);
+    expect(find.byType(ActionChip), findsNothing);
+    await tester.enterText(find.byType(TextField), '/invsee A on');
+    await tester.tap(find.text('执行'));
+    await tester.pumpAndSettle();
+    expect(find.text('已执行'), findsOneWidget);
+    final view = session.view!;
+    final debug = view['debug'] as RoomJson;
+    final seat = debug['seats']['A'];
+    final name =
+        (view['people'] as List).cast<RoomJson>().singleWhere(
+              (p) => p['id'] == seat,
+            )['name']
+            as String;
+    final initial = (debug['hands']['$seat'] as List).cast<int>();
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(name).first);
+    await tester.pumpAndSettle();
+    expect(find.text('$name 的手牌'), findsOneWidget);
+    expect(find.text('删除 1 张牌'), findsNothing);
+    await tester.tap(
+      find
+          .byTooltip(PlayingCard.rankLabel(PlayingCard(initial.first).rank))
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除 1 张牌'));
+    await tester.pumpAndSettle();
+    expect(
+      session.view!['debug']['hands']['$seat'],
+      hasLength(initial.length - 1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Windows 牌桌用 F11、按钮和 Esc 切换全屏', (tester) async {
+    const channel = MethodChannel('dorm/cards/window');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final requests = <bool>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'fullscreen');
+      final enabled = call.arguments as bool;
+      requests.add(enabled);
+      return enabled;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await _openGame(tester, platform: TargetPlatform.windows);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('退出全屏（F11）'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('全屏（F11）'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(requests, [true, false, true, false]);
   });
 
   testWidgets('Windows 手牌紧叠且相邻两张可分别点击', (tester) async {
@@ -1144,7 +1518,7 @@ void main() {
       await tester.tap(find.text('AI 提示'));
       await tester.pump();
       await tester.pump();
-      expect(find.textContaining('AI 建议 · 单张 · 先出单张试探'), findsOneWidget);
+      expect(find.textContaining('AI 建议 · 出牌 · 单张 · 先出单张试探'), findsOneWidget);
       expect(find.text('清空'), findsOneWidget);
 
       // 打出选中的牌并等本地电脑走一步，随后测试建议「不出」时不自动选牌。
@@ -1282,11 +1656,70 @@ void main() {
       expect((await transport('a').pull(settings, key)), isNull);
     },
   );
+
+  testWidgets('手机窄屏支持 8 人同桌多排对手且菜单可调缩放', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(360, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final session = CardSession(
+      () => null,
+      rooms: CardRooms(random: Random(19)),
+    );
+    addTearDown(session.dispose);
+    await session.create(
+      CardRules(players: 8, decks: 2, bottom: 4),
+      '房主',
+      CardLocation.local,
+    );
+    for (var i = 0; i < 7; i++) {
+      await session.act('bot', {'mode': 'local'});
+    }
+    await session.act('start');
+
+    double scale = 1.0;
+    await tester.pumpWidget(
+      StatefulBuilder(
+        builder: (context, setState) => MaterialApp(
+          builder: (context, child) => DormUiScaleScope(
+            scale: scale,
+            onAdjust: (delta) =>
+                setState(() => scale = clampUiScale(scale + delta * 0.05)),
+            onReset: () => setState(() => scale = 1.0),
+            child: child ?? const SizedBox.shrink(),
+          ),
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: session,
+              builder: (context, _) => CardTable(
+                session: session,
+                view: session.view!,
+                share: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var id = 2; id <= 8; id++) {
+      expect(find.text('本地电脑 $id'), findsOneWidget);
+    }
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byTooltip('牌桌菜单'));
+    await tester.pumpAndSettle();
+    expect(find.text('界面缩放'), findsOneWidget);
+    await tester.tap(find.byTooltip('放大界面'));
+    await tester.pumpAndSettle();
+    expect(find.text('105%'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<(CardSession, List<CardSeat>)> _openGame(
   WidgetTester tester, {
   Size size = const Size(1280, 800),
+  TargetPlatform? platform,
 }) async {
   await tester.binding.setSurfaceSize(size);
   addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -1308,6 +1741,7 @@ Future<(CardSession, List<CardSeat>)> _openGame(
   await session.act('bid', {'bid': 3});
   await tester.pumpWidget(
     MaterialApp(
+      theme: platform == null ? null : ThemeData(platform: platform),
       home: Scaffold(
         body: ListenableBuilder(
           listenable: session,

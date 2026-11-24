@@ -1,6 +1,16 @@
 import 'ledger.dart';
 import 'party_tools.dart';
 
+const double minUiScale = 0.75;
+const double maxUiScale = 1.50;
+const double uiScaleStep = 0.05;
+
+double clampUiScale(double value) {
+  if (!value.isFinite) return 1.0;
+  final rounded = (value * 20).round() / 20;
+  return rounded.clamp(minUiScale, maxUiScale).toDouble();
+}
+
 enum StartupPage {
   ledger('公共账本'),
   chores('卫生排班'),
@@ -66,6 +76,7 @@ class DormPreferences {
     this.lanPort = defaultLanPort,
     this.themePalette = ThemePalette.pine,
     this.einkMode = false,
+    this.uiScale = 1.0,
     this.penaltyOptions = penaltyPresets,
     this.botApiEnabled = false,
     this.botProvider = 'deepseek',
@@ -105,6 +116,7 @@ class DormPreferences {
         ThemePalette.pine,
       ),
       einkMode: values['einkMode'] == 'true',
+      uiScale: clampUiScale(double.tryParse(values['uiScale'] ?? '') ?? 1.0),
       penaltyOptions: penalties.isEmpty ? penaltyPresets : penalties,
       botApiEnabled: values['botApiEnabled'] == 'true',
       botProvider: _botToken(values['botProvider'], 'deepseek'),
@@ -126,6 +138,7 @@ class DormPreferences {
   final int lanPort;
   final ThemePalette themePalette;
   final bool einkMode;
+  final double uiScale;
   final List<String> penaltyOptions;
   final bool botApiEnabled;
   final String botProvider;
@@ -146,6 +159,7 @@ class DormPreferences {
     int? lanPort,
     ThemePalette? themePalette,
     bool? einkMode,
+    double? uiScale,
     List<String>? penaltyOptions,
     bool? botApiEnabled,
     String? botProvider,
@@ -165,6 +179,7 @@ class DormPreferences {
     lanPort: lanPort ?? this.lanPort,
     themePalette: themePalette ?? this.themePalette,
     einkMode: einkMode ?? this.einkMode,
+    uiScale: uiScale == null ? this.uiScale : clampUiScale(uiScale),
     penaltyOptions: penaltyOptions ?? this.penaltyOptions,
     botApiEnabled: botApiEnabled ?? this.botApiEnabled,
     botProvider: botProvider ?? this.botProvider,
@@ -186,6 +201,7 @@ class DormPreferences {
     'lanPort': lanPort.toString(),
     'themePalette': themePalette.name,
     'einkMode': einkMode.toString(),
+    'uiScale': clampUiScale(uiScale).toStringAsFixed(2),
     'penaltyOptions': penaltyOptions.join('\n'),
     'botApiEnabled': botApiEnabled.toString(),
     'botProvider': botProvider,

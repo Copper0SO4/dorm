@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../app_identity.dart';
@@ -145,6 +146,7 @@ class _DormAppState extends State<DormApp> {
   late final _mode = ValueNotifier(widget.controller.repository.appearanceMode);
   late var _palette = widget.controller.repository.preferences.themePalette;
   late var _eink = widget.controller.repository.preferences.einkMode;
+  late var _uiScale = widget.controller.repository.preferences.uiScale;
   late StartupPage _selected =
       widget.controller.repository.preferences.startupPage;
   final _storage = PageStorageBucket();
@@ -190,10 +192,13 @@ class _DormAppState extends State<DormApp> {
     final mode = widget.controller.repository.appearanceMode;
     final prefs = widget.controller.repository.preferences;
     if (_mode.value != mode) _mode.value = mode;
-    if (_palette != prefs.themePalette || _eink != prefs.einkMode) {
+    if (_palette != prefs.themePalette ||
+        _eink != prefs.einkMode ||
+        (_uiScale - prefs.uiScale).abs() > 0.001) {
       setState(() {
         _palette = prefs.themePalette;
         _eink = prefs.einkMode;
+        _uiScale = prefs.uiScale;
       });
     }
   }
@@ -235,10 +240,106 @@ class _DormAppState extends State<DormApp> {
         AppearanceMode.dark => ThemeMode.dark,
       },
       builder: (context, child) {
-        if (!_eink || child == null) return child ?? const SizedBox.shrink();
-        return MediaQuery(
-          data: MediaQuery.of(context).copyWith(disableAnimations: true),
-          child: child,
+        final inner = child ?? const SizedBox.shrink();
+        final mediaQuery = MediaQuery.of(context);
+        final shortcuts = DormUiScaleScope(
+          scale: _uiScale,
+          onAdjust: widget.controller.adjustUiScale,
+          onReset: widget.controller.resetUiScale,
+          child: CallbackShortcuts(
+            bindings: {
+              const SingleActivator(
+                LogicalKeyboardKey.equal,
+                control: true,
+              ): () =>
+                  widget.controller.adjustUiScale(1),
+              const SingleActivator(
+                LogicalKeyboardKey.equal,
+                control: true,
+                shift: true,
+              ): () =>
+                  widget.controller.adjustUiScale(1),
+              const SingleActivator(
+                LogicalKeyboardKey.add,
+                control: true,
+              ): () =>
+                  widget.controller.adjustUiScale(1),
+              const SingleActivator(
+                LogicalKeyboardKey.numpadAdd,
+                control: true,
+              ): () =>
+                  widget.controller.adjustUiScale(1),
+              const SingleActivator(
+                LogicalKeyboardKey.minus,
+                control: true,
+              ): () =>
+                  widget.controller.adjustUiScale(-1),
+              const SingleActivator(
+                LogicalKeyboardKey.numpadSubtract,
+                control: true,
+              ): () =>
+                  widget.controller.adjustUiScale(-1),
+              const SingleActivator(
+                LogicalKeyboardKey.digit0,
+                control: true,
+              ): () =>
+                  widget.controller.resetUiScale(),
+              const SingleActivator(
+                LogicalKeyboardKey.numpad0,
+                control: true,
+              ): () =>
+                  widget.controller.resetUiScale(),
+            },
+            child: inner,
+          ),
+        );
+        final withAnimationMode = _eink
+            ? MediaQuery(
+                data: mediaQuery.copyWith(disableAnimations: true),
+                child: shortcuts,
+              )
+            : shortcuts;
+        if ((_uiScale - 1.0).abs() < 0.001) return withAnimationMode;
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
+            final height = constraints.maxHeight;
+            if (!width.isFinite ||
+                !height.isFinite ||
+                width <= 0 ||
+                height <= 0) {
+              return withAnimationMode;
+            }
+            final scaledWidth = width / _uiScale;
+            final scaledHeight = height / _uiScale;
+            return SizedBox(
+              width: width,
+              height: height,
+              child: FittedBox(
+                fit: BoxFit.fill,
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: scaledWidth,
+                  height: scaledHeight,
+                  child: MediaQuery(
+                    data: mediaQuery.copyWith(
+                      size: Size(scaledWidth, scaledHeight),
+                      padding: mediaQuery.padding / _uiScale,
+                      viewPadding: mediaQuery.viewPadding / _uiScale,
+                      viewInsets: mediaQuery.viewInsets / _uiScale,
+                      systemGestureInsets:
+                          mediaQuery.systemGestureInsets / _uiScale,
+                      devicePixelRatio: mediaQuery.devicePixelRatio * _uiScale,
+                      disableAnimations: _eink
+                          ? true
+                          : mediaQuery.disableAnimations,
+                    ),
+                    child: shortcuts,
+                  ),
+                ),
+              ),
+            );
+          },
         );
       },
       locale: const Locale('zh', 'CN'),

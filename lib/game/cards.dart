@@ -256,38 +256,57 @@ class CardPlay {
   final Map<int, int> ranks;
 
   String get key => '${kind.name}:$high:$width:$strength';
-  int _bombOrder(CardRules? rules) {
-    final rocketFirst =
-        rules?.rocketBeatsChain ?? CardRules.defaultRocketBeatsChain;
-    return switch (kind) {
-      PlayKind.bomb => 1,
-      PlayKind.chainBomb => rocketFirst ? 2 : 3,
-      PlayKind.rocket => rocketFirst ? 3 : 2,
-      _ => 0,
-    };
+  int get bombLevel => switch (kind) {
+    PlayKind.bomb => width,
+    PlayKind.chainBomb => width * chainCopies,
+    PlayKind.rocket => 8,
+    _ => 0,
+  };
+
+  bool get bomb => bombLevel > 0;
+
+  BigInt get bombMultiplier {
+    if (!bomb) return BigInt.one;
+    final power = kind == PlayKind.rocket
+        ? 2 + width ~/ 2
+        : (bombLevel - 2) ~/ 2;
+    return BigInt.one << power;
   }
 
-  bool get bomb => _bombOrder(null) > 0;
+  int get _bombKind => switch (kind) {
+    PlayKind.bomb => 1,
+    PlayKind.rocket => 2,
+    PlayKind.chainBomb => 3,
+    _ => 0,
+  };
 
   int _compareBombs(CardPlay other, CardRules? rules) {
-    final order = _bombOrder(rules).compareTo(other._bombOrder(rules));
-    if (order != 0) return order;
+    if (rules?.rocketBeatsChain == true &&
+        (kind == PlayKind.rocket) != (other.kind == PlayKind.rocket)) {
+      return kind == PlayKind.rocket ? 1 : -1;
+    }
+    final level = bombLevel.compareTo(other.bombLevel);
+    if (level != 0) return level;
+    final type = _bombKind.compareTo(other._bombKind);
+    if (type != 0) return type;
     final count = width.compareTo(other.width);
     if (count != 0) return count;
     final firmness = strength.compareTo(other.strength);
     return firmness == 0 ? high.compareTo(other.high) : firmness;
   }
 
-  bool beats(CardPlay? earlier, {CardRules? rules}) {
-    if (earlier == null) return true;
-    if (bomb || earlier.bomb) return _compareBombs(earlier, rules) > 0;
-    return earlier.kind == kind &&
-        earlier.width == width &&
-        high > earlier.high;
+  /// Ordinary plays only compete within the same kind and length.
+  int? compareStrengthTo(CardPlay other, {CardRules? rules}) {
+    if (bomb || other.bomb) return _compareBombs(other, rules);
+    if (kind != other.kind || width != other.width) return null;
+    return high.compareTo(other.high);
   }
 
+  bool beats(CardPlay? earlier, {CardRules? rules}) =>
+      earlier == null || (compareStrengthTo(earlier, rules: rules) ?? 0) > 0;
+
   /// Four-card chains stay at 0 (soft) and 1 (hard). Each extra card per
-  /// group adds 2, so a thicker chain outranks a thinner one before firmness.
+  /// group adds 2. The low bit records whether any rank was substituted.
   int get chainCopies => kind == PlayKind.chainBomb ? 4 + strength ~/ 2 : 0;
 
   String get label => switch (kind) {
@@ -307,6 +326,8 @@ class CardPlay {
     'label': label,
     'high': high,
     'bomb': bomb,
+    if (bomb) 'bombLevel': bombLevel,
+    if (bomb) 'bombMultiplier': bombMultiplier.toString(),
     'cards': [
       for (final card in cards)
         {'id': card.id, 'rank': ranks[card.id] ?? card.rank},
@@ -405,7 +426,7 @@ List<CardPlay> _matchingPlays(
     final copies = kind == PlayKind.chainBomb ? core.values.first : 4;
     final strength = switch (kind) {
       PlayKind.bomb => wild.isEmpty ? 1 : (fixed.isEmpty ? 2 : 0),
-      PlayKind.chainBomb => _chainStrength(copies, hard: wild.isEmpty),
+      PlayKind.chainBomb => _chainStrength(copies, hard: conversion.isEmpty),
       _ => 0,
     };
     final play = CardPlay(kind, high, width, strength, cards, conversion);
@@ -544,13 +565,19 @@ List<CardPlay> legalCardPlays(
 ) {
   if (chosen.isEmpty) return (options: const [], issue: null);
   final matches = cardPlays(chosen, wild, rules: rules);
-  final options = matches
-      .where((play) => play.beats(previous, rules: rules))
-      .toList();
+  final options =
+      matches.where((play) => play.beats(previous, rules: rules)).toList()
+        ..sort((a, b) => _compareHints(a, b, rules));
   final issue = options.isNotEmpty
       ? null
       : matches.isNotEmpty
-      ? '压不过上家的牌'
+      ? (matches.any(
+              (play) =>
+                  previous != null &&
+                  play.compareStrengthTo(previous, rules: rules) != null,
+            )
+            ? '压不过上家的牌'
+            : '需跟相同牌型和长度，或使用炸弹')
       : disabledCardPlayMessage(chosen, wild, rules) ?? '这组牌无法打出';
   return (options: options, issue: issue);
 }
@@ -561,6 +588,55 @@ String? unplayableReason(
   CardPlay? previous,
   CardRules rules,
 ) => inspectCardSelection(chosen, wild, previous, rules).issue;
+
+/// Keep completed bombs intact whenever another legal move is available.
+List<CardPlay> preserveBombs(
+  List<PlayingCard> hand,
+  List<CardPlay> options, {
+  required CardRules rules,
+}) {
+  final counts = <int, int>{};
+  for (final card in hand) {
+    counts.update(card.rank, (count) => count + 1, ifAbsent: () => 1);
+  }
+  final royalPairs = min(counts[16] ?? 0, counts[17] ?? 0);
+  final naturalBombs = {
+    for (final entry in counts.entries)
+      if (entry.key <= 15 && entry.value >= 4) entry.key,
+  };
+  if (naturalBombs.isEmpty && royalPairs == 0) return options;
+
+  final intact = <CardPlay>[];
+  final bombs = <CardPlay>[];
+  for (final play in options) {
+    if (play.bomb) bombs.add(play);
+    final used = <int, int>{};
+    for (final card in play.cards) {
+      used.update(card.rank, (count) => count + 1, ifAbsent: () => 1);
+    }
+    final cutsNatural = used.entries.any((entry) {
+      final rank = entry.key;
+      if (!naturalBombs.contains(rank)) return false;
+      final cutsChain =
+          rules.chainBombs &&
+          rank <= 14 &&
+          (naturalBombs.contains(rank - 1) ||
+              (rank < 14 && naturalBombs.contains(rank + 1)));
+      return !play.bomb ||
+          entry.value != counts[rank] ||
+          (cutsChain && play.kind != PlayKind.chainBomb);
+    });
+    final small = used[16] ?? 0;
+    final big = used[17] ?? 0;
+    final cutsRoyal =
+        royalPairs > 0 &&
+        small + big > 0 &&
+        (play.kind != PlayKind.rocket || small != royalPairs);
+    if (!cutsNatural && !cutsRoyal) intact.add(play);
+  }
+  if (intact.isNotEmpty) return intact;
+  return bombs.isNotEmpty ? bombs : options;
+}
 
 /// Bots prefer an immediate win, then the smallest available response.
 CardPlay? suggestCards(
@@ -703,12 +779,9 @@ List<CardPlay> hintPlays(
         )
         .firstOrNull;
     if (play == null) return;
-    final ids = [for (final card in play.cards) card.id]..sort();
-    final signature = ids.join(',');
-    final current = hints[signature];
-    if (current == null || _compareHints(play, current, rules) < 0) {
-      hints[signature] = play;
-    }
+    // The same physical cards can represent different kinds or ranks with
+    // wild cards. Keep every declared play while dropping equivalent suits.
+    hints.putIfAbsent(play.key, () => play);
   }
 
   for (final shape in _hintShapes) {
@@ -755,8 +828,8 @@ List<CardPlay> hintPlays(
     }
   }
 
-  if (previous == null || previous._bombOrder(rules) <= 1) {
-    final first = previous?.kind == PlayKind.bomb ? previous!.width : 4;
+  if (!(previous?.kind == PlayKind.rocket && rules?.rocketBeatsChain == true)) {
+    final first = max(4, previous?.bombLevel ?? 0);
     for (var rank = 3; rank <= 15; rank++) {
       final count = naturals[rank]?.length ?? 0;
       if (count == 0 && !wild.contains(rank)) continue;
@@ -767,9 +840,6 @@ List<CardPlay> hintPlays(
   }
   if (rules?.chainBombs == true &&
       (previous?.kind != PlayKind.rocket || rules?.rocketBeatsChain == false)) {
-    final minGroups = previous?.kind == PlayKind.chainBomb
-        ? previous!.width
-        : 2;
     final richest =
         naturals.entries
             .where((entry) => entry.key >= 3 && entry.key <= 14)
@@ -786,6 +856,10 @@ List<CardPlay> hintPlays(
 
     for (var copies = 4; copies <= richest; copies++) {
       final maxGroups = min(12, hand.length ~/ copies);
+      final minGroups = max(
+        2,
+        ((previous?.bombLevel ?? 0) + copies - 1) ~/ copies,
+      );
       for (var groups = minGroups; groups <= maxGroups; groups++) {
         for (var high = groups + 2; high <= 14; high++) {
           final start = high - groups + 1;
@@ -795,7 +869,7 @@ List<CardPlay> hintPlays(
             PlayKind.chainBomb,
             high,
             groups,
-            _chainStrength(copies, hard: missing == 0),
+            _chainStrength(copies, hard: true),
             const [],
             const {},
           );
@@ -828,7 +902,10 @@ List<CardPlay> hintPlays(
 }
 
 int _compareHints(CardPlay a, CardPlay b, CardRules? rules) {
-  if (a.bomb || b.bomb) return a._compareBombs(b, rules);
+  final comparison = a.compareStrengthTo(b, rules: rules);
+  if (comparison != null) return comparison;
   final high = a.high.compareTo(b.high);
-  return high == 0 ? a.cards.length.compareTo(b.cards.length) : high;
+  if (high != 0) return high;
+  final length = a.cards.length.compareTo(b.cards.length);
+  return length == 0 ? a.kind.index.compareTo(b.kind.index) : length;
 }

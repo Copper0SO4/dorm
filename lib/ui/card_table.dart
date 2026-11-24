@@ -6,13 +6,17 @@ import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../game/bot_profile.dart' show botDecisionTimeout, botTimeoutLimit;
+import '../domain/preferences.dart' show maxUiScale, minUiScale;
+import '../game/bot_profile.dart'
+    show botDecisionTimeout, botTimeoutLimit, formatBotRanks;
 import '../game/card_rooms.dart';
 import '../game/card_session.dart';
 import '../game/cards.dart';
 import 'card_art.dart';
 import 'cards_page.dart';
 import 'common.dart';
+
+part 'card_cheats.dart';
 
 class CardTable extends StatefulWidget {
   const CardTable({
@@ -33,7 +37,9 @@ class CardTable extends StatefulWidget {
 }
 
 class _CardTableState extends State<CardTable> {
+  static const _finalPlayDuration = Duration(milliseconds: 1800);
   static const _audio = MethodChannel('dorm/cards/audio');
+  static const _cardWindow = MethodChannel('dorm/cards/window');
   static const _gold = Color(0xfff4cf86);
   static const _ink = Color(0xff173038);
   static const _moveColors = {
@@ -43,12 +49,19 @@ class _CardTableState extends State<CardTable> {
   };
 
   final _selected = <int>{};
-  final _chat = TextEditingController();
+  bool _chatVisible = false;
+  bool _chatReading = false;
+  int _unreadChat = 0;
   final _sounds = <String, Uint8List>{};
   int _event = 0;
+  int _chatEvent = 0;
   int? _splash;
   Timer? _timer;
+  Timer? _finalPlayTimer;
+  bool get _showFinalPlay => _finalPlayTimer?.isActive ?? false;
   bool _muted = false;
+  bool _fullscreen = false;
+  bool _changingFullscreen = false;
   String? _preferred;
   int? _hintTurn;
   int _hintCursor = 0;
@@ -69,10 +82,14 @@ class _CardTableState extends State<CardTable> {
     (player) => player['id'] == view['you'] && player['autoplay'] == true,
   );
   RoomJson? get coaching => view['aiHint'] as RoomJson?;
+  RoomJson? get _debug => view['debug'] as RoomJson?;
+  bool get _forceOut => _debug?['forceOut'] == true;
+  CardPlay? get _playLimit => _forceOut ? null : previous;
   bool get isHost => view['host'] == view['you'];
   bool get inPlay => ['playing', 'bidding'].contains(view['phase']);
   bool get online => view['scope'] == 'online';
   bool get blocked => session.working || session.awaitingGit;
+  int? get _activeOpponent => !ownTurn ? view['turn'] as int? : null;
   List<RoomJson> get people => (view['people'] as List).cast<RoomJson>();
   List<RoomJson> get events => (view['events'] as List).cast<RoomJson>();
   List<PlayingCard> get hand =>
@@ -89,12 +106,29 @@ class _CardTableState extends State<CardTable> {
   void initState() {
     super.initState();
     _event = (events.lastOrNull?['id'] as int?) ?? 0;
+    _chatEvent = (_chatMessages(view).lastOrNull?['id'] as int?) ?? 0;
   }
 
   @override
   void didUpdateWidget(CardTable oldWidget) {
     super.didUpdateWidget(oldWidget);
     final prior = oldWidget.view;
+    if (prior['room'] != view['room'] || prior['you'] != view['you']) {
+      _event = (events.lastOrNull?['id'] as int?) ?? 0;
+      _chatEvent = (_chatMessages(view).lastOrNull?['id'] as int?) ?? 0;
+      _unreadChat = 0;
+    }
+    if (view['phase'] != 'finished' || prior['room'] != view['room']) {
+      _finalPlayTimer?.cancel();
+      _finalPlayTimer = null;
+    } else if (prior['phase'] != 'finished' && view['last'] is RoomJson) {
+      _finalPlayTimer?.cancel();
+      _finalPlayTimer = Timer(_finalPlayDuration, () {
+        if (!mounted) return;
+        setState(() => _finalPlayTimer = null);
+        unawaited(_sound('finish'));
+      });
+    }
     final turnChanged = prior['turnVersion'] != view['turnVersion'];
     final sameHand = listEquals(prior['hand'] as List, view['hand'] as List);
     final sameTable =
@@ -139,6 +173,24 @@ class _CardTableState extends State<CardTable> {
         }
       }
     }
+    final messages = _chatMessages(view);
+    final incoming = messages
+        .where(
+          (entry) =>
+              (entry['id'] as int) > _chatEvent && entry['from'] != view['you'],
+        )
+        .toList();
+    _chatEvent = (messages.lastOrNull?['id'] as int?) ?? 0;
+    if (!_chatReading) _unreadChat += incoming.length;
+    if (!_chatVisible && incoming.isNotEmpty) {
+      final latest = incoming.last;
+      final message = '${_chatSpeaker(latest, people)} · ${latest['text']}';
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_chatVisible && _unreadChat > 0) {
+          notify(context, message);
+        }
+      });
+    }
     final recent = events
         .where((entry) => (entry['id'] as int) > _event)
         .toList();
@@ -169,7 +221,14 @@ class _CardTableState extends State<CardTable> {
         if (mounted) notify(context, fallback['text'] as String);
       });
     }
-    unawaited(_sound(recent.last['kind'] as String));
+    final soundEvent = recent
+        .where(
+          (entry) =>
+              (!_showFinalPlay || entry['kind'] != 'finish') &&
+              (entry['kind'] != 'chat' || entry['from'] != view['you']),
+        )
+        .lastOrNull;
+    if (soundEvent != null) unawaited(_sound(soundEvent['kind'] as String));
   }
 
   Future<void> _sound(String kind) async {
@@ -199,10 +258,37 @@ class _CardTableState extends State<CardTable> {
     return bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes);
   }
 
+  Future<void> _setFullscreen(bool enabled) async {
+    if (_changingFullscreen || _fullscreen == enabled) return;
+    setState(() => _changingFullscreen = true);
+    try {
+      final active = await _cardWindow.invokeMethod<bool>(
+        'fullscreen',
+        enabled,
+      );
+      if (!mounted) {
+        if (active == true) {
+          await _cardWindow.invokeMethod<bool>('fullscreen', false);
+        }
+        return;
+      }
+      setState(() => _fullscreen = active == true);
+    } on MissingPluginException {
+      if (mounted) notify(context, '当前版本无法切换全屏');
+    } on PlatformException {
+      if (mounted) notify(context, '无法切换牌桌全屏');
+    } finally {
+      if (mounted) setState(() => _changingFullscreen = false);
+    }
+  }
+
   @override
   void dispose() {
+    if (_fullscreen && !_changingFullscreen) {
+      _cardWindow.invokeMethod<bool>('fullscreen', false).ignore();
+    }
     _timer?.cancel();
-    _chat.dispose();
+    _finalPlayTimer?.cancel();
     super.dispose();
   }
 
@@ -212,7 +298,7 @@ class _CardTableState extends State<CardTable> {
     if (cached != null && _hintTurn == turn) return cached;
     _hintTurn = turn;
     _hintCursor = 0;
-    return _hints = hintPlays(hand, wild, previous, rules: rules);
+    return _hints = hintPlays(hand, wild, _playLimit, rules: rules);
   }
 
   void _hint() {
@@ -242,10 +328,28 @@ class _CardTableState extends State<CardTable> {
     });
   }
 
+  String _playChoiceLabel(CardPlay play) {
+    final level = play.kind == PlayKind.rocket && rules.rocketBeatsChain
+        ? '王炸优先'
+        : '等级 ${play.bombLevel}';
+    final conversions = {
+      for (final card in play.cards)
+        if (play.ranks[card.id] case final rank?)
+          '${PlayingCard.rankLabel(card.rank)}→${PlayingCard.rankLabel(rank)}',
+    };
+    return [
+      play.label,
+      if (play.bomb) level,
+      if (play.bomb) '×${play.bombMultiplier}',
+      if (play.kind != PlayKind.rocket) PlayingCard.rankLabel(play.high),
+      ...conversions,
+    ].join(' · ');
+  }
+
   Future<void> _play() async {
     if (!ownTurn || blocked || view['phase'] != 'playing') return;
     final cards = hand.where((card) => _selected.contains(card.id)).toList();
-    final selection = inspectCardSelection(cards, wild, previous, rules);
+    final selection = inspectCardSelection(cards, wild, _playLimit, rules);
     final options = selection.options;
     if (options.isEmpty) {
       notify(context, selection.issue ?? '请先选牌');
@@ -267,10 +371,7 @@ class _CardTableState extends State<CardTable> {
                     for (final play in options)
                       SimpleDialogOption(
                         onPressed: () => Navigator.pop(context, play),
-                        child: Text(
-                          '${play.label} · ${PlayingCard.rankLabel(play.high)}'
-                          '${play.ranks.isEmpty ? '' : ' · ${play.ranks.values.map(PlayingCard.rankLabel).join(' ')}'}',
-                        ),
+                        child: Text(_playChoiceLabel(play)),
                       ),
                   ],
                 ),
@@ -386,13 +487,6 @@ class _CardTableState extends State<CardTable> {
     await session.act('leave');
   }
 
-  void _sendChat() {
-    final text = _chat.text.trim();
-    if (text.isEmpty || blocked) return;
-    _chat.clear();
-    unawaited(session.act('chat', {'text': text}));
-  }
-
   String _person(Object? id) =>
       people.where((person) => person['id'] == id).firstOrNull?['name']
           as String? ??
@@ -403,7 +497,8 @@ class _CardTableState extends State<CardTable> {
       final types = CardMove.values.asNameMap();
       return {
         for (final person in people)
-          person['id'] as int: ?types[person['move']],
+          if (person['id'] != _activeOpponent)
+            person['id'] as int: ?types[person['move']],
       };
     }
 
@@ -421,6 +516,7 @@ class _CardTableState extends State<CardTable> {
       leader: CardMove.lead,
       for (final event in events)
         if (event['kind'] == 'pass' &&
+            event['from'] != _activeOpponent &&
             (event['id'] as int) > (play['id'] as int))
           event['from'] as int: CardMove.pass,
     };
@@ -474,7 +570,7 @@ class _CardTableState extends State<CardTable> {
     final roomRules = rules;
     final wildRanks = wild;
     final selection = playing
-        ? inspectCardSelection(chosen, wildRanks, previous, roomRules)
+        ? inspectCardSelection(chosen, wildRanks, _playLimit, roomRules)
         : (options: const <CardPlay>[], issue: null);
     final suggested = selection.options
         .where((play) => play.key == _preferred)
@@ -493,8 +589,11 @@ class _CardTableState extends State<CardTable> {
         ? Duration.zero
         : const Duration(milliseconds: 125);
     final error = session.error ?? (online ? session.gitError : null);
+    final waitingForHint = playing && coaching?['pending'] == true;
+    final aiThinking = view['botThinking'] == true;
+    final progress = aiThinking ? view['botProgress'] as RoomJson? : coaching;
 
-    return PopScope(
+    final table = PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && !blocked) unawaited(_leave());
@@ -507,142 +606,177 @@ class _CardTableState extends State<CardTable> {
             colors: [Color(0xff286b52), Color(0xff0c2c32)],
           ),
         ),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1400, maxHeight: 720),
-            child: CardTableFrame(
-              key: const ValueKey('dorm-card-table-frame'),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxHeight < 450;
-                  final last = _displayedPlay;
-                  final actor =
-                      (view['leader'] ?? _previousTrick?['leader']) as int?;
-                  final handHeight =
-                      (constraints.maxHeight * (compact ? .29 : .32)).clamp(
-                        74.0,
-                        142.0,
-                      );
-                  return Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: compact ? 8 : 25,
-                      vertical: compact ? 4 : 10,
-                    ),
-                    child: Column(
-                      spacing: compact ? 2 : 6,
-                      children: [
-                        _toolbar(),
-                        const Divider(
-                          height: 1,
-                          thickness: 1,
-                          color: Color(0x549d9971),
+        child: SizedBox.expand(
+          child: CardTableFrame(
+            key: const ValueKey('dorm-card-table-frame'),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxHeight < 450;
+                final narrow = constraints.maxWidth < 600;
+                final horizontalPadding = compact || narrow ? 8.0 : 25.0;
+                final tableWidth = math.max(
+                  120.0,
+                  constraints.maxWidth - horizontalPadding * 2,
+                );
+                final last = _displayedPlay;
+                final actor =
+                    (view['leader'] ?? _previousTrick?['leader']) as int?;
+                final multiRowOpponents =
+                    opponents.length > 3 && tableWidth / opponents.length < 76;
+                final handHeight =
+                    (constraints.maxHeight *
+                            (compact
+                                ? .29
+                                : multiRowOpponents
+                                ? .27
+                                : .32))
+                        .clamp(
+                          74.0,
+                          constraints.maxHeight >= 850 ? 185.0 : 142.0,
+                        );
+                return Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: horizontalPadding,
+                    vertical: compact ? 4 : 10,
+                  ),
+                  child: Column(
+                    spacing: compact || multiRowOpponents ? 3 : 6,
+                    children: [
+                      _toolbar(),
+                      const Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: Color(0x549d9971),
+                      ),
+                      if (session.awaitingGit)
+                        const LinearProgressIndicator(minHeight: 2),
+                      if (error != null)
+                        Text(
+                          error,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Color(0xffffcab5)),
                         ),
-                        if (session.awaitingGit)
-                          const LinearProgressIndicator(minHeight: 2),
-                        if (error != null)
-                          Text(
-                            error,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Color(0xffffcab5)),
-                          ),
-                        if (view['counter'] case final List counts)
-                          _counter(counts.cast<RoomJson>()),
-                        if (opponents.isNotEmpty)
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 1040),
-                            child: Row(
-                              spacing: compact ? 4 : 8,
-                              children: [
-                                for (final (index, player) in opponents.indexed)
-                                  Expanded(
-                                    child: Align(
-                                      alignment: opponents.length == 1
-                                          ? Alignment.center
-                                          : index == 0
-                                          ? Alignment.centerLeft
-                                          : index == opponents.length - 1
-                                          ? Alignment.centerRight
-                                          : Alignment.center,
-                                      child: ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxWidth: 172,
-                                        ),
-                                        child: _seat(
-                                          player,
-                                          moves[player?['id']],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        Expanded(
-                          child: view['settlement'] is RoomJson
-                              ? Align(
-                                  child: _settlement(
-                                    view['settlement'] as RoomJson,
-                                  ),
-                                )
-                              : last == null || actor == null
-                              ? const SizedBox.shrink()
-                              : _trickArea(
-                                  last,
-                                  actor,
-                                  opponents,
-                                  moves,
-                                  motion,
+                      if (view['counter'] case final List counts)
+                        _counter(counts.cast<RoomJson>()),
+                      if (opponents.isNotEmpty)
+                        _opponentsStrip(
+                          opponents,
+                          moves,
+                          tableWidth: tableWidth,
+                          compact: compact,
+                        ),
+                      Expanded(
+                        child: !_showFinalPlay && view['settlement'] is RoomJson
+                            ? Align(
+                                child: _settlement(
+                                  view['settlement'] as RoomJson,
                                 ),
-                        ),
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          spacing: 7,
-                          children: [
-                            ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 190),
-                              child: _turnPrompt(),
-                            ),
+                              )
+                            : last == null || actor == null
+                            ? const SizedBox.shrink()
+                            : _trickArea(last, actor, opponents, moves, motion),
+                      ),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 7,
+                        children: [
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 190),
+                            child: _turnPrompt(),
+                          ),
+                          if (_showFinalPlay && view['you'] == view['landlord'])
+                            _landlordBadge(),
+                          if (!_showFinalPlay)
                             _actions(
                               phase: phase,
                               legal: selection.options.isNotEmpty,
                             ),
-                          ],
-                        ),
-                        if (playing && coaching != null)
-                          _coachingFeedback(coaching!),
-                        if (cards.isNotEmpty && phase != 'finished') ...[
-                          _handLine(
-                            cards.length,
-                            moves[view['you']],
-                            chosen.length,
-                            selection.issue,
-                            preview,
-                          ),
-                          _HandStrip(
-                            cards: cards,
-                            selected: _selected,
-                            wild: wild,
-                            enabled:
-                                phase == 'playing' && !blocked && !autoplay,
-                            height: handHeight,
-                            motion: motion,
-                            tightSpacing:
-                                Theme.of(context).platform ==
-                                TargetPlatform.windows,
-                            onChanged: _setSelected,
-                          ),
                         ],
+                      ),
+                      if (aiThinking || waitingForHint)
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 8,
+                          children: [
+                            _AiWaitLabel(
+                              key: ValueKey((
+                                view['room'],
+                                view['turnVersion'],
+                                waitingForHint ? (coaching?['id']) : null,
+                              )),
+                              stage: progress?['stage'] as String?,
+                              seconds:
+                                  progress?['remaining'] as int? ??
+                                  botDecisionTimeout.inSeconds,
+                            ),
+                            if (waitingForHint || (isHost || ownTurn))
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _gold,
+                                  minimumSize: const Size(0, 26),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                onPressed: blocked
+                                    ? null
+                                    : () => session.act(
+                                        waitingForHint
+                                            ? 'cancelAiHint'
+                                            : 'skipBotWait',
+                                        {'turnVersion': view['turnVersion']},
+                                      ),
+                                child: Text(waitingForHint ? '取消提示' : '本手用本地'),
+                              ),
+                          ],
+                        )
+                      else if (playing && coaching != null)
+                        _coachingFeedback(coaching!),
+                      if (cards.isNotEmpty && phase != 'finished') ...[
+                        _handLine(
+                          cards.length,
+                          moves[view['you']],
+                          chosen.length,
+                          selection.issue,
+                          preview,
+                        ),
+                        _HandStrip(
+                          cards: cards,
+                          selected: _selected,
+                          wild: wild,
+                          enabled: phase == 'playing' && !blocked && !autoplay,
+                          height: handHeight,
+                          motion: motion,
+                          tightSpacing:
+                              Theme.of(context).platform ==
+                              TargetPlatform.windows,
+                          onChanged: _setSelected,
+                        ),
                       ],
-                    ),
-                  );
-                },
-              ),
+                    ],
+                  ),
+                );
+              },
             ),
           ),
         ),
       ),
+    );
+    if (Theme.of(context).platform != TargetPlatform.windows) return table;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.f11): () =>
+            _setFullscreen(!_fullscreen),
+        if (_fullscreen)
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              _setFullscreen(false),
+      },
+      child: Focus(autofocus: true, child: table),
     );
   }
 
@@ -692,8 +826,10 @@ class _CardTableState extends State<CardTable> {
           ),
           if (bottomCount > 0) _bottomPreview(bottom, bottomCount),
           Expanded(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+            flex: _debug?['gui'] == true ? 2 : 1,
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 if (inPlay || autoplay)
                   IconButton(
@@ -707,16 +843,39 @@ class _CardTableState extends State<CardTable> {
                     icon: const Icon(Icons.smart_toy_outlined),
                     selectedIcon: const Icon(Icons.smart_toy, color: _gold),
                   ),
+                if (Theme.of(context).platform == TargetPlatform.windows)
+                  IconButton(
+                    tooltip: _fullscreen ? '退出全屏（F11）' : '全屏（F11）',
+                    onPressed: _changingFullscreen
+                        ? null
+                        : () => _setFullscreen(!_fullscreen),
+                    icon: Icon(
+                      _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                    ),
+                  ),
                 IconButton(
                   tooltip: '牌桌消息',
                   onPressed: _showChat,
-                  icon: const Icon(Icons.chat_bubble_outline),
+                  icon: Badge(
+                    isLabelVisible: _unreadChat > 0,
+                    label: Text(_unreadChat > 99 ? '99+' : '$_unreadChat'),
+                    child: const Icon(Icons.chat_bubble_outline),
+                  ),
                 ),
                 if (isHost && !online)
                   IconButton(
                     tooltip: '分享牌桌',
                     onPressed: blocked ? null : widget.share,
                     icon: const Icon(Icons.qr_code_2),
+                  ),
+                if (_debug?['gui'] == true)
+                  TextButton(
+                    onPressed: blocked ? null : () => _showCheats(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: _gold,
+                      padding: const EdgeInsets.symmetric(horizontal: 7),
+                    ),
+                    child: const Text('Cheats'),
                   ),
                 IconButton(
                   tooltip: '牌桌菜单',
@@ -776,11 +935,10 @@ class _CardTableState extends State<CardTable> {
   );
 
   Widget _coachingFeedback(RoomJson advice) {
-    final pending = advice['pending'] == true;
     final explanation = advice['reason'] as String?;
     final error = advice['error'] as String?;
     final play = advice['play'] as RoomJson?;
-    final action = advice['pass'] == true ? '不出' : play?['label'] as String?;
+    final action = play == null ? '不出' : '出牌 · ${play['label']}';
     return TextButton(
       style: TextButton.styleFrom(
         foregroundColor: error != null ? const Color(0xffffc9aa) : _gold,
@@ -792,9 +950,7 @@ class _CardTableState extends State<CardTable> {
           ? null
           : () => _showAiAdvice(advice, explanation),
       child: Text(
-        pending
-            ? 'AI 分析中 · 最多 ${botDecisionTimeout.inSeconds} 秒'
-            : error ?? 'AI 建议 · ${action ?? ''} · $explanation',
+        error ?? 'AI 建议 · $action · $explanation',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontSize: 12),
@@ -807,11 +963,22 @@ class _CardTableState extends State<CardTable> {
     showDialog<void>(
       context: context,
       builder: (context) => SimpleDialog(
-        title: Text('AI 建议 · ${play?['label'] ?? '不出'}'),
+        title: const Text('AI 出牌建议'),
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
-            child: Text(explanation),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 8,
+              children: [
+                Text(play == null ? '建议动作　不出' : '建议动作　出牌 · ${play['label']}'),
+                if (play != null)
+                  Text(
+                    '出牌牌面　${formatBotRanks((play['cards'] as List).cast<RoomJson>().map((card) => card['rank'] as int))}',
+                  ),
+                Text('判断理由　$explanation'),
+              ],
+            ),
           ),
           if (play != null)
             SimpleDialogOption(
@@ -819,6 +986,7 @@ class _CardTableState extends State<CardTable> {
                 Navigator.pop(context);
                 if (!mounted ||
                     advice['turn'] != view['turnVersion'] ||
+                    advice['id'] != coaching?['id'] ||
                     autoplay) {
                   return;
                 }
@@ -902,6 +1070,7 @@ class _CardTableState extends State<CardTable> {
                               ),
                             ),
                           ),
+                          if (row['seat'] == view['landlord']) _landlordBadge(),
                           Text(
                             '本局 ${_signedScore(row['delta'])}',
                             style: const TextStyle(color: Colors.white70),
@@ -1022,6 +1191,58 @@ class _CardTableState extends State<CardTable> {
               onPressed: () => run(() => setState(() => _muted = !_muted)),
               child: Text(_muted ? '打开音效' : '关闭音效'),
             ),
+            if (DormUiScaleScope.maybeOf(dialogContext) case final scaleScope?)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 4,
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(child: Text('界面缩放')),
+                    IconButton(
+                      tooltip: '缩小界面',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: scaleScope.scale <= minUiScale + 0.001
+                          ? null
+                          : () => scaleScope.onAdjust(-1),
+                      icon: const Icon(Icons.remove),
+                    ),
+                    TextButton(
+                      onPressed: (scaleScope.scale - 1.0).abs() < 0.001
+                          ? null
+                          : scaleScope.onReset,
+                      child: Text('${(scaleScope.scale * 100).round()}%'),
+                    ),
+                    IconButton(
+                      tooltip: '放大界面',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: scaleScope.scale >= maxUiScale - 0.001
+                          ? null
+                          : () => scaleScope.onAdjust(1),
+                      icon: const Icon(Icons.add),
+                    ),
+                  ],
+                ),
+              ),
+            if ((_debug?['hands'] as RoomJson?)?.containsKey(
+                  '${view['you']}',
+                ) ==
+                true)
+              SimpleDialogOption(
+                onPressed: blocked
+                    ? null
+                    : () => run(
+                        () =>
+                            unawaited(_showDebugHand(view['you'] as int, '自己')),
+                      ),
+                child: const Text('查看自己的手牌'),
+              ),
+            if (_debug != null)
+              SimpleDialogOption(
+                onPressed: blocked ? null : () => run(_showDebug),
+                child: const Text('调试'),
+              ),
             if (isHost && inPlay)
               SimpleDialogOption(
                 onPressed: blocked ? null : () => run(_abort),
@@ -1034,6 +1255,175 @@ class _CardTableState extends State<CardTable> {
           ],
         );
       },
+    );
+  }
+
+  Future<void> _showCheats({int? seat}) async {
+    if (_debug?['gui'] != true || blocked) return;
+    if (seat != null) {
+      await session.act('debugGui', {'op': 'select', 'seat': seat});
+      if (!mounted || session.error != null || _debug?['gui'] != true) return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _CheatsDialog(session: session),
+    );
+  }
+
+  Future<void> _showDebug() async {
+    final input = TextEditingController();
+    String? feedback;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    try {
+      final route = DialogRoute<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (_, update) => ListenableBuilder(
+            listenable: session,
+            builder: (_, _) {
+              final debug = session.view?['debug'] as RoomJson?;
+              Future<void> run() async {
+                final command = input.text.trim();
+                if (debug == null || session.working || command.isEmpty) return;
+                update(() => feedback = null);
+                await session.act('debug', {
+                  'command': command,
+                  'deal': debug['deal'],
+                });
+                if (!dialogContext.mounted) return;
+                update(() => feedback = session.error ?? '已执行');
+                if (session.error == null) input.clear();
+              }
+
+              return AlertDialog(
+                title: const Text('调试'),
+                scrollable: true,
+                content: SizedBox(
+                  width: 440,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    spacing: 10,
+                    children: [
+                      Semantics(
+                        label: '调试输入',
+                        child: TextField(
+                          controller: input,
+                          autofocus: true,
+                          maxLength: 500,
+                          decoration: const InputDecoration(
+                            counterText: '',
+                            border: OutlineInputBorder(),
+                          ),
+                          onSubmitted: (_) => run(),
+                        ),
+                      ),
+                      if (feedback != null) Text(feedback!),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('关闭'),
+                  ),
+                  FilledButton(
+                    onPressed: debug == null || session.working ? null : run,
+                    child: const Text('执行'),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+      await navigator.push(route);
+      await route.completed;
+    } finally {
+      input.dispose();
+    }
+  }
+
+  Future<void> _showDebugHand(int seat, String name) async {
+    var selected = <int>{};
+    Object? selectedDeal;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (_, update) => ListenableBuilder(
+          listenable: session,
+          builder: (_, _) {
+            final debug = session.view?['debug'] as RoomJson?;
+            final hands = debug?['hands'] as RoomJson?;
+            final cards = (hands?['$seat'] as List? ?? []).cast<int>();
+            final deal = debug?['deal'];
+            final marked = selectedDeal == deal
+                ? selected.intersection(cards.toSet())
+                : <int>{};
+            final inPlay = const {
+              'bidding',
+              'playing',
+            }.contains(session.view?['phase']);
+            return AlertDialog(
+              title: Text('$name 的手牌'),
+              content: SizedBox(
+                width: 460,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 264),
+                  child: SingleChildScrollView(
+                    child: cards.isEmpty
+                        ? const Text('当前没有可查看的手牌')
+                        : Wrap(
+                            spacing: 5,
+                            runSpacing: 5,
+                            children: [
+                              for (final id in cards)
+                                _DebugHandCard(
+                                  id: id,
+                                  selected: marked.contains(id),
+                                  onTap: inPlay && !session.working
+                                      ? () => update(() {
+                                          selectedDeal = deal;
+                                          selected = {...marked};
+                                          if (!selected.add(id)) {
+                                            selected.remove(id);
+                                          }
+                                        })
+                                      : null,
+                                ),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('关闭'),
+                ),
+                if (marked.isNotEmpty && inPlay)
+                  FilledButton(
+                    onPressed: session.working || marked.length >= cards.length
+                        ? null
+                        : () async {
+                            await session.act('debugRemove', {
+                              'seat': seat,
+                              'cards': marked.toList(),
+                              'deal': deal,
+                            });
+                            if (!dialogContext.mounted) return;
+                            if (session.error == null) {
+                              update(selected.clear);
+                            } else {
+                              notify(dialogContext, session.error!);
+                            }
+                          },
+                    child: Text('删除 ${marked.length} 张牌'),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 
@@ -1133,7 +1523,6 @@ class _CardTableState extends State<CardTable> {
     final phase = view['phase'];
     final current = view['turn'];
     final thinking = view['botThinking'] == true;
-    final waitSeconds = view['apiWaitSeconds'] ?? botDecisionTimeout.inSeconds;
     final apiTimeouts = view['apiTimeouts'] as int? ?? 0;
     final apiSuspended = inPlay && view['apiSuspended'] == true;
     final call = rules.landlordCall.label;
@@ -1146,12 +1535,14 @@ class _CardTableState extends State<CardTable> {
             'playing' when ownTurn && previous == null => '轮到你先出',
             'playing' when ownTurn => '轮到你出牌',
             'playing' => '${_person(current)}正在出牌',
+            'finished' when _showFinalPlay =>
+              view['leader'] == view['you']
+                  ? '你率先出完'
+                  : '${_person(view['leader'])}率先出完',
             'finished' => view['result'] as String? ?? '牌局结束',
             _ => people.length == rules.players ? '座位已满，可以发牌' : '等待其他玩家入座',
           };
-    final apiStatus = thinking
-        ? '最多 ${waitSeconds}s'
-        : apiSuspended
+    final apiStatus = apiSuspended
         ? '本局本地接管'
         : inPlay && apiTimeouts > 0
         ? '超时 $apiTimeouts/${view['apiTimeoutLimit'] ?? botTimeoutLimit}'
@@ -1232,87 +1623,83 @@ class _CardTableState extends State<CardTable> {
     Duration motion,
   ) {
     final previousTrick = view['last'] == null;
+    if (actor == _activeOpponent) return const SizedBox.shrink();
     final displayed = <int, RoomJson>{
-      if (!previousTrick)
+      if (!previousTrick && !_showFinalPlay)
         for (final entry
             in (view['tablePlays'] as List? ?? const []).cast<RoomJson>())
-          if (entry['seat'] != actor)
+          if (entry['seat'] != actor && entry['seat'] != _activeOpponent)
             entry['seat'] as int: entry['play'] as RoomJson,
       actor: last,
     };
     final me = view['you'] as int;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 1040),
-      child: LayoutBuilder(
-        builder: (context, bounds) {
-          if (bounds.maxHeight < 22) return const SizedBox.shrink();
-          final retain =
-              bounds.maxHeight >= 118 &&
-              bounds.maxWidth >= 480 &&
-              opponents.length <= 3;
-          final plays = retain ? displayed : {actor: last};
-          final bothRows = plays.containsKey(me) && plays.length > 1;
-          final height = bothRows
-              ? (bounds.maxHeight - 6) / 2
-              : bounds.maxHeight;
-          return Stack(
-            children: [
-              for (final item in plays.entries)
-                _playedCards(
-                  item.value,
-                  item.key,
-                  opponents,
-                  moves[item.key],
-                  motion,
-                  bounds.maxWidth,
-                  height,
-                  current: item.key == actor,
-                  previousTrick: previousTrick,
-                  separateOpponents:
-                      plays.keys.where((id) => id != me).length > 1,
-                ),
-              if (!previousTrick &&
-                  last['bomb'] == true &&
-                  motion != Duration.zero)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: Align(
-                      alignment: const Alignment(0, -.30),
-                      child: TweenAnimationBuilder<double>(
-                        key: ValueKey((
-                          'bomb',
-                          actor,
-                          (last['cards'] as List).firstOrNull?['id'],
-                        )),
-                        tween: Tween(begin: 0, end: 1),
-                        duration: const Duration(milliseconds: 720),
-                        builder: (context, phase, child) => Opacity(
-                          opacity: math
-                              .min(phase * 8, (1 - phase) * 3)
-                              .clamp(0.0, 1.0),
-                          child: Transform.scale(
-                            scale: .9 + phase * .18,
-                            child: child,
-                          ),
+    return LayoutBuilder(
+      builder: (context, bounds) {
+        if (bounds.maxHeight < 22) return const SizedBox.shrink();
+        final retain =
+            bounds.maxHeight >= 118 &&
+            bounds.maxWidth >= 480 &&
+            opponents.length <= 3;
+        final plays = retain ? displayed : {actor: last};
+        final bothRows = plays.containsKey(me) && plays.length > 1;
+        final height = bothRows ? (bounds.maxHeight - 6) / 2 : bounds.maxHeight;
+        return Stack(
+          children: [
+            for (final item in plays.entries)
+              _playedCards(
+                item.value,
+                item.key,
+                opponents,
+                moves[item.key],
+                motion,
+                bounds.maxWidth,
+                height,
+                current: item.key == actor,
+                previousTrick: previousTrick,
+                separateOpponents:
+                    plays.keys.where((id) => id != me).length > 1,
+              ),
+            if (!previousTrick &&
+                last['bomb'] == true &&
+                motion != Duration.zero)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Align(
+                    alignment: const Alignment(0, -.30),
+                    child: TweenAnimationBuilder<double>(
+                      key: ValueKey((
+                        'bomb',
+                        actor,
+                        (last['cards'] as List).firstOrNull?['id'],
+                      )),
+                      tween: Tween(begin: 0, end: 1),
+                      duration: const Duration(milliseconds: 720),
+                      builder: (context, phase, child) => Opacity(
+                        opacity: math
+                            .min(phase * 8, (1 - phase) * 3)
+                            .clamp(0.0, 1.0),
+                        child: Transform.scale(
+                          scale: .9 + phase * .18,
+                          child: child,
                         ),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: const Color(0xf23c3022),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: _gold),
+                      ),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xf23c3022),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: _gold),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
                           ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 4,
-                            ),
-                            child: Text(
-                              '${last['label']} ×2',
-                              style: const TextStyle(
-                                color: _gold,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                              ),
+                          child: Text(
+                            '${last['label']} ×${last['bombMultiplier'] ?? 2}',
+                            style: const TextStyle(
+                              color: _gold,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w900,
                             ),
                           ),
                         ),
@@ -1320,10 +1707,10 @@ class _CardTableState extends State<CardTable> {
                     ),
                   ),
                 ),
-            ],
-          );
-        },
-      ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -1485,6 +1872,24 @@ class _CardTableState extends State<CardTable> {
     );
   }
 
+  Widget _landlordBadge() => const DecoratedBox(
+    decoration: BoxDecoration(
+      color: Color(0xffffd990),
+      borderRadius: BorderRadius.all(Radius.circular(4)),
+    ),
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      child: Text(
+        '地主',
+        style: TextStyle(
+          color: Color(0xff49300e),
+          fontSize: 10,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    ),
+  );
+
   Widget _handLine(
     int count,
     CardMove? move,
@@ -1499,13 +1904,16 @@ class _CardTableState extends State<CardTable> {
       spacing: 6,
       children: [
         Text(
-          '我 · $count 张${you == view['landlord'] ? ' · 地主' : ''}',
+          '我 · $count 张',
           style: const TextStyle(
             color: _gold,
             fontSize: 12,
             fontWeight: FontWeight.w700,
           ),
         ),
+        if (you == view['landlord']) _landlordBadge(),
+        if (_forceOut)
+          const Text('强制出牌', style: TextStyle(color: _gold, fontSize: 12)),
         if (move != null) _moveTag(move),
         if (chosen > 0) ...[
           Text(
@@ -1612,10 +2020,10 @@ class _CardTableState extends State<CardTable> {
         ),
         OutlinedButton(
           style: quiet,
-          onPressed: blocked || coaching?['pending'] == true
+          onPressed: blocked
               ? null
               : () => session.act('aiHint', {'turnVersion': turnVersion}),
-          child: const Text('AI 提示'),
+          child: Text(coaching == null ? 'AI 提示' : '重新生成'),
         ),
         FilledButton(
           style: playStyle,
@@ -1687,10 +2095,65 @@ class _CardTableState extends State<CardTable> {
     );
   }
 
-  Widget _seat(RoomJson? player, CardMove? move) {
+  Widget _opponentsStrip(
+    List<RoomJson?> opponents,
+    Map<int, CardMove> moves, {
+    required double tableWidth,
+    required bool compact,
+  }) {
+    final maxPerRow = math.max(2, (tableWidth / 76).floor());
+    final rowCount = opponents.length <= maxPerRow
+        ? 1
+        : (opponents.length / maxPerRow).ceil();
+    final perRow = (opponents.length / rowCount).ceil();
+    final rows = [
+      for (var i = 0; i < opponents.length; i += perRow)
+        opponents.sublist(i, math.min(i + perRow, opponents.length)),
+    ];
+    final multiRow = rows.length > 1;
+    final gap = compact || multiRow ? 4.0 : 8.0;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      spacing: 4,
+      children: [
+        for (final row in rows)
+          Row(
+            spacing: gap,
+            children: [
+              for (final (index, player) in row.indexed)
+                Expanded(
+                  child: Align(
+                    alignment: multiRow
+                        ? Alignment.center
+                        : row.length == 1
+                        ? Alignment.center
+                        : index == 0
+                        ? Alignment.centerLeft
+                        : index == row.length - 1
+                        ? Alignment.centerRight
+                        : Alignment.center,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: multiRow ? double.infinity : 172,
+                      ),
+                      child: _seat(
+                        player,
+                        moves[player?['id']],
+                        compact: multiRow || compact,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _seat(RoomJson? player, CardMove? move, {bool compact = false}) {
     if (player == null) {
-      return const SizedBox(
-        height: 37,
+      return SizedBox(
+        height: compact ? 33 : 37,
         child: Center(
           child: Text(
             '空座',
@@ -1710,9 +2173,7 @@ class _CardTableState extends State<CardTable> {
         ? 'API 托管'
         : '本地托管';
     final called = view['phase'] == 'bidding' ? player['called'] as int? : null;
-    final caption = landlord
-        ? '地主'
-        : called == null
+    final caption = called == null
         ? null
         : called == 0
         ? '不叫'
@@ -1721,7 +2182,7 @@ class _CardTableState extends State<CardTable> {
         : '$called 分';
     return Semantics(
       label:
-          '$name ${player['cards']} 张${remoteAuto ? '，$autoLabel中' : ''}${move == null ? '' : '，${move.label}'}',
+          '$name${landlord ? '，地主' : ''} ${player['cards']} 张${remoteAuto ? '，$autoLabel中' : ''}${move == null ? '' : '，${move.label}'}',
       button: true,
       child: Material(
         color: tomato
@@ -1742,7 +2203,7 @@ class _CardTableState extends State<CardTable> {
           onTap: blocked ? null : () => _seatMenu(player),
           borderRadius: BorderRadius.circular(13),
           child: SizedBox(
-            height: 43,
+            height: compact ? 37 : 43,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5),
               child: LayoutBuilder(
@@ -1788,7 +2249,16 @@ class _CardTableState extends State<CardTable> {
                               height: 1.1,
                             ),
                           ),
-                          if (move != null)
+                          if (landlord)
+                            Row(
+                              spacing: 3,
+                              children: [
+                                _landlordBadge(),
+                                if (move != null && limits.maxWidth >= 108)
+                                  Flexible(child: _moveTag(move)),
+                              ],
+                            )
+                          else if (move != null)
                             _moveTag(move)
                           else if (caption != null)
                             Text(
@@ -1815,7 +2285,7 @@ class _CardTableState extends State<CardTable> {
                           vertical: 2,
                         ),
                         child: Text(
-                          remoteAuto
+                          remoteAuto && limits.maxWidth >= 136
                               ? '$autoLabel · ${player['cards']}'
                               : '${player['cards']}',
                           style: const TextStyle(
@@ -1837,6 +2307,16 @@ class _CardTableState extends State<CardTable> {
   }
 
   void _seatMenu(RoomJson player) {
+    final hands = _debug?['hands'] as RoomJson?;
+    final seat = player['id'] as int;
+    if (_debug?['gui'] == true) {
+      unawaited(_showCheats(seat: seat));
+      return;
+    }
+    if (hands?.containsKey('$seat') == true) {
+      unawaited(_showDebugHand(seat, player['name'] as String));
+      return;
+    }
     showDialog<void>(
       context: context,
       builder: (context) => SimpleDialog(
@@ -1869,48 +2349,329 @@ class _CardTableState extends State<CardTable> {
     );
   }
 
-  void _showChat() {
-    showDialog<void>(
-      context: context,
-      builder: (context) => ListenableBuilder(
-        listenable: session,
-        builder: (context, _) {
-          final history =
-              (session.view?['events'] as List?)?.cast<RoomJson>() ?? [];
-          return AlertDialog(
-            scrollable: true,
-            title: const Text('牌桌消息'),
-            content: SizedBox(
-              width: 380,
-              child: Column(
-                spacing: 8,
-                children: [
-                  SizedBox(
-                    height: (MediaQuery.sizeOf(context).height * .30).clamp(
-                      68.0,
-                      155.0,
+  Future<void> _showChat() async {
+    if (_chatVisible) return;
+    setState(() {
+      _chatVisible = _chatReading = true;
+      _unreadChat = 0;
+    });
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _CardChatDialog(
+          session: session,
+          onReading: (reading) {
+            if (!mounted) return;
+            setState(() {
+              _chatReading = reading;
+              if (reading) _unreadChat = 0;
+            });
+          },
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _chatVisible = _chatReading = false);
+    }
+  }
+}
+
+String _chatSpeaker(RoomJson message, List<RoomJson> people) {
+  final speaker =
+      message['sender'] as String? ??
+      people
+              .where((person) => person['id'] == message['from'])
+              .firstOrNull?['name']
+          as String? ??
+      '玩家';
+  return message['replyTo'] == null || message['from'] == null
+      ? speaker
+      : '$speaker（AI）';
+}
+
+List<RoomJson> _chatMessages(RoomJson? view) {
+  final chat = view?['chat'] as RoomJson?;
+  if (chat?['messages'] case final List messages) {
+    return messages.cast<RoomJson>();
+  }
+  return (view?['events'] as List? ?? const [])
+      .cast<RoomJson>()
+      .where((event) => event['kind'] == 'chat')
+      .toList();
+}
+
+class _CardChatDialog extends StatefulWidget {
+  const _CardChatDialog({required this.session, required this.onReading});
+
+  final CardSession session;
+  final ValueChanged<bool> onReading;
+
+  @override
+  State<_CardChatDialog> createState() => _CardChatDialogState();
+}
+
+class _CardChatDialogState extends State<_CardChatDialog> {
+  final _draft = TextEditingController();
+  final _scroll = ScrollController();
+  bool _system = false;
+  int _readThrough = 0;
+  String? _error;
+
+  CardSession get _session => widget.session;
+  bool get _blocked => _session.working || _session.awaitingGit;
+
+  Future<void> _act(String action, RoomJson data) async {
+    if (_blocked) return;
+    setState(() => _error = null);
+    await _session.act(action, data);
+    if (mounted) setState(() => _error = _session.error);
+  }
+
+  Future<void> _send() async {
+    final text = _draft.text.trim();
+    if (text.isEmpty || _blocked) return;
+    await _act('chat', {'text': text});
+    if (!mounted || _error != null) return;
+    if (_draft.text.trim() == text) _draft.clear();
+    if (_scroll.hasClients) {
+      _scroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 170),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _draft.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: _session,
+    builder: (context, _) {
+      final view = _session.view;
+      final events = (view?['events'] as List? ?? const []).cast<RoomJson>();
+      final people = (view?['people'] as List? ?? const []).cast<RoomJson>();
+      final messages = _chatMessages(view);
+      final history = _system
+          ? events.where((event) => event['kind'] != 'chat').toList()
+          : messages;
+      final byId = {for (final message in messages) message['id']: message};
+      if (!_system) _readThrough = messages.lastOrNull?['id'] as int? ?? 0;
+      final unread = _system
+          ? messages
+                .where(
+                  (message) =>
+                      (message['id'] as int) > _readThrough &&
+                      message['from'] != view?['you'],
+                )
+                .length
+          : 0;
+      final chat = view?['chat'] as RoomJson?;
+      final status = chat?['status'] as RoomJson?;
+      final queued = chat?['queued'] as int? ?? 0;
+      final source = byId[status?['source']];
+      final host = view != null && view['host'] == view['you'];
+      final aiOn = chat?['enabled'] == true;
+      final available = chat?['available'] == true;
+      final colors = Theme.of(context).colorScheme;
+      final retry =
+          status?['error'] != null &&
+          available &&
+          aiOn &&
+          (host || source?['from'] == view?['you']);
+      final media = MediaQuery.of(context);
+      final height = media.size.height - media.viewInsets.vertical;
+      final compact = height < 310;
+      final tabs = SegmentedButton<bool>(
+        style: compact
+            ? const ButtonStyle(visualDensity: VisualDensity.compact)
+            : null,
+        showSelectedIcon: false,
+        segments: [
+          ButtonSegment(
+            value: false,
+            icon: const Icon(Icons.chat_bubble_outline),
+            label: Text(unread == 0 ? '聊天' : '聊天 · $unread'),
+          ),
+          const ButtonSegment(
+            value: true,
+            icon: Icon(Icons.notes),
+            label: Text('系统'),
+          ),
+        ],
+        selected: {_system},
+        onSelectionChanged: (value) {
+          setState(() => _system = value.single);
+          widget.onReading(!_system);
+        },
+      );
+      return Dialog(
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: compact ? 4 : 10,
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          width: 490,
+          height: 540,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 17, right: 6),
+                child: Row(
+                  children: [
+                    if (compact) ...[
+                      tabs,
+                      const Spacer(),
+                    ] else
+                      Expanded(
+                        child: Text(
+                          '牌桌消息',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
                     ),
-                    child: ListView(
+                  ],
+                ),
+              ),
+              if (!compact)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Align(alignment: Alignment.centerLeft, child: tabs),
+                ),
+              const SizedBox(height: 6),
+              if (!_system && chat != null && height >= 200)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 15),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.smart_toy_outlined, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          !available
+                              ? 'AI 回复 · 房主需启用电脑 API'
+                              : aiOn
+                              ? 'AI 回复已开启'
+                              : 'AI 回复已关闭',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      if (host)
+                        Semantics(
+                          label: 'AI 回复',
+                          child: Switch(
+                            value: aiOn,
+                            onChanged: _blocked
+                                ? null
+                                : (value) => _act('chatAi', {'enabled': value}),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              const Divider(height: 1),
+              Expanded(
+                child: history.isEmpty
+                    ? Center(
+                        child: Text(
+                          _system ? '暂无系统记录' : '还没有消息，打个招呼吧',
+                          style: TextStyle(color: colors.onSurfaceVariant),
+                        ),
+                      )
+                    : ListView.builder(
+                        key: ValueKey(_system),
+                        controller: _system ? null : _scroll,
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        itemCount: history.length,
+                        itemBuilder: (context, index) {
+                          final event = history[history.length - 1 - index];
+                          if (_system) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Text(
+                                event['text'] as String,
+                                style: TextStyle(
+                                  color: colors.onSurfaceVariant,
+                                ),
+                              ),
+                            );
+                          }
+                          return _ChatBubble(
+                            event: event,
+                            sender: _chatSpeaker(event, people),
+                            mine: event['from'] == view?['you'],
+                            quoted: byId[event['replyTo']]?['text'] as String?,
+                          );
+                        },
+                      ),
+              ),
+              if (!_system && status != null && height >= 155)
+                Semantics(
+                  liveRegion: true,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    child: Row(
                       children: [
-                        for (final event in history.reversed.take(24))
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
-                            child: Text(
-                              event['kind'] == 'chat'
-                                  ? '${_person(event['from'])} · ${event['text']}'
-                                  : event['text'] as String,
-                            ),
+                        if (status['pending'] == true)
+                          const SizedBox.square(
+                            dimension: 13,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        else
+                          Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: colors.error,
+                          ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            status['pending'] == true
+                                ? 'AI 正在回复…${queued > 0 ? ' · $queued 条排队' : ''}'
+                                : status['error'] as String,
+                          ),
+                        ),
+                        if (retry)
+                          TextButton(
+                            onPressed: _blocked
+                                ? null
+                                : () => _act('retryChatAi', {
+                                    'source': status['source'],
+                                  }),
+                            child: const Text('重试'),
                           ),
                       ],
                     ),
                   ),
-                  Row(
+                ),
+              if (_error case final error?)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Text(error, style: TextStyle(color: colors.error)),
+                ),
+              if (!_system)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 12, 10),
+                  child: Row(
                     children: [
                       Expanded(
                         child: TextField(
-                          controller: _chat,
-                          enabled: !blocked,
-                          onSubmitted: (_) => _sendChat(),
+                          controller: _draft,
+                          onSubmitted: (_) => _send(),
+                          textInputAction: TextInputAction.send,
                           inputFormatters: [
                             LengthLimitingTextInputFormatter(120),
                           ],
@@ -1920,24 +2681,101 @@ class _CardTableState extends State<CardTable> {
                           ),
                         ),
                       ),
-                      IconButton(
-                        tooltip: '发送',
-                        onPressed: blocked ? null : _sendChat,
-                        icon: const Icon(Icons.send),
+                      const SizedBox(width: 8),
+                      ListenableBuilder(
+                        listenable: _draft,
+                        builder: (context, _) => IconButton.filled(
+                          tooltip: '发送',
+                          onPressed: _blocked || _draft.text.trim().isEmpty
+                              ? null
+                              : _send,
+                          icon: const Icon(Icons.send),
+                        ),
                       ),
                     ],
                   ),
-                ],
+                ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _ChatBubble extends StatelessWidget {
+  const _ChatBubble({
+    required this.event,
+    required this.sender,
+    required this.mine,
+    this.quoted,
+  });
+
+  final RoomJson event;
+  final String sender;
+  final bool mine;
+  final String? quoted;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final ai = event['replyTo'] != null;
+    final millis = event['time'] as int?;
+    final time = millis == null
+        ? null
+        : TimeOfDay.fromDateTime(DateTime.fromMillisecondsSinceEpoch(millis))
+              .format(context);
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 345),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: mine
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              Text(
+                [if (ai) '✦', mine ? '我' : sender, ?time].join('  '),
+                style: theme.textTheme.labelSmall,
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('关闭'),
+              const SizedBox(height: 2),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: mine
+                      ? colors.primaryContainer
+                      : ai
+                      ? colors.tertiaryContainer
+                      : colors.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (quoted case final quote?)
+                        Text(
+                          '↳ $quote',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      SelectableText(event['text'] as String),
+                      if (event['aiSkipped'] case final String skipped)
+                        Text(skipped, style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+                ),
               ),
             ],
-          );
-        },
+          ),
+        ),
       ),
     );
   }
@@ -2002,6 +2840,86 @@ typedef _FanMetrics = ({
   double lift,
   List<_CardSlot> slots,
 });
+
+class _AiWaitLabel extends StatefulWidget {
+  const _AiWaitLabel({super.key, required this.stage, required this.seconds});
+
+  final String? stage;
+  final int seconds;
+
+  @override
+  State<_AiWaitLabel> createState() => _AiWaitLabelState();
+}
+
+class _AiWaitLabelState extends State<_AiWaitLabel> {
+  Timer? _timer;
+  late int _seconds = widget.seconds;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  @override
+  void didUpdateWidget(_AiWaitLabel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.seconds != oldWidget.seconds ||
+        widget.stage != oldWidget.stage) {
+      _seconds = widget.seconds;
+      _start();
+    }
+  }
+
+  void _start() {
+    _timer?.cancel();
+    if (_seconds <= 0) return;
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      setState(() => _seconds--);
+      if (_seconds == 0) timer.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final phase = switch (widget.stage) {
+      'preparing' => '正在准备牌面',
+      'connecting' => '正在连接模型',
+      'receiving' => '正在接收结果',
+      'retrying' => '模型未给出答案，正在重试',
+      _ => '模型正在分析',
+    };
+    return Semantics(
+      liveRegion: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xff153b32),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 9),
+          child: Text.rich(
+            TextSpan(
+              text: phase,
+              children: [
+                TextSpan(
+                  text: _seconds > 0 ? ' · 剩余最多 $_seconds 秒' : ' · 正在结束等待',
+                ),
+              ],
+            ),
+            style: const TextStyle(color: Color(0xfff2dbac), fontSize: 12),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _HandStrip extends StatefulWidget {
   const _HandStrip({

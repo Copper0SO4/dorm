@@ -250,6 +250,9 @@
           toolState.bombHistory.unshift(val + ' ↓');
         }
         rerender();
+        if (matchMedia('(pointer: fine)').matches && !toolState.bombExploded) {
+          document.querySelector('input[name="guess"]')?.focus();
+        }
       };
       const form = node('form', {class: 'actions'}, guessInput, node('button', {type: 'submit', class: 'primary'}, '报数'));
       form.addEventListener('submit', (e) => {
@@ -351,6 +354,9 @@
           toolState.drawResult = {kind: 'draw', picked: pool.slice(0, count)};
         }
         rerender();
+        if (matchMedia('(pointer: fine)').matches && !toolState.bombExploded) {
+          document.querySelector('input[name="guess"]')?.focus();
+        }
       };
       return node('div', {class: 'stack'},
         tabBar,
@@ -397,10 +403,16 @@
           node('strong', {}, toolState.rollResult)
         ),
         node('div', {class: 'actions'},
-          button('掷 6 面骰子', () => {
+          button('掷 1 颗骰子', () => {
             toolState.rollResult = '🎲 骰子结果：' + (1 + randomInt(6)) + ' 点';
             rerender();
           }, 'primary'),
+          button('掷 2 颗骰子', () => {
+            const a = 1 + randomInt(6);
+            const b = 1 + randomInt(6);
+            toolState.rollResult = '🎲 双骰结果：' + a + ' + ' + b + ' = ' + (a + b) + ' 点';
+            rerender();
+          }),
           button('抛硬币', () => {
             toolState.rollResult = '🪙 硬币结果：' + (randomInt(2) === 0 ? '正面' : '反面');
             rerender();

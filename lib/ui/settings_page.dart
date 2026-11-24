@@ -316,6 +316,49 @@ class _SettingsPageState extends State<_SettingsPage> {
         onChanged: (enabled) =>
             _updatePreferences((value) => value.copyWith(einkMode: enabled)),
       ),
+      const SizedBox(height: 8),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('界面缩放', style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 2),
+                Text(
+                  '75% - 150%，PC 端支持 Ctrl +/- 与 Ctrl 0',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: '缩小界面',
+            onPressed: preferences.uiScale <= minUiScale + 0.001
+                ? null
+                : () => controller.adjustUiScale(-1),
+            icon: const Icon(Icons.remove_circle_outline),
+          ),
+          Tooltip(
+            message: '重置为 100%',
+            child: TextButton(
+              onPressed: (preferences.uiScale - 1.0).abs() < 0.001
+                  ? null
+                  : controller.resetUiScale,
+              child: Text('${(preferences.uiScale * 100).round()}%'),
+            ),
+          ),
+          IconButton(
+            tooltip: '放大界面',
+            onPressed: preferences.uiScale >= maxUiScale - 0.001
+                ? null
+                : () => controller.adjustUiScale(1),
+            icon: const Icon(Icons.add_circle_outline),
+          ),
+        ],
+      ),
     ],
   );
 

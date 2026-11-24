@@ -23,16 +23,18 @@ class DormController extends ChangeNotifier {
   final DormDataLocation? dataLocation;
   DormLanServer? _lan;
   CardSession? _cards;
+  ApiBotAdvisor? _cardAdvisor;
   CardSession get cards =>
       _cards ??= CardSession(() => cloud?.cardMailbox, rooms: _cardRooms());
 
   CardRooms _cardRooms() {
-    final engine = ApiBotAdvisor(
+    final engine = _cardAdvisor ??= ApiBotAdvisor(
       () => BotProfile.fromPreferences(repository.preferences),
     );
     return CardRooms(
       advisor: engine.choose,
       coach: engine.coach,
+      chat: engine.replyChat,
       apiEnabled: () =>
           BotProfile.fromPreferences(repository.preferences).usable,
     );
@@ -51,6 +53,18 @@ class DormController extends ChangeNotifier {
     repository.savePreferences(update(repository.preferences));
     notifyListeners();
   }
+
+  void setUiScale(double scale) {
+    final clamped = clampUiScale(scale);
+    if ((repository.preferences.uiScale - clamped).abs() < 0.001) return;
+    updatePreferences((prefs) => prefs.copyWith(uiScale: clamped));
+  }
+
+  void adjustUiScale(int steps) {
+    setUiScale(repository.preferences.uiScale + steps * uiScaleStep);
+  }
+
+  void resetUiScale() => setUiScale(1.0);
 
   Future<void> resetFactory({
     bool keepRepository = false,
@@ -79,6 +93,7 @@ class DormController extends ChangeNotifier {
   @override
   void dispose() {
     _cards?.dispose();
+    _cardAdvisor?.dispose();
     _lan?.dispose();
     cloud?.dispose();
     super.dispose();
@@ -95,6 +110,27 @@ void notify(BuildContext context, String text) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(content: Text(text)));
+}
+
+class DormUiScaleScope extends InheritedWidget {
+  const DormUiScaleScope({
+    super.key,
+    required this.scale,
+    required this.onAdjust,
+    required this.onReset,
+    required super.child,
+  });
+
+  final double scale;
+  final ValueChanged<int> onAdjust;
+  final VoidCallback onReset;
+
+  static DormUiScaleScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<DormUiScaleScope>();
+
+  @override
+  bool updateShouldNotify(DormUiScaleScope oldWidget) =>
+      (scale - oldWidget.scale).abs() > 0.001;
 }
 
 void perform(

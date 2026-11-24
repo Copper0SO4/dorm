@@ -59,6 +59,23 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   RegisterCardAudio(flutter_controller_->engine());
+  flutter::MethodChannel<flutter::EncodableValue> card_window(
+      flutter_controller_->engine()->messenger(), "dorm/cards/window",
+      &flutter::StandardMethodCodec::GetInstance());
+  card_window.SetMethodCallHandler([this](const auto& call, auto result) {
+    if (call.method_name() != "fullscreen") {
+      result->NotImplemented();
+      return;
+    }
+    const auto* enabled = call.arguments() == nullptr
+                              ? nullptr
+                              : std::get_if<bool>(call.arguments());
+    if (enabled == nullptr || !SetCardFullscreen(*enabled)) {
+      result->Error("fullscreen", "Unable to change the card window mode");
+      return;
+    }
+    result->Success(flutter::EncodableValue(card_fullscreen_));
+  });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -70,6 +87,45 @@ bool FlutterWindow::OnCreate() {
   // window is shown. It is a no-op if the first frame hasn't completed yet.
   flutter_controller_->ForceRedraw();
 
+  return true;
+}
+
+bool FlutterWindow::SetCardFullscreen(bool enabled) {
+  if (card_fullscreen_ == enabled) {
+    return true;
+  }
+  HWND window = GetHandle();
+  if (window == nullptr) {
+    return false;
+  }
+  constexpr UINT frame_flags = SWP_NOZORDER | SWP_NOOWNERZORDER |
+                               SWP_NOACTIVATE | SWP_FRAMECHANGED;
+  if (enabled) {
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    windowed_placement_.length = sizeof(windowed_placement_);
+    if (!GetWindowPlacement(window, &windowed_placement_) ||
+        !GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                        &monitor)) {
+      return false;
+    }
+    windowed_style_ = GetWindowLongPtr(window, GWL_STYLE);
+    SetWindowLongPtr(window, GWL_STYLE, windowed_style_ & ~WS_OVERLAPPEDWINDOW);
+    const RECT& bounds = monitor.rcMonitor;
+    if (!SetWindowPos(window, nullptr, bounds.left, bounds.top,
+                      bounds.right - bounds.left, bounds.bottom - bounds.top,
+                      frame_flags)) {
+      SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
+      SetWindowPlacement(window, &windowed_placement_);
+      return false;
+    }
+  } else {
+    SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
+    SetWindowPlacement(window, &windowed_placement_);
+    SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                 frame_flags | SWP_NOMOVE | SWP_NOSIZE);
+  }
+  card_fullscreen_ = enabled;
   return true;
 }
 

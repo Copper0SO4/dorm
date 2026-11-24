@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -8,6 +9,8 @@ import '../domain/ledger.dart';
 import 'bot_profile.dart';
 import 'cards.dart';
 import 'local_bot.dart';
+
+part 'card_room_debug.dart';
 
 const _alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 final roomCodePattern = RegExp(r'^[2-9A-HJ-NP-Z]{7}$');
@@ -20,6 +23,7 @@ class CardRooms extends ChangeNotifier {
     this.botDelay = const Duration(milliseconds: 650),
     this.advisor,
     this.coach,
+    this.chat,
     this.apiEnabled,
   }) : _random = random ?? Random.secure();
 
@@ -27,12 +31,20 @@ class CardRooms extends ChangeNotifier {
   final Duration botDelay;
   final BotAdvisor? advisor;
   final BotCoach? coach;
+  final BotChat? chat;
   final bool Function()? apiEnabled;
   final _rooms = <String, _CardRoom>{};
   final _bots =
       <String, ({int revision, Timer timer, Completer<void> cancel})>{};
 
+  final _chatQueues = <String, _BotChatQueue>{};
+
   bool get _apiReady => advisor != null && (apiEnabled?.call() ?? true);
+  bool get _chatAvailable => chat != null && (apiEnabled?.call() ?? true);
+  bool _canReply(_CardRoom room) => _chatAvailable && room._chatEnabled;
+
+  static bool _isApiBot(_Person person) =>
+      person.bot && person.botMode == BotMode.api;
 
   void syncCapabilities() {
     for (final room in _rooms.values) {
@@ -90,8 +102,15 @@ class CardRooms extends ChangeNotifier {
     final room = _room(seat.room);
     final player = room.player(seat.token);
     if (since == room.version) return {'version': room.version};
-    return room.view(player, apiAvailable: _apiReady);
+    return _view(room, player);
   }
+
+  RoomJson _view(_CardRoom room, _Person person) => room.view(
+    person,
+    apiAvailable: _apiReady,
+    chatAvailable: _chatAvailable,
+    queuedReplies: _chatQueues[room.code]?.messages.length ?? 0,
+  );
 
   List<RoomJson> options(CardSeat seat, RoomJson data) {
     final room = _room(seat.room);
@@ -108,7 +127,7 @@ class CardRooms extends ChangeNotifier {
       for (final play in hintPlays(
         player.cards,
         room.wild,
-        room.last,
+        room._canForceOut(player) ? null : room.last,
         rules: room.rules,
       ))
         play.toJson(),
@@ -123,6 +142,8 @@ class CardRooms extends ChangeNotifier {
       room.people.remove(player);
       if (room.people.every((entry) => entry.bot)) {
         _cancelBot(room.code);
+        _cancelChat(room.code);
+        room._cancelHint();
         _rooms.remove(room.code);
         notifyListeners();
       } else {
@@ -132,38 +153,213 @@ class CardRooms extends ChangeNotifier {
       }
       return {'left': true};
     }
+    if (action == 'skipBotWait') {
+      if (room.current != player) room.requireHost(player);
+      if (!room.thinking || data['turnVersion'] != room.turnVersion) {
+        throw const InputException('当前回合已变化');
+      }
+      _cancelBot(room.code);
+      room._botClock = null;
+      room._skipApiTurn = room.turnVersion;
+      room.event('botTurnFallback', '已取消等待，本手由本地电脑处理');
+      _changed(room);
+      return _view(room, player);
+    }
+    if (action == 'cancelAiHint') {
+      room._requireTurn(player, data, _Phase.playing);
+      if (room._hintFor(player)?['pending'] == true) {
+        room._cancelHint();
+        room._hints.remove(player.id);
+        _publish(room);
+      }
+      return _view(room, player);
+    }
     if (action == 'aiHint') {
       room._requireTurn(player, data, _Phase.playing);
       final hint = coach;
       if (hint == null || !(apiEnabled?.call() ?? true)) {
         throw const InputException('请房主先启用电脑 API');
       }
-      if (room._hintFor(player)?['pending'] != true) {
-        unawaited(_advise(room, player, hint));
+      unawaited(_advise(room, player, hint));
+      return _view(room, player);
+    }
+    if (action == 'chatAi') {
+      room.requireHost(player);
+      final enabled = data['enabled'];
+      if (enabled is! bool) throw const InputException('请选择是否启用 AI 回复');
+      room._chatOverride = enabled;
+      if (!enabled) room._chatStatus = null;
+      _changed(room);
+      return _view(room, player);
+    }
+    if (action == 'retryChatAi') {
+      final status = room._chatStatus;
+      final source = room._roundChat
+          .where((entry) => entry['id'] == data['source'])
+          .firstOrNull;
+      if (source == null ||
+          status?['source'] != source['id'] ||
+          status?['error'] == null ||
+          _chatQueues.containsKey(room.code) ||
+          (source['from'] != player.id && room.people.first != player)) {
+        throw const InputException('这条 AI 回复目前无法重试');
       }
-      return room.view(player, apiAvailable: _apiReady);
+      if (!_canReply(room)) throw const InputException('AI 回复目前不可用');
+      _queueChat(room, source);
+      return _view(room, player);
     }
     room.act(player, action, data, _random, apiReady: _apiReady);
+    final message = action == 'chat' ? room.events.last : null;
     _changed(room);
-    return room.view(player, apiAvailable: _apiReady);
+    if (message != null) _queueChat(room, message);
+    return _view(room, player);
+  }
+
+  void _queueChat(_CardRoom room, RoomJson message) {
+    if (!_canReply(room)) return;
+    final existing = _chatQueues[room.code];
+    if (existing != null) {
+      if (existing.messages.length >= 3) {
+        message['aiSkipped'] = 'AI 回复队列已满';
+      } else {
+        existing.messages.addLast(message);
+      }
+      _publish(room);
+      return;
+    }
+    final queue = _BotChatQueue(room._chatEpoch)..messages.addLast(message);
+    _chatQueues[room.code] = queue;
+    unawaited(_replyToChat(room, queue, chat!));
+  }
+
+  Future<void> _replyToChat(
+    _CardRoom room,
+    _BotChatQueue queue,
+    BotChat reply,
+  ) async {
+    bool current() =>
+        _rooms[room.code] == room &&
+        _chatQueues[room.code] == queue &&
+        queue.epoch == room._chatEpoch &&
+        _canReply(room);
+    try {
+      while (current() && queue.messages.isNotEmpty) {
+        final source = queue.messages.removeFirst();
+        if (!room._roundChat.contains(source) ||
+            !room.people.any((person) => person.id == source['from'])) {
+          continue;
+        }
+        final bots = room.people.where(_isApiBot).toList();
+        final last = bots.indexWhere((bot) => bot.id == room._lastChatBot);
+        final bot = bots.isEmpty ? null : bots[(last + 1) % bots.length];
+        room._lastChatBot = bot?.id;
+        final cancel = Completer<void>();
+        queue.active = cancel;
+        final sourceId = source['id'] as int;
+        room._chatStatus = {'source': sourceId, 'pending': true};
+        _publish(room);
+        String? answer;
+        String? error;
+        try {
+          answer = await Future.any<String?>([
+            reply(
+              room._botTurn(
+                bot,
+                cancelled: cancel.future,
+                chatThrough: sourceId,
+              ),
+            ),
+            cancel.future.then((_) => null),
+          ]).timeout(botChatTimeout);
+        } on BotChatFailure catch (failure) {
+          error = failure.message;
+        } on TimeoutException {
+          error = 'AI 回复超时';
+        } catch (_) {
+          error = 'AI 回复暂不可用';
+        } finally {
+          if (!cancel.isCompleted) cancel.complete();
+          queue.active = null;
+        }
+        if (!current()) return;
+        if ((bot != null && !room.people.contains(bot)) ||
+            !room.people.any((person) => person.id == source['from'])) {
+          room._chatStatus = null;
+          _publish(room);
+          continue;
+        }
+        final clean = (answer ?? '')
+            .replaceAll(
+              RegExp(r'[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+'),
+              ' ',
+            )
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        final message = String.fromCharCodes(clean.runes.take(120));
+        if (message.isEmpty) {
+          room._chatStatus = {
+            'source': sourceId,
+            'error': error ?? 'AI 没有返回可显示的消息',
+          };
+        } else {
+          room._chatStatus = null;
+          room._postChat(bot, message, replyTo: sourceId);
+        }
+        _publish(room);
+      }
+    } finally {
+      if (_chatQueues[room.code] == queue) _chatQueues.remove(room.code);
+    }
+  }
+
+  void _cancelChat(String code) {
+    final cancel = _chatQueues.remove(code)?.active;
+    final room = _rooms[code];
+    if (room?._chatStatus?['pending'] == true) room!._chatStatus = null;
+    if (cancel != null && !cancel.isCompleted) cancel.complete();
   }
 
   Future<void> _advise(_CardRoom room, _Person player, BotCoach coach) async {
     final revision = room.turnVersion;
-    final turn = room._botTurn(player);
+    room._cancelHint();
+    final cancel = Completer<void>();
+    final id = ++room._hintSequence;
+    room._activeHint = (
+      revision: revision,
+      cancel: cancel,
+      clock: Stopwatch()..start(),
+    );
     final request = <String, dynamic>{
-      'id': ++room._hintSequence,
+      'id': id,
       'turn': revision,
       'pending': true,
+      'stage': BotProgress.preparing.name,
     };
     room._hints[player.id] = request;
+    final turn = room._botTurn(
+      player,
+      cancelled: cancel.future,
+      hintRequest: id,
+      onProgress: (stage) {
+        if (cancel.isCompleted || room.turnVersion != revision) return;
+        request['stage'] = stage.name;
+        _publish(room);
+      },
+    );
     _publish(room);
     BotAdvice advice;
     try {
-      advice = await coach(
-        turn,
-        List.unmodifiable(room._coachingHistory[player.id] ?? const []),
-      );
+      final earlier = room._coachingHistory[player.id];
+      advice = await Future.any([
+        coach(turn, [
+          if (earlier != null)
+            for (final entry in earlier.entries)
+              if (entry.key != revision) entry.value,
+        ]),
+        cancel.future.then((_) => const BotAdvice.off()),
+      ]).timeout(botDecisionTimeout);
+    } on TimeoutException {
+      advice = const BotAdvice.failed('AI 提示超时，请重新生成');
     } catch (_) {
       advice = const BotAdvice.failed('AI 提示暂不可用');
     }
@@ -173,6 +369,7 @@ class CardRooms extends ChangeNotifier {
         room._hints[player.id] != request) {
       return;
     }
+    room._cancelHint();
     request['pending'] = false;
     final explanation = advice.explanation;
     if (!advice.ready || explanation == null) {
@@ -183,23 +380,28 @@ class CardRooms extends ChangeNotifier {
       if (advice.play case final play?) {
         request['play'] = play.toJson();
       }
-      final history = room._coachingHistory.putIfAbsent(player.id, () => []);
-      if (history.length == 4) history.removeAt(0);
-      history.add(
-        '${advice.pass ? '不出' : advice.play?.label ?? ''}：$explanation',
-      );
+      final history = room._coachingHistory.putIfAbsent(player.id, () => {});
+      history[revision] =
+          '${advice.pass ? '不出' : advice.play?.label ?? ''}：$explanation';
+      if (history.length > 4) history.remove(history.keys.first);
     }
     _publish(room);
   }
 
   void _changed(_CardRoom room) {
+    final chatQueue = _chatQueues[room.code];
+    if (chatQueue != null &&
+        (chatQueue.epoch != room._chatEpoch || !_canReply(room))) {
+      _cancelChat(room.code);
+    }
+    if (room._activeHint?.revision != room.turnVersion) room._cancelHint();
     final pending = _bots[room.code];
     if (pending != null &&
         (pending.revision != room.turnVersion ||
             room.current?.automatic != true ||
             (room.thinking && !_apiReady))) {
       _cancelBot(room.code);
-      room.thinking = false;
+      room._botClock = null;
     }
     _publish(room);
     final bot = room.current;
@@ -213,42 +415,59 @@ class CardRooms extends ChangeNotifier {
         room.turnVersion == revision &&
         bot.automatic;
 
-    timer = Timer(botDelay, () async {
+    final skipApi = room._skipApiTurn == revision;
+    timer = Timer(skipApi ? Duration.zero : botDelay, () async {
       if (!current()) return;
-      final remote = advisor;
-      var applied = false;
-      if (bot.effectiveBotMode == BotMode.api &&
-          remote != null &&
-          !room.apiSuspended &&
-          (apiEnabled?.call() ?? true)) {
-        final turn = room._botTurn(bot, cancelled: cancel.future);
-        room.thinking = true;
-        _publish(room);
-        if (!current()) return;
-        BotAdvice advice;
-        try {
-          advice = await Future.any([
-            remote(turn),
-            cancel.future.then((_) => const BotAdvice.off()),
-          ]).timeout(botDecisionTimeout);
-        } on TimeoutException {
-          advice = const BotAdvice.failed('电脑 API 响应超时', timedOut: true);
-        } catch (_) {
-          advice = const BotAdvice.failed('电脑 API 暂时不可用');
+      try {
+        final remote = advisor;
+        var applied = false;
+        if (bot.effectiveBotMode == BotMode.api &&
+            !skipApi &&
+            remote != null &&
+            !room.apiSuspended &&
+            (apiEnabled?.call() ?? true)) {
+          room._botClock = Stopwatch()..start();
+          room._botStage = BotProgress.preparing;
+          final turn = room._botTurn(
+            bot,
+            cancelled: cancel.future,
+            onProgress: (stage) {
+              if (!current() || !room.thinking) return;
+              room._botStage = stage;
+              _publish(room);
+            },
+          );
+          _publish(room);
+          if (!current()) return;
+          BotAdvice advice;
+          try {
+            advice = await Future.any([
+              remote(turn),
+              cancel.future.then((_) => const BotAdvice.off()),
+            ]).timeout(botDecisionTimeout);
+          } on TimeoutException {
+            advice = const BotAdvice.failed('电脑 API 响应超时', timedOut: true);
+          } catch (_) {
+            advice = const BotAdvice.failed('电脑 API 暂时不可用');
+          }
+          if (!current()) return;
+          room._botClock = null;
+          if (advice.failure case final failure?) {
+            room._noteApi(failure, timedOut: advice.timedOut);
+          }
+          if (advice.ready) {
+            applied = room._applyAdvice(bot, advice, _random);
+            if (!applied) room._noteApi('电脑 API 返回了不可用的动作');
+          }
         }
-        if (!current()) return;
-        room.thinking = false;
-        if (advice.failure case final failure?) {
-          room._noteApi(failure, timedOut: advice.timedOut);
-        }
-        if (advice.ready) {
-          applied = room._applyAdvice(bot, advice, _random);
-          if (!applied) room._noteApi('电脑 API 返回了不可用的动作');
+        if (!applied) await room._localBot(bot, _random, current);
+      } finally {
+        if (_bots[room.code]?.timer == timer) {
+          room._botClock = null;
+          _cancelBot(room.code);
+          _changed(room);
         }
       }
-      if (!applied) room._localBot(bot, _random);
-      _cancelBot(room.code);
-      _changed(room);
     });
     _bots[room.code] = (revision: revision, timer: timer, cancel: cancel);
   }
@@ -276,6 +495,8 @@ class CardRooms extends ChangeNotifier {
     _rooms.removeWhere((code, room) {
       if (now.difference(room.updated) < const Duration(hours: 4)) return false;
       _cancelBot(code);
+      _cancelChat(code);
+      room._cancelHint();
       return true;
     });
   }
@@ -292,9 +513,23 @@ class CardRooms extends ChangeNotifier {
       pending.cancel.complete();
     }
     _bots.clear();
+    for (final code in _chatQueues.keys.toList()) {
+      _cancelChat(code);
+    }
+    for (final room in _rooms.values) {
+      room._cancelHint();
+    }
     _rooms.clear();
     super.dispose();
   }
+}
+
+class _BotChatQueue {
+  _BotChatQueue(this.epoch);
+
+  final int epoch;
+  final messages = Queue<RoomJson>();
+  Completer<void>? active;
 }
 
 enum _Phase { lobby, bidding, playing, finished }
@@ -336,6 +571,10 @@ class _Person {
   int wins = 0;
   int moves = 0;
   CardMove? lastMove;
+  bool _forceOut = false;
+  bool _debugGui = false;
+  int? _debugTarget;
+  final _inspectSeats = <int>{};
 
   RoomJson publicView() => {
     'id': id,
@@ -367,13 +606,23 @@ class _CardRoom {
   int version = 0;
   int turnVersion = 0;
   int deal = 0;
-  bool thinking = false;
+  int _debugSerial = 0;
+  Stopwatch? _botClock;
+  BotProgress _botStage = BotProgress.preparing;
+  bool get thinking => _botClock != null;
+  int? _skipApiTurn;
   int apiTimeouts = 0;
   bool get apiSuspended => apiTimeouts >= botTimeoutLimit;
   final _botLog = <String>[];
-  final _coachingHistory = <int, List<String>>{};
+  final _coachingHistory = <int, Map<int, String>>{};
+  ({int revision, Completer<void> cancel, Stopwatch clock})? _activeHint;
   final _hints = <int, RoomJson>{};
   int _hintSequence = 0;
+
+  void _cancelHint() {
+    _activeHint?.cancel.complete();
+    _activeHint = null;
+  }
 
   RoomJson? _hintFor(_Person person) {
     final hint = _hints[person.id];
@@ -382,6 +631,13 @@ class _CardRoom {
 
   int _nextPerson = 0;
   int _eventId = 0;
+  int? _lastChatBot;
+  int _chatEpoch = 0;
+  final _roundChat = Queue<RoomJson>();
+  final _chatHistory = Queue<RoomJson>();
+  bool? _chatOverride;
+  RoomJson? _chatStatus;
+  bool get _chatEnabled => _chatOverride ?? people.any(CardRooms._isApiBot);
   var phase = _Phase.lobby;
   List<PlayingCard> bottom = [];
   Set<int> wild = {};
@@ -394,7 +650,7 @@ class _CardRoom {
   int topBid = 0;
   int bids = 0;
   int passes = 0;
-  int multiplier = 1;
+  BigInt multiplier = BigInt.one;
   int bombCount = 0;
   int completedRounds = 0;
   int redeals = 0;
@@ -419,7 +675,7 @@ class _CardRoom {
       for (var rank = 3; rank <= 17; rank++)
         rank: PlayingCard.copiesPerDeck(rank) * rules.decks,
     };
-    for (final id in seen) {
+    for (final id in seen.where((id) => id < 54 * rules.decks)) {
       final rank = PlayingCard(id).rank;
       counts[rank] = counts[rank]! - 1;
     }
@@ -498,24 +754,65 @@ class _CardRoom {
     if (people.first != person) throw const InputException('只有房主可以执行此操作');
   }
 
-  void event(String kind, String message, {int? from, int? target}) {
+  void _postChat(_Person? sender, String text, {int? replyTo}) {
+    event(
+      'chat',
+      text,
+      from: sender?.id,
+      sender: sender?.name ?? 'AI 助手',
+      replyTo: replyTo,
+    );
+    events.last['time'] = DateTime.now().millisecondsSinceEpoch;
+    if (_chatHistory.length == 80) _chatHistory.removeFirst();
+    _chatHistory.addLast(events.last);
+    if (_roundChat.length == 24) _roundChat.removeFirst();
+    _roundChat.addLast(events.last);
+  }
+
+  void _resetChatContext() {
+    _chatEpoch++;
+    _roundChat.clear();
+    _chatStatus = null;
+  }
+
+  void event(
+    String kind,
+    String message, {
+    int? from,
+    int? target,
+    String? sender,
+    int? replyTo,
+  }) {
     events.add({
       'id': ++_eventId,
       'kind': kind,
       'text': message,
       'from': from,
       'target': target,
+      'sender': ?sender,
+      'replyTo': ?replyTo,
     });
     if (events.length > 48) events.removeAt(0);
   }
 
-  RoomJson view(_Person person, {bool apiAvailable = false}) => {
+  int _botRemaining(Stopwatch clock) => max(
+    0,
+    ((botDecisionTimeout - clock.elapsed).inMilliseconds / 1000).ceil(),
+  );
+
+  RoomJson view(
+    _Person person, {
+    required bool apiAvailable,
+    required bool chatAvailable,
+    required int queuedReplies,
+  }) => {
     'room': code,
     'version': version,
     'turnVersion': turnVersion,
     'phase': phase.name,
     'host': people.first.id,
     'you': person.id,
+    if (people.first == person) 'debug': _debugView(person),
     'apiAvailable': apiAvailable,
     'rules': rules.toJson(),
     'scope': scope,
@@ -541,7 +838,7 @@ class _CardRoom {
     if (_previousTrick case (leader: final actor, play: final played))
       'previousTrick': {'leader': actor, 'play': played.toJson()},
     'winners': winners,
-    'multiplier': multiplier,
+    'multiplier': _scoreValue(multiplier),
     'round': completedRounds + (inProgress ? 1 : 0),
     'rounds': rules.matchRounds,
     'matchComplete': matchComplete,
@@ -555,13 +852,29 @@ class _CardRoom {
           .map((entry) => {'rank': entry.key, 'count': entry.value})
           .toList(),
     'botThinking': thinking,
+    if (_botClock case final clock?)
+      'botProgress': {
+        'stage': _botStage.name,
+        'remaining': _botRemaining(clock),
+      },
     'apiTimeouts': apiTimeouts,
     'apiTimeoutLimit': botTimeoutLimit,
     'apiSuspended': apiSuspended,
     'apiWaitSeconds': botDecisionTimeout.inSeconds,
     if (_hintFor(person) case final hint?)
-      'aiHint': Map<String, dynamic>.of(hint),
+      'aiHint': {
+        ...hint,
+        if (_activeHint case final active? when hint['pending'] == true)
+          'remaining': _botRemaining(active.clock),
+      },
     'result': result,
+    'chat': {
+      'enabled': _chatEnabled,
+      'available': chatAvailable,
+      'queued': queuedReplies,
+      'messages': _chatHistory.map((message) => {...message}).toList(),
+      if (_chatStatus case final status?) 'status': {...status},
+    },
     'events': events.map((event) => Map<String, dynamic>.of(event)).toList(),
   };
 
@@ -573,6 +886,12 @@ class _CardRoom {
     bool apiReady = false,
   }) {
     switch (action) {
+      case 'debug':
+        _debugCommand(person, input);
+      case 'debugRemove':
+        _debugRemove(person, input);
+      case 'debugGui':
+        _debugGuiAction(person, input);
       case 'rules':
         requireHost(person);
         if (inProgress) throw const InputException('牌局进行中');
@@ -672,7 +991,7 @@ class _CardRoom {
           throw const InputException('消息长度为 1 至 120 字');
         }
         person.lastChat = _throttle(person.lastChat, 650);
-        event('chat', raw.trim(), from: person.id);
+        _postChat(person, raw.trim());
       case 'tomato':
         final target = people
             .where((entry) => entry.id == input['target'])
@@ -735,7 +1054,11 @@ class _CardRoom {
 
   void _deal(Random random, {bool repeat = false}) {
     deal++;
-    if (!repeat) apiTimeouts = 0;
+    _debugSerial = 0;
+    if (!repeat) {
+      apiTimeouts = 0;
+      _resetChatContext();
+    }
     _botLog.clear();
     _coachingHistory.clear();
     _hints.clear();
@@ -759,7 +1082,7 @@ class _CardRoom {
     firstCaller = turn = (winner ?? people[random.nextInt(people.length)]).id;
     phase = rules.landlord ? _Phase.bidding : _Phase.playing;
     topBid = bids = passes = 0;
-    multiplier = 1;
+    multiplier = BigInt.one;
     landlord = bidder = leader = null;
     last = null;
     _tablePlays.clear();
@@ -870,7 +1193,12 @@ class _CardRoom {
     final available = {for (final card in person.cards) card.id: card};
     final cards = [for (final id in ids) ?available[id]];
     if (cards.length != ids.length) throw const InputException('只能打出自己的手牌');
-    final selection = inspectCardSelection(cards, wild, last, rules);
+    final selection = inspectCardSelection(
+      cards,
+      wild,
+      _canForceOut(person) ? null : last,
+      rules,
+    );
     if (selection.issue case final issue?) throw InputException(issue);
     return selection.options;
   }
@@ -903,7 +1231,7 @@ class _CardRoom {
     _previousTrick = null;
     turnVersion++;
     if (play.bomb) {
-      multiplier *= 2;
+      multiplier *= play.bombMultiplier;
       bombCount++;
     }
     _playedCards.putIfAbsent(person.id, () => []).addAll(play.cards);
@@ -913,7 +1241,7 @@ class _CardRoom {
           : play.bomb
           ? 'bomb'
           : 'play',
-      '${person.name}打出${play.label}',
+      '${person.name}打出${play.label}${play.bomb ? ' · ×${play.bombMultiplier}' : ''}',
       from: person.id,
     );
     final ranks = play.cards.map((card) => play.ranks[card.id] ?? card.rank);
@@ -942,9 +1270,9 @@ class _CardRoom {
         : !landlordWon && owner.moves == 1
         ? '反春'
         : null;
-    if (spring != null) multiplier *= 2;
+    if (spring != null) multiplier *= BigInt.two;
     final base = owner == null ? 1 : topBid;
-    final score = BigInt.from(base) * BigInt.from(multiplier);
+    final score = BigInt.from(base) * multiplier;
     winners = [
       for (final person in people)
         if (owner == null ? person == first : (person == owner) == landlordWon)
@@ -977,7 +1305,7 @@ class _CardRoom {
     settlement = {
       'base': base,
       'bombs': bombCount,
-      'multiplier': multiplier,
+      'multiplier': _scoreValue(multiplier),
       'spring': spring,
       'players': rows,
     };
@@ -985,10 +1313,11 @@ class _CardRoom {
   }
 
   void abort(String reason) {
+    _resetChatContext();
     phase = _Phase.lobby;
     turn = landlord = leader = bidder = extraSeat = null;
     topBid = 0;
-    multiplier = 1;
+    multiplier = BigInt.one;
     last = null;
     _tablePlays.clear();
     _previousTrick = null;
@@ -1016,23 +1345,48 @@ class _CardRoom {
     _botLog.add('座位 ${person.id} $move');
   }
 
-  BotTurn _botTurn(_Person bot, {Future<void>? cancelled}) => BotTurn(
+  BotTurn _botTurn(
+    _Person? bot, {
+    Future<void>? cancelled,
+    int? hintRequest,
+    int? chatThrough,
+    void Function(BotProgress)? onProgress,
+  }) => BotTurn(
     cancelled: cancelled,
+    hintRequest: hintRequest,
+    onProgress: onProgress,
     room: code,
     deal: deal,
     bidding: phase == _Phase.bidding,
+    phase: phase.name,
     rules: rules,
-    hand: [...bot.cards],
+    hand: [...?bot?.cards],
     wild: {...publicWild},
     previous: last,
     leader: leader,
+    activeSeat: turn,
+    publicChat: [
+      for (final event in _roundChat)
+        if (chatThrough == null || (event['id'] as int) <= chatThrough)
+          (
+            seat: event['from'] as int? ?? 0,
+            ai: event['replyTo'] != null,
+            text: event['text'] as String,
+          ),
+    ],
     topBid: topBid,
-    seat: bot.id,
+    seat: bot?.id ?? 0,
     landlord: landlord,
     bottom: [if (landlord != null) ...bottom],
     players: [
       for (final person in people)
-        BotSeat(id: person.id, cards: person.cards.length),
+        BotSeat(
+          id: person.id,
+          cards: person.cards.length,
+          bot: person.bot,
+          botMode: person.effectiveBotMode.name,
+          autoplay: person.autoplay,
+        ),
     ],
     log: [..._botLog],
     playedBySeat: {
@@ -1082,16 +1436,33 @@ class _CardRoom {
     }
   }
 
-  void _localBot(_Person bot, Random random) {
+  Future<void> _localBot(
+    _Person bot,
+    Random random,
+    bool Function() current,
+  ) async {
     final turn = _botTurn(bot);
     if (phase == _Phase.bidding) {
       _bid(bot, localBid(turn), random);
     } else if (phase == _Phase.playing) {
-      final suggestion = localPlay(turn);
-      if (suggestion == null) {
+      CardPlay? suggestion;
+      try {
+        suggestion = turn.denseHand
+            ? await compute(localPlay, turn)
+            : localPlay(turn);
+      } catch (_) {
+        // A failed strategy still leaves a legal default action.
+      }
+      if (!current()) return;
+      if (suggestion != null) {
+        _play(bot, suggestion);
+      } else if (last != null) {
         _pass(bot);
       } else {
-        _play(bot, suggestion);
+        _play(
+          bot,
+          legalCardPlays([bot.cards.first], wild, null, rules: rules).first,
+        );
       }
     }
   }
