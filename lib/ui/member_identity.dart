@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
@@ -170,7 +171,9 @@ Future<String?> pickAvatar() async {
     extensions: ['png', 'jpg', 'jpeg', 'webp'],
     mimeTypes: ['image/png', 'image/jpeg', 'image/webp'],
   );
-  final file = await openFile(acceptedTypeGroups: [imageTypes]);
+  final file = await openFile(
+    acceptedTypeGroups: Platform.isAndroid ? const [] : const [imageTypes],
+  );
   if (file == null) return null;
   if (await file.length() > 8 * 1024 * 1024) {
     throw const InputException('请选择不超过 8 MB 的图片');

@@ -36,6 +36,7 @@ let browserDevice;
 let lastToolsData = null;
 let hasRendered = false;
 let dialogBackdropArmed = false;
+let ledgerBalancesOpen = false;
 
 function readInitialSection() {
   const key = location.hash.replace(/^#/, '');
@@ -272,9 +273,12 @@ function applyWebTheme(palette, eink) {
     }
   };
   applyScale(webScale, false);
+  const prefsFold = document.querySelector('.prefs-fold');
+  if (prefsFold) prefsFold.open = window.innerWidth > 720;
   if (scaleDown) scaleDown.addEventListener('click', () => applyScale(webScale - 0.05));
   if (scaleReset) scaleReset.addEventListener('click', () => applyScale(1));
   if (scaleUp) scaleUp.addEventListener('click', () => applyScale(webScale + 0.05));
+  const sectionOrder = ['ledger', 'chores', 'supplies', 'matters', 'members', 'tools'];
   document.addEventListener('keydown', event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
@@ -286,6 +290,17 @@ function applyWebTheme(palette, eink) {
     } else if (event.key === '0' || event.code === 'Numpad0') {
       event.preventDefault();
       applyScale(1);
+    } else if (/^[1-6]$/.test(event.key) && !dialog.open) {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      event.preventDefault();
+      const target = sectionOrder[Number(event.key) - 1];
+      if (target && target !== current) {
+        current = target;
+        location.hash = current;
+        content.replaceChildren(empty('正在读取数据…'));
+        run(render);
+      }
     }
   });
 })();
@@ -339,6 +354,10 @@ async function render() {
     if (section === 'members') syncViewerOptions(data);
     else if (viewerSelect && viewerSelect.options.length === 0) await refreshViewerBar();
     if (section === 'tools') lastToolsData = data;
+    if (section === 'ledger') {
+      const prevDetails = content.querySelector('details.balances-fold');
+      if (prevDetails) ledgerBalancesOpen = prevDetails.open;
+    }
     const view = {
       ledger: ledgerView,
       chores: choreView,
@@ -427,7 +446,7 @@ function ledgerView(data) {
   ) : null;
 
   const balances = (data.balances || []).filter((b) => b.active || b.openPayable > 0 || b.openReceivable > 0);
-  const balancePanel = balances.length ? node('details', {class: 'panel'},
+  const balancePanel = balances.length ? node('details', {class: 'panel balances-fold', open: ledgerBalancesOpen},
     node('summary', {}, '成员累计应收 / 应付明细（点击展开）'),
     node('div', {class: 'cards'},
       balances.map((b) => node('article', {class: viewerId === b.id ? 'panel card-body mine' : 'panel card-body'},

@@ -90,50 +90,82 @@ class _SettingsPageState extends State<_SettingsPage> {
             return ListenableBuilder(
               listenable: cloud ?? controller,
               builder: (context, _) {
-                final categories = [
-                  for (final category in _Category.values)
-                    if (category != _Category.sync || cloud != null) category,
+                final groups = <(String, List<_Category>)>[
+                  (
+                    '偏好与外观',
+                    [
+                      _Category.appearance,
+                      _Category.ledger,
+                      _Category.supplies,
+                    ],
+                  ),
+                  (
+                    '协作与同步',
+                    [
+                      _Category.dorm,
+                      if (cloud != null) _Category.sync,
+                      _Category.lan,
+                    ],
+                  ),
+                  ('数据与关于', [_Category.data, _Category.about]),
                 ];
                 final attention =
                     cloud?.conflict != null || cloud?.error != null;
+                final labelStyle = Theme.of(context).textTheme.labelMedium
+                    ?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    );
                 if (!wide) {
                   return PageBody(
                     storageKey: 'settings-categories',
                     children: [
-                      Card(
-                        clipBehavior: Clip.antiAlias,
-                        child: Column(
-                          children: [
-                            for (final category in categories) ...[
-                              if (category != categories.first)
-                                const Divider(
-                                  height: 1,
-                                  indent: 16,
-                                  endIndent: 16,
-                                ),
-                              ListTile(
-                                leading: _icon(category, attention),
-                                title: Text(category.label),
-                                subtitle: Text(category.description),
-                                trailing: const Icon(Icons.chevron_right),
-                                onTap: () => Navigator.of(context).push<void>(
-                                  MaterialPageRoute(
-                                    builder: (context) => Scaffold(
-                                      appBar: AppBar(
-                                        title: Text(category.label),
-                                      ),
-                                      body: SafeArea(
-                                        top: false,
-                                        child: _detail(category),
+                      for (final (groupTitle, categories) in groups) ...[
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            4,
+                            groupTitle == groups.first.$1 ? 0 : 10,
+                            4,
+                            4,
+                          ),
+                          child: Text(groupTitle, style: labelStyle),
+                        ),
+                        Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: Column(
+                            children: [
+                              for (final category in categories) ...[
+                                if (category != categories.first)
+                                  const Divider(
+                                    height: 1,
+                                    indent: 16,
+                                    endIndent: 16,
+                                  ),
+                                ListTile(
+                                  dense: true,
+                                  leading: _icon(category, attention),
+                                  title: Text(category.label),
+                                  subtitle: Text(category.description),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () => Navigator.of(context).push<void>(
+                                    MaterialPageRoute(
+                                      builder: (context) => Scaffold(
+                                        appBar: AppBar(
+                                          title: Text(category.label),
+                                        ),
+                                        body: SafeArea(
+                                          top: false,
+                                          child: _detail(category),
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   );
                 }
@@ -148,23 +180,34 @@ class _SettingsPageState extends State<_SettingsPage> {
                         child: ListView(
                           padding: const EdgeInsets.fromLTRB(12, 16, 12, 16),
                           children: [
-                            for (final category in categories)
+                            for (final (groupTitle, categories) in groups) ...[
                               Padding(
-                                padding: const EdgeInsets.only(bottom: 4),
-                                child: ListTile(
-                                  leading: _icon(category, attention),
-                                  title: Text(category.label),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  selected: _selected == category,
-                                  selectedTileColor: Theme.of(context)
-                                      .colorScheme
-                                      .secondaryContainer,
-                                  onTap: () =>
-                                      setState(() => _selected = category),
+                                padding: EdgeInsets.fromLTRB(
+                                  12,
+                                  groupTitle == groups.first.$1 ? 4 : 14,
+                                  12,
+                                  6,
                                 ),
+                                child: Text(groupTitle, style: labelStyle),
                               ),
+                              for (final category in categories)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: ListTile(
+                                    leading: _icon(category, attention),
+                                    title: Text(category.label),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    selected: _selected == category,
+                                    selectedTileColor: Theme.of(context)
+                                        .colorScheme
+                                        .secondaryContainer,
+                                    onTap: () =>
+                                        setState(() => _selected = category),
+                                  ),
+                                ),
+                            ],
                           ],
                         ),
                       ),

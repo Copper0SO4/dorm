@@ -3,6 +3,7 @@
 /.packages
 /.pub-cache/
 /build/
+/dist/
 /coverage/
 /.idea/
 *.iml

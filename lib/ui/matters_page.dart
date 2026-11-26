@@ -48,47 +48,37 @@ class _MattersPageState extends State<MattersPage> {
               ),
             ],
           ),
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: FilterChip(
-                label: Text('归档（${archive.length}）'),
-                avatar: const Icon(Icons.archive_outlined, size: 18),
-                selected: _archived,
-                onSelected: (value) => setState(() => _archived = value),
-              ),
-            ),
-          ),
-          if (_archived)
-            _lane(archive, '还没有归档的事务')
-          else
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final wide = constraints.maxWidth >= 790;
-                if (wide && _allLanes) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    spacing: 12,
-                    children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: _viewChips(lanes, wide),
-                      ),
-                      _board(context, lanes),
-                    ],
-                  );
-                }
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 790;
+              final chips = Align(
+                alignment: Alignment.centerLeft,
+                child: _viewChips(lanes, archive.length, wide),
+              );
+              if (_archived) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   spacing: 12,
-                  children: [
-                    _viewChips(lanes, wide),
-                    _lane(lanes[_selected]!, '暂无${_selected.label}事务'),
-                  ],
+                  children: [chips, _lane(archive, '还没有归档的事务')],
                 );
-              },
-            ),
+              }
+              if (wide && _allLanes) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  spacing: 12,
+                  children: [chips, _board(context, lanes)],
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: 12,
+                children: [
+                  chips,
+                  _lane(lanes[_selected]!, '暂无${_selected.label}事务'),
+                ],
+              );
+            },
+          ),
         ],
       );
     },
@@ -106,7 +96,7 @@ class _MattersPageState extends State<MattersPage> {
               spacing: 8,
               children: [
                 Text(
-                  status.label,
+                  '${status.label} · ${lanes[status]!.length}',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 _lane(lanes[status]!, '暂无${status.label}事务'),
@@ -117,25 +107,39 @@ class _MattersPageState extends State<MattersPage> {
     );
   }
 
-  Widget _viewChips(Map<MatterStatus, List<Matter>> lanes, bool wide) => Wrap(
+  Widget _viewChips(
+    Map<MatterStatus, List<Matter>> lanes,
+    int archivedCount,
+    bool wide,
+  ) => Wrap(
     spacing: 8,
     runSpacing: 6,
     children: [
       if (wide)
         ChoiceChip(
           label: const Text('全部状态'),
-          selected: _allLanes,
-          onSelected: (_) => setState(() => _allLanes = true),
+          selected: !_archived && _allLanes,
+          onSelected: (_) => setState(() {
+            _archived = false;
+            _allLanes = true;
+          }),
         ),
       for (final status in MatterStatus.values)
         ChoiceChip(
           label: Text('${status.label} · ${lanes[status]!.length}'),
-          selected: (!wide || !_allLanes) && _selected == status,
+          selected: !_archived && (!wide || !_allLanes) && _selected == status,
           onSelected: (_) => setState(() {
+            _archived = false;
             _selected = status;
             _allLanes = false;
           }),
         ),
+      FilterChip(
+        label: Text('归档（$archivedCount）'),
+        avatar: const Icon(Icons.archive_outlined, size: 18),
+        selected: _archived,
+        onSelected: (value) => setState(() => _archived = value),
+      ),
     ],
   );
 

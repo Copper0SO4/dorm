@@ -117,6 +117,10 @@ small, .quiet { color: var(--quiet); }
 .sidebar nav span { font-size: 1.15rem; width: 23px; text-align: center; }
 .sidebar-footer { margin-top: auto; display: grid; gap: 10px; color: var(--quiet); }
 .viewer-box { display: grid; gap: 4px; }
+.prefs-fold { padding: 0; }
+.prefs-fold summary { margin-bottom: 0; font-size: .88rem; color: var(--quiet); user-select: none; }
+.prefs-fold[open] summary { margin-bottom: 8px; }
+.prefs-fold-body { display: grid; gap: 8px; }
 .theme-row { display: flex; gap: 6px; align-items: center; }
 .theme-row select { flex: 1; min-width: 0; padding: 6px 8px; font-size: .9rem; }
 .theme-row button { padding: 6px 9px; font-size: .9rem; white-space: nowrap; }
@@ -242,13 +246,17 @@ summary { cursor: pointer; margin-bottom: 8px; }
 }
 @media (max-width: 720px) {
   .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: static; height: auto; gap: 12px; padding: 12px; border-right: 0; border-bottom: 1px solid var(--edge); }
-  .sidebar .brand { padding-left: 0; }
+  .sidebar { position: static; height: auto; gap: 10px; padding: 12px 12px 10px; border-right: 0; border-bottom: 1px solid var(--edge); }
+  .sidebar .brand { padding-left: 0; font-size: 1.25rem; }
+  .logo { width: 34px; height: 34px; border-radius: 10px; font-size: 1rem; }
   .sidebar nav { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-  .sidebar nav button { display: grid; justify-items: center; text-align: center; gap: 3px; padding: 8px 4px; font-size: .86rem; }
-  .sidebar-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+  .sidebar nav button { display: grid; justify-items: center; text-align: center; gap: 3px; padding: 7px 4px; font-size: .84rem; }
+  .sidebar-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .viewer-box { display: flex; align-items: center; gap: 6px; }
-  .workspace { padding-top: 21px; }
+  .prefs-fold { border: 1px solid var(--edge); border-radius: 10px; padding: 5px 9px; background: var(--surface); }
+  .prefs-fold[open] { width: 100%; padding: 8px 10px; }
+  .workspace { padding: 18px 14px 36px; }
+  .table { -webkit-overflow-scrolling: touch; }
   .lanes { grid-template-columns: minmax(0, 1fr); }
   .metric { padding: 9px; }
 }

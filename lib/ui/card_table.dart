@@ -754,7 +754,9 @@ class _CardTableState extends State<CardTable> {
                           motion: motion,
                           tightSpacing:
                               Theme.of(context).platform ==
-                              TargetPlatform.windows,
+                                  TargetPlatform.windows ||
+                              Theme.of(context).platform ==
+                                  TargetPlatform.linux,
                           onChanged: _setSelected,
                         ),
                       ],
@@ -767,7 +769,10 @@ class _CardTableState extends State<CardTable> {
         ),
       ),
     );
-    if (Theme.of(context).platform != TargetPlatform.windows) return table;
+    final isDesktop =
+        Theme.of(context).platform == TargetPlatform.windows ||
+        Theme.of(context).platform == TargetPlatform.linux;
+    if (!isDesktop) return table;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.f11): () =>
@@ -843,7 +848,8 @@ class _CardTableState extends State<CardTable> {
                     icon: const Icon(Icons.smart_toy_outlined),
                     selectedIcon: const Icon(Icons.smart_toy, color: _gold),
                   ),
-                if (Theme.of(context).platform == TargetPlatform.windows)
+                if (Theme.of(context).platform == TargetPlatform.windows ||
+                    Theme.of(context).platform == TargetPlatform.linux)
                   IconButton(
                     tooltip: _fullscreen ? '退出全屏（F11）' : '全屏（F11）',
                     onPressed: _changingFullscreen

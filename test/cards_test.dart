@@ -1069,8 +1069,11 @@ void main() {
     await tester.tapAt(rects[1].topLeft + const Offset(12, 25));
     await tester.pumpAndSettle();
     expect(_isSelected(tester, first), isTrue);
-    expect(_isSelected(tester, second), isTrue);
-  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+    expect(
+      _isSelected(tester, second),
+      isTrue,
+    );
+  }, variant: TargetPlatformVariant({TargetPlatform.windows, TargetPlatform.linux}));
 
   test('hints offer the smallest follow first and keep bombs for later', () {
     final hand = cards([3, 3, 4, 6, 6, 8, 16, 17]);

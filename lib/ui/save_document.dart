@@ -39,9 +39,14 @@ Future<bool> saveDocument(
     suggestedName: name,
   );
   if (destination == null) return false;
-  if (!destination.path.toLowerCase().endsWith('.$extension')) {
-    throw InputException('请用 .$extension 作为文件扩展名');
+  var targetPath = destination.path;
+  if (!targetPath.toLowerCase().endsWith('.$extension')) {
+    final fileName = targetPath.split(RegExp(r'[/\\]')).last;
+    if (fileName.contains('.')) {
+      throw InputException('请用 .$extension 作为文件扩展名');
+    }
+    targetPath = '$targetPath.$extension';
   }
-  await source.saveTo(destination.path);
+  await source.saveTo(targetPath);
   return true;
 }

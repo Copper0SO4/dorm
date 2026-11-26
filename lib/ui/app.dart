@@ -361,90 +361,131 @@ class _DormAppState extends State<DormApp> {
               StartupPage.tools => ToolsPage(controller: widget.controller),
             },
           );
-          return Scaffold(
-            appBar: AppBar(
-              title: Text(
-                dormFullName,
-                maxLines: desktop ? 1 : 2,
-                overflow: TextOverflow.ellipsis,
-                style: desktop ? null : theme.textTheme.titleMedium,
-              ),
-              actions: [
-                if (desktop)
-                  TextButton.icon(
-                    onPressed: () => _showMe(context),
-                    icon: const Icon(Icons.account_circle_outlined),
-                    label: const Text('我'),
-                  )
-                else
-                  IconButton(
-                    tooltip: '我',
-                    icon: const Icon(Icons.account_circle_outlined),
-                    onPressed: () => _showMe(context),
+          return CallbackShortcuts(
+            bindings: {
+              const SingleActivator(
+                LogicalKeyboardKey.digit1,
+                control: true,
+              ): () =>
+                  setState(() => _selected = _destinations[0].page),
+              const SingleActivator(
+                LogicalKeyboardKey.digit2,
+                control: true,
+              ): () =>
+                  setState(() => _selected = _destinations[1].page),
+              const SingleActivator(
+                LogicalKeyboardKey.digit3,
+                control: true,
+              ): () =>
+                  setState(() => _selected = _destinations[2].page),
+              const SingleActivator(
+                LogicalKeyboardKey.digit4,
+                control: true,
+              ): () =>
+                  setState(() => _selected = _destinations[3].page),
+              const SingleActivator(
+                LogicalKeyboardKey.digit5,
+                control: true,
+              ): () =>
+                  setState(() => _selected = _destinations[4].page),
+            },
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(
+                  desktop ? dormFullName : dormName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: desktop
+                      ? null
+                      : theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                ),
+                actions: [
+                  if (desktop)
+                    TextButton.icon(
+                      onPressed: () => _showMe(context),
+                      icon: const Icon(Icons.account_circle_outlined),
+                      label: const Text('我'),
+                    )
+                  else
+                    IconButton(
+                      tooltip: '我',
+                      icon: const Icon(Icons.account_circle_outlined),
+                      onPressed: () => _showMe(context),
+                    ),
+                  SettingsAction(
+                    controller: widget.controller,
+                    themeMode: _mode,
                   ),
-                SettingsAction(controller: widget.controller, themeMode: _mode),
-                const SizedBox(width: 12),
-              ],
-            ),
-            body: SafeArea(
-              top: false,
-              child: Row(
-                children: [
-                  if (desktop) ...[
-                    NavigationRail(
-                      extended: true,
-                      minExtendedWidth: 204,
-                      backgroundColor: theme.colorScheme.surfaceContainerLow,
-                      leading: const Padding(
-                        padding: EdgeInsets.fromLTRB(12, 14, 12, 28),
-                        child: _Brand(),
-                      ),
-                      trailing: const Expanded(
-                        child: Align(
-                          alignment: Alignment.bottomCenter,
-                          child: Padding(
-                            padding: EdgeInsets.all(16),
-                            child: _LocalStatus(),
+                  const SizedBox(width: 12),
+                ],
+              ),
+              body: SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    if (desktop) ...[
+                      NavigationRail(
+                        extended: true,
+                        minExtendedWidth: 204,
+                        backgroundColor: theme.colorScheme.surfaceContainerLow,
+                        leading: const Padding(
+                          padding: EdgeInsets.fromLTRB(12, 14, 12, 28),
+                          child: _Brand(),
+                        ),
+                        trailing: Expanded(
+                          child: Align(
+                            alignment: Alignment.bottomCenter,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: _LocalStatus(
+                                controller: widget.controller,
+                              ),
+                            ),
                           ),
                         ),
+                        destinations: [
+                          for (final item in _destinations)
+                            NavigationRailDestination(
+                              icon: Icon(item.icon),
+                              selectedIcon: Icon(item.selected),
+                              label: Text(item.page.label),
+                            ),
+                        ],
+                        selectedIndex: _destinations.indexWhere(
+                          (item) => item.page == _selected,
+                        ),
+                        onDestinationSelected: (index) => setState(
+                          () => _selected = _destinations[index].page,
+                        ),
                       ),
-                      destinations: [
-                        for (final item in _destinations)
-                          NavigationRailDestination(
-                            icon: Icon(item.icon),
-                            selectedIcon: Icon(item.selected),
-                            label: Text(item.page.label),
-                          ),
-                      ],
+                      const VerticalDivider(width: 1),
+                    ],
+                    Expanded(child: page),
+                  ],
+                ),
+              ),
+              bottomNavigationBar: desktop
+                  ? null
+                  : NavigationBar(
+                      labelBehavior:
+                          NavigationDestinationLabelBehavior.alwaysShow,
                       selectedIndex: _destinations.indexWhere(
                         (item) => item.page == _selected,
                       ),
                       onDestinationSelected: (index) =>
                           setState(() => _selected = _destinations[index].page),
+                      destinations: [
+                        for (final item in _destinations)
+                          NavigationDestination(
+                            icon: Icon(item.icon),
+                            selectedIcon: Icon(item.selected),
+                            label: item.short,
+                          ),
+                      ],
                     ),
-                    const VerticalDivider(width: 1),
-                  ],
-                  Expanded(child: page),
-                ],
-              ),
             ),
-            bottomNavigationBar: desktop
-                ? null
-                : NavigationBar(
-                    selectedIndex: _destinations.indexWhere(
-                      (item) => item.page == _selected,
-                    ),
-                    onDestinationSelected: (index) =>
-                        setState(() => _selected = _destinations[index].page),
-                    destinations: [
-                      for (final item in _destinations)
-                        NavigationDestination(
-                          icon: Icon(item.icon),
-                          selectedIcon: Icon(item.selected),
-                          label: item.short,
-                        ),
-                    ],
-                  ),
           );
         },
       ),
@@ -488,19 +529,55 @@ class _Brand extends StatelessWidget {
 }
 
 class _LocalStatus extends StatelessWidget {
-  const _LocalStatus();
+  const _LocalStatus({required this.controller});
+
+  final DormController controller;
 
   @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(
-        Icons.storage_rounded,
-        size: 17,
-        color: Theme.of(context).colorScheme.primary,
-      ),
-      const SizedBox(width: 8),
-      const Text('本机离线存储'),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final cloud = controller.cloud;
+    return ListenableBuilder(
+      listenable: cloud ?? controller,
+      builder: (context, _) {
+        final colors = Theme.of(context).colorScheme;
+        final (icon, label, color) = switch (cloud) {
+          final c? when c.busy => (
+            Icons.sync_rounded,
+            '正在云同步…',
+            colors.primary,
+          ),
+          final c? when c.conflict != null => (
+            Icons.warning_amber_rounded,
+            '云同步有冲突',
+            colors.error,
+          ),
+          final c? when c.error != null => (
+            Icons.cloud_off_rounded,
+            '云同步异常',
+            colors.error,
+          ),
+          final c? when c.settings != null => (
+            Icons.cloud_done_outlined,
+            '已启用云同步',
+            colors.primary,
+          ),
+          _ => (Icons.storage_rounded, '本机离线存储', colors.primary),
+        };
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: color),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: color == colors.error ? color : null),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }

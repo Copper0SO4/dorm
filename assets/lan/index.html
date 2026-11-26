@@ -26,22 +26,27 @@
           <small>我的视角</small>
           <select id="viewer-select" aria-label="切换当前使用成员"></select>
         </label>
-        <div class="theme-row">
-          <select id="palette-select" aria-label="切换网页调色板">
-            <option value="pine">松林绿</option>
-            <option value="ocean">海盐蓝</option>
-            <option value="amber">暖橘棕</option>
-            <option value="plum">暮色紫</option>
-            <option value="crimson">枫叶红</option>
-            <option value="slate">石墨灰</option>
-          </select>
-          <button id="eink-toggle" type="button" class="ghost" aria-pressed="false">墨水屏</button>
-        </div>
-        <div class="scale-row" role="group" aria-label="界面缩放">
-          <button id="scale-down" type="button" class="ghost small" title="缩小界面 (Ctrl -)">A-</button>
-          <button id="scale-reset" type="button" class="ghost small" title="重置为 100% (Ctrl 0)">100%</button>
-          <button id="scale-up" type="button" class="ghost small" title="放大界面 (Ctrl +)">A+</button>
-        </div>
+        <details class="prefs-fold">
+          <summary>外观与缩放</summary>
+          <div class="prefs-fold-body">
+            <div class="theme-row">
+              <select id="palette-select" aria-label="切换网页调色板">
+                <option value="pine">松林绿</option>
+                <option value="ocean">海盐蓝</option>
+                <option value="amber">暖橘棕</option>
+                <option value="plum">暮色紫</option>
+                <option value="crimson">枫叶红</option>
+                <option value="slate">石墨灰</option>
+              </select>
+              <button id="eink-toggle" type="button" class="ghost" aria-pressed="false">墨水屏</button>
+            </div>
+            <div class="scale-row" role="group" aria-label="界面缩放">
+              <button id="scale-down" type="button" class="ghost small" title="缩小界面 (Ctrl -)">A-</button>
+              <button id="scale-reset" type="button" class="ghost small" title="重置为 100% (Ctrl 0)">100%</button>
+              <button id="scale-up" type="button" class="ghost small" title="放大界面 (Ctrl +)">A+</button>
+            </div>
+          </div>
+        </details>
         <span id="server-status">正在连接</span>
       </div>
     </aside>

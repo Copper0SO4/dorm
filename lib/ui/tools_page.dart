@@ -39,6 +39,16 @@ class _ToolsPageState extends State<ToolsPage> {
                 ?.copyWith(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: panelGap),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              '联机牌桌',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
           Card(
             child: ListTile(
               leading: const Icon(Icons.style_outlined),
@@ -52,7 +62,17 @@ class _ToolsPageState extends State<ToolsPage> {
               ),
             ),
           ),
-          const SizedBox(height: panelGap),
+          const SizedBox(height: sectionGap),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              '决策与聚会工具',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
           Wrap(
             spacing: 12,
             runSpacing: 8,

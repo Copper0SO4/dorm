@@ -74,52 +74,58 @@ class _LedgerPageState extends State<LedgerPage> {
 
   Widget _historyTools(List<Bill> visible, int total) => Padding(
     padding: const EdgeInsets.only(bottom: panelGap),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      spacing: 8,
-      children: [
-        TextField(
-          controller: _search,
-          onChanged: (_) => setState(() {}),
-          decoration: InputDecoration(
-            labelText: '搜索账单',
-            hintText: '账单名称、付款人或关联物资',
-            prefixIcon: const Icon(Icons.search),
-            suffixIcon: _search.text.isEmpty
-                ? null
-                : IconButton(
-                    tooltip: '清空搜索',
-                    icon: const Icon(Icons.clear),
-                    onPressed: () => setState(_search.clear),
-                  ),
-          ),
-        ),
-        Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 8,
-          runSpacing: 6,
+    child: Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: 10,
           children: [
-            FilterChip(
-              label: const Text('仅待结清'),
-              selected: _onlyUnsettled,
-              onSelected: (value) => setState(() => _onlyUnsettled = value),
+            TextField(
+              controller: _search,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                labelText: '搜索账单',
+                hintText: '账单名称、付款人或关联物资',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _search.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清空搜索',
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => setState(_search.clear),
+                      ),
+              ),
             ),
-            FilterChip(
-              label: const Text('本月'),
-              selected: _thisMonth,
-              onSelected: (value) => setState(() => _thisMonth = value),
-            ),
-            if (visible.length != total) Text('${visible.length} / $total 笔'),
-            TextButton.icon(
-              onPressed: !(_exporting || visible.isEmpty)
-                  ? () => _export(visible)
-                  : null,
-              icon: const Icon(Icons.download_outlined),
-              label: const Text('导出当前结果'),
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                FilterChip(
+                  label: const Text('仅待结清'),
+                  selected: _onlyUnsettled,
+                  onSelected: (value) => setState(() => _onlyUnsettled = value),
+                ),
+                FilterChip(
+                  label: const Text('本月'),
+                  selected: _thisMonth,
+                  onSelected: (value) => setState(() => _thisMonth = value),
+                ),
+                if (visible.length != total)
+                  Text('${visible.length} / $total 笔'),
+                TextButton.icon(
+                  onPressed: !(_exporting || visible.isEmpty)
+                      ? () => _export(visible)
+                      : null,
+                  icon: const Icon(Icons.download_outlined),
+                  label: const Text('导出当前结果'),
+                ),
+              ],
             ),
           ],
         ),
-      ],
+      ),
     ),
   );
 
@@ -252,8 +258,8 @@ class _LedgerSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     const ink = Color(0xfff1f8ed);
-    final info = Padding(
-      padding: const EdgeInsets.all(24),
+    Widget buildInfo(bool compact) => Padding(
+      padding: EdgeInsets.all(compact ? 18 : 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -267,13 +273,17 @@ class _LedgerSummary extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             formatCents(total),
-            style: theme.textTheme.displaySmall?.copyWith(
-              color: ink,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -1.4,
-            ),
+            style:
+                (compact
+                        ? theme.textTheme.headlineMedium
+                        : theme.textTheme.displaySmall)
+                    ?.copyWith(
+                      color: ink,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -1.4,
+                    ),
           ),
-          const SizedBox(height: 20),
+          SizedBox(height: compact ? 14 : 20),
           Wrap(
             spacing: 20,
             runSpacing: 10,
@@ -288,48 +298,68 @@ class _LedgerSummary extends StatelessWidget {
         ],
       ),
     );
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xff173d32), Color(0xff326654)],
-        ),
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              if (constraints.maxWidth >= 540)
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: ColoredBox(
+        color: const Color(0xff173d32),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 500;
+            return Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
                 Positioned(
-                  right: 30,
-                  top: 18,
-                  bottom: 18,
-                  child: SizedBox(
-                    width: 148,
-                    child: Center(
-                      child: Container(
-                        width: 124,
-                        height: 124,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: const Color(0xff769683)),
-                        ),
-                        child: const Center(
-                          child: Icon(
-                            Icons.account_balance_wallet_outlined,
-                            color: Color(0xffc7e5bd),
-                            size: 50,
+                  right: -40,
+                  top: -90,
+                  bottom: -90,
+                  width: constraints.maxWidth * 0.72,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xff326654)
+                                .withValues(alpha: 0.95),
+                            blurRadius: 130,
+                            spreadRadius: 45,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                if (constraints.maxWidth >= 540)
+                  Positioned(
+                    right: 30,
+                    top: 18,
+                    bottom: 18,
+                    child: SizedBox(
+                      width: 148,
+                      child: Center(
+                        child: Container(
+                          width: 124,
+                          height: 124,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: const Color(0xff769683)),
+                          ),
+                          child: const Center(
+                            child: Icon(
+                              Icons.account_balance_wallet_outlined,
+                              color: Color(0xffc7e5bd),
+                              size: 50,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              SizedBox(width: double.infinity, child: info),
-            ],
-          );
-        },
+                SizedBox(width: double.infinity, child: buildInfo(compact)),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

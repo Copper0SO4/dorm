@@ -35,6 +35,7 @@ class CardDiscovery {
     final networks = await NetworkInterface.list(
       type: InternetAddressType.IPv4,
     );
+    if (_listener != socket) return;
     for (final network in networks) {
       try {
         socket.joinMulticast(_group, network);
