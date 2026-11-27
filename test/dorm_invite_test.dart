@@ -106,4 +106,34 @@ void main() {
       throwsA(isA<InputException>()),
     );
   });
+
+  test('direct-key .dorm invite and QR image work without password', () async {
+    final key = await CloudKey.generate();
+    final direct = DormInvite('room/dorm').withDirectKey(key);
+    final encoded = direct.encode();
+    final fields = jsonDecode(utf8.decode(encoded)) as Map<String, dynamic>;
+    expect(fields['access'], 'direct-key');
+    expect(fields['publicKey'], key.publicKey);
+    final invite = DormInvite.read(encoded);
+    expect(invite.requiresPassword, isFalse);
+    expect(invite.directKey?.privateKey, key.privateKey);
+    expect(invite.directKey?.publicKey, key.publicKey);
+
+    final qrText = inviteQrText(direct);
+    final qrImage = await makeQrPng(qrText);
+    final qrRecovered = await readInviteQrImage(qrImage);
+    expect(qrRecovered.requiresPassword, isFalse);
+    expect(qrRecovered.directKey?.privateKey, key.privateKey);
+    expect(qrRecovered.directKey?.publicKey, key.publicKey);
+  });
+
+  test('unlock accepts 16-char invite code without hyphens or uppercase', () async {
+    final key = await CloudKey.generate();
+    const code = 'SUKW-9WBZ-MG3A-A9FY';
+    final invite = DormInvite.read(
+      (await DormInvite('room/dorm').withSharedKey(key, code)).encode(),
+    );
+    final decoded = await invite.unlock('sukw9wbzmg3aa9fy');
+    expect(decoded.privateKey, key.privateKey);
+  });
 }

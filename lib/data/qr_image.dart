@@ -78,11 +78,28 @@ Future<String> readQrImageText(Uint8List bytes) async {
         image.height,
         pixels,
       );
-      final bitmap = qr.BinaryBitmap(qr.HybridBinarizer(luminance));
+      final reader = qr.QRCodeReader();
+      final hints = qr.DecodeHints()
+        ..put(qr.DecodeHintType.tryHarder)
+        ..put(qr.DecodeHintType.characterSet, 'UTF-8');
       try {
-        return qr.QRCodeReader().decode(bitmap).text;
+        return reader
+            .decode(
+              qr.BinaryBitmap(qr.HybridBinarizer(luminance)),
+              hints: hints,
+            )
+            .text;
       } on qr.ReaderException {
-        throw const InputException('找不到可读二维码，请选择清晰的截图');
+        try {
+          return reader
+              .decode(
+                qr.BinaryBitmap(qr.GlobalHistogramBinarizer(luminance)),
+                hints: hints,
+              )
+              .text;
+        } on qr.ReaderException {
+          throw const InputException('找不到可读二维码，请选择清晰的截图');
+        }
       }
     } finally {
       image.dispose();

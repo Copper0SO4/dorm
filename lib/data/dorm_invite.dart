@@ -13,9 +13,14 @@ const maxDormInviteBytes = 64 * 1024;
 
 class DormInvite {
   DormInvite(String repository)
-    : this._(githubSshAddress(repository), null, null);
+    : this._(githubSshAddress(repository), null, null, null);
 
-  const DormInvite._(this.repository, this._salt, this._credentials);
+  const DormInvite._(
+    this.repository,
+    this._salt,
+    this._credentials,
+    this.directKey,
+  );
 
   static const _format = 'dormos-invite';
   static const _version = 1;
@@ -23,6 +28,7 @@ class DormInvite {
   final String repository;
   final List<int>? _salt;
   final SecretBox? _credentials;
+  final CloudKey? directKey;
 
   bool get requiresPassword => _credentials != null;
 
@@ -40,7 +46,15 @@ class DormInvite {
       }
       final repository = githubSshAddress(json['repository'] as String);
       if (json['access'] == 'repository' && json.length == 4) {
-        return DormInvite._(repository, null, null);
+        return DormInvite._(repository, null, null, null);
+      }
+      if (json['access'] == 'direct-key' &&
+          (json.length == 6 || json.length == 7)) {
+        final key = CloudKey(
+          json['key'] as String,
+          json['passphrase'] as String,
+        );
+        return DormInvite._(repository, null, null, key);
       }
       if (json['access'] != 'shared-key' || json.length != 8) {
         throw const FormatException();
@@ -59,6 +73,7 @@ class DormInvite {
         repository,
         salt,
         SecretBox(ciphertext, nonce: nonce, mac: Mac(mac)),
+        null,
       );
     } on FormatException {
       throw const InputException('.dorm 文件格式有误');
@@ -69,12 +84,23 @@ class DormInvite {
 
   Uint8List encode() {
     final credentials = _credentials;
+    final direct = directKey;
+    final access = credentials != null
+        ? 'shared-key'
+        : direct != null
+        ? 'direct-key'
+        : 'repository';
     final bytes = utf8.encode(
       jsonEncode({
         'format': _format,
         'version': _version,
         'repository': repository,
-        'access': credentials == null ? 'repository' : 'shared-key',
+        'access': access,
+        if (direct != null) ...{
+          'key': direct.privateKey,
+          'publicKey': direct.publicKey,
+          'passphrase': direct.passphrase,
+        },
         if (credentials != null) ...{
           'salt': base64.encode(_salt!),
           'nonce': base64.encode(credentials.nonce),
@@ -88,6 +114,9 @@ class DormInvite {
     }
     return bytes;
   }
+
+  DormInvite withDirectKey(CloudKey key) =>
+      DormInvite._(repository, null, null, key);
 
   Future<DormInvite> withSharedKey(CloudKey key, String password) {
     if (password.trim().runes.length < 12 || password.length > 256) {
@@ -103,11 +132,13 @@ class DormInvite {
         secretKey: await _deriveKey(password, salt),
         aad: _associatedData,
       );
-      return DormInvite._(repository, salt, box);
+      return DormInvite._(repository, salt, box, null);
     });
   }
 
   Future<CloudKey> unlock(String password) async {
+    final direct = directKey;
+    if (direct != null) return direct;
     final credentials = _credentials;
     if (credentials == null) {
       throw const InputException('这份邀请只包含仓库地址');
@@ -116,22 +147,48 @@ class DormInvite {
       throw const InputException('请输入有效的邀请口令');
     }
     try {
-      return await Isolate.run(() async {
-        final bytes = await AesGcm.with256bits().decrypt(
-          credentials,
-          secretKey: await _deriveKey(password, _salt!),
-          aad: _associatedData,
-        );
-        final data = jsonDecode(utf8.decode(bytes));
-        return CloudKey(data['key'] as String, data['passphrase'] as String);
-      });
+      return await _decryptWithPassword(credentials, password);
     } on SecretBoxAuthenticationError {
+      final normalized = _normalizeInviteCode(password);
+      if (normalized != null && normalized != password) {
+        try {
+          return await _decryptWithPassword(credentials, normalized);
+        } on SecretBoxAuthenticationError {
+          // Fall through to standard invalid password error below.
+        } on FormatException {
+          throw const InputException('.dorm 文件内的 SSH 凭据格式有误');
+        } on TypeError {
+          throw const InputException('.dorm 文件内的 SSH 凭据格式有误');
+        }
+      }
       throw const InputException('口令不正确，或 .dorm 文件已被修改');
     } on FormatException {
       throw const InputException('.dorm 文件内的 SSH 凭据格式有误');
     } on TypeError {
       throw const InputException('.dorm 文件内的 SSH 凭据格式有误');
     }
+  }
+
+  Future<CloudKey> _decryptWithPassword(
+    SecretBox credentials,
+    String password,
+  ) => Isolate.run(() async {
+    final bytes = await AesGcm.with256bits().decrypt(
+      credentials,
+      secretKey: await _deriveKey(password, _salt!),
+      aad: _associatedData,
+    );
+    final data = jsonDecode(utf8.decode(bytes));
+    return CloudKey(data['key'] as String, data['passphrase'] as String);
+  });
+
+  static String? _normalizeInviteCode(String input) {
+    final compact = input.replaceAll(RegExp(r'[\s-]+'), '').toUpperCase();
+    if (compact.length != 16 || !RegExp(r'^[A-Z0-9]{16}$').hasMatch(compact)) {
+      return null;
+    }
+    return '${compact.substring(0, 4)}-${compact.substring(4, 8)}-'
+        '${compact.substring(8, 12)}-${compact.substring(12, 16)}';
   }
 
   List<int> get _associatedData =>

@@ -24,8 +24,8 @@ Future<ImportedDormInvite?> importInviteQr(BuildContext context) async {
       title: const Text('导入邀请二维码'),
       content: Text(
         Platform.isAndroid
-            ? '可以用摄像头扫码，也可以导入二维码截图。含密钥的邀请需要输入邀请码。'
-            : '选择二维码截图，或粘贴扫码工具读出的文本。含密钥的邀请需要输入邀请码。',
+            ? '可以用摄像头扫码，也可以导入二维码截图，扫码后即可直接导入。'
+            : '选择二维码截图，或粘贴扫码工具读出的文本，导入后即可直接使用。',
       ),
       actions: [
         TextButton(
@@ -102,12 +102,11 @@ class _InviteQrDialog extends StatefulWidget {
 }
 
 class _InviteQrDialogState extends State<_InviteQrDialog> {
-  late final _code = newInviteCode();
   late final _invite = _generate();
   bool _saving = false;
 
   Future<({String text, Uint8List png})> _generate() async {
-    final invite = await widget.cloud.exportInvite(password: _code);
+    final invite = await widget.cloud.exportInvite(includeKey: true);
     final text = inviteQrText(invite);
     return (text: text, png: await makeQrPng(text));
   }
@@ -160,7 +159,7 @@ class _InviteQrDialogState extends State<_InviteQrDialog> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   spacing: 12,
                   children: [
-                    const Text('室友导入二维码并输入邀请码后，会使用同一把 SSH 私钥。'),
+                    const Text('室友扫码或导入二维码后，会直接使用同一套 SSH 密钥，无需输入邀请码。'),
                     Center(
                       child: Image.memory(
                         data.png,
@@ -169,23 +168,14 @@ class _InviteQrDialogState extends State<_InviteQrDialog> {
                         semanticLabel: 'Dorm 仓库邀请二维码',
                       ),
                     ),
-                    const Text('邀请码'),
-                    SelectableText(
-                      _code,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
                       children: [
                         TextButton.icon(
-                          onPressed: () => _copy(_code, '邀请码'),
-                          icon: const Icon(Icons.copy_outlined),
-                          label: const Text('复制邀请码'),
-                        ),
-                        TextButton(
                           onPressed: () => _copy(data.text, '邀请文本'),
-                          child: const Text('复制邀请文本'),
+                          icon: const Icon(Icons.copy_outlined),
+                          label: const Text('复制邀请文本'),
                         ),
                       ],
                     ),

@@ -80,12 +80,20 @@ class CloudSync extends ChangeNotifier {
   Future<String> generateDevicePublicKey() async =>
       (await _vault.generateDevice()).publicKey;
 
-  Future<DormInvite> exportInvite({String? password}) async {
+  Future<DormInvite> exportInvite({
+    bool includeKey = false,
+    String? password,
+  }) async {
     final current = settings;
     if (current == null) throw const InputException('请先配置 GitHub 仓库');
     final invite = DormInvite(current.repository);
-    if (password == null) return invite;
-    return invite.withSharedKey(await _readKey(current), password);
+    if (password != null) {
+      return invite.withSharedKey(await _readKey(current), password);
+    }
+    if (includeKey) {
+      return invite.withDirectKey(await _readKey(current));
+    }
+    return invite;
   }
 
   Future<void> startup() async {

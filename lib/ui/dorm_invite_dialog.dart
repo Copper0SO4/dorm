@@ -38,6 +38,9 @@ Future<ImportedDormInvite?> unlockDormInvite(
   BuildContext context,
   DormInvite invite,
 ) async {
+  if (invite.directKey case final direct?) {
+    return (repository: invite.repository, key: direct);
+  }
   if (!invite.requiresPassword) {
     return (repository: invite.repository, key: null);
   }
@@ -50,11 +53,7 @@ Future<ImportedDormInvite?> unlockDormInvite(
 }
 
 Future<bool> writeDormInvite(BuildContext context, CloudSync cloud) async {
-  final invite = await showDialog<DormInvite>(
-    context: context,
-    builder: (_) => _ExportInviteDialog(cloud),
-  );
-  if (invite == null || !context.mounted) return false;
+  final invite = await cloud.exportInvite(includeKey: true);
   final repository = invite.repository.split('/').last;
   final name = '${repository.substring(0, repository.length - 4)}.dorm';
   return saveDocument(
@@ -62,98 +61,6 @@ Future<bool> writeDormInvite(BuildContext context, CloudSync cloud) async {
     name: name,
     extension: 'dorm',
     label: 'Dorm 邀请',
-  );
-}
-
-class _ExportInviteDialog extends StatefulWidget {
-  const _ExportInviteDialog(this.cloud);
-
-  final CloudSync cloud;
-
-  @override
-  State<_ExportInviteDialog> createState() => _ExportInviteDialogState();
-}
-
-class _ExportInviteDialogState extends State<_ExportInviteDialog> {
-  final _password = TextEditingController();
-  final _confirmation = TextEditingController();
-  bool _includeKey = false;
-  bool _saving = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _password.dispose();
-    _confirmation.dispose();
-    super.dispose();
-  }
-
-  Future<void> _export() async {
-    if (_includeKey && _password.text != _confirmation.text) {
-      setState(() => _error = '两次输入的口令不一致');
-      return;
-    }
-    setState(() {
-      _saving = true;
-      _error = null;
-    });
-    try {
-      final invite = await widget.cloud.exportInvite(
-        password: _includeKey ? _password.text : null,
-      );
-      if (mounted) Navigator.pop(context, invite);
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _error = errorText(error, fallback: '无法导出邀请');
-          _saving = false;
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('导出 .dorm 邀请'),
-    scrollable: true,
-    content: SizedBox(
-      width: 440,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('邀请会带上仓库地址。接收方可使用自己的设备密钥。'),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('用口令加密后共享当前 SSH 私钥'),
-            value: _includeKey,
-            onChanged: _saving
-                ? null
-                : (value) => setState(() {
-                    _includeKey = value!;
-                    _error = null;
-                  }),
-          ),
-          if (_includeKey) ...[
-            const Text('解锁后可使用此密钥访问仓库。请通过不同渠道发送文件和口令。'),
-            const SizedBox(height: 12),
-            _passwordField(_password, '邀请口令（至少 12 个字符）', !_saving),
-            const SizedBox(height: 12),
-            _passwordField(_confirmation, '确认邀请口令', !_saving),
-          ],
-          if (_error case final error?) _message(context, error),
-        ],
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: _saving ? null : () => Navigator.pop(context),
-        child: const Text('取消'),
-      ),
-      FilledButton(
-        onPressed: _saving ? null : _export,
-        child: Text(_saving ? '加密中…' : '选择保存位置'),
-      ),
-    ],
   );
 }
 
